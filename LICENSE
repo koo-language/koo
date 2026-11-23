@@ -1,0 +1,19 @@
+Koo is dual-licensed under the Apache License, Version 2.0 and the MIT License,
+at your option. You may use, copy, modify and distribute this software under
+the terms of either license.
+
+  * Apache License, Version 2.0: see LICENSE-APACHE
+    (also at http://www.apache.org/licenses/LICENSE-2.0)
+  * MIT License: see LICENSE-MIT
+    (also at http://opensource.org/licenses/MIT)
+
+Copyright (c) 2026 Doron Grinstein and the Koo contributors
+
+Unless you explicitly state otherwise, any contribution intentionally
+submitted for inclusion in Koo by you shall be dual-licensed as above,
+without any additional terms or conditions. Contributors certify their
+right to submit each change by signing off their commits under the
+Developer Certificate of Origin (https://developercertificate.org).
+
+The name "Koo" and the Koo logo are trademarks of Doron Grinstein and are
+not covered by these licenses. See TRADEMARK.md.
