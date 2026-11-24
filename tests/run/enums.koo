@@ -1,0 +1,105 @@
+enum Payment {
+    Card { last4: string, brand: string }
+    Transfer { iban: string }
+    Cash
+}
+
+enum Level { Low, Mid, High }
+
+type Sale = { amount: float, payment: Payment, level: Level }
+
+fn fee(payment: Payment) -> float {
+    match payment {
+        Card { brand: "amex", .. } => { return 3.5 }
+        Card { last4, brand } if last4.len == 4 and brand == "visa" => { return 2.0 }
+        Card { .. } => { return 2.5 }
+        Transfer { iban } if iban.len > 2 => { return 0.5 }
+        Transfer | Cash => { return 0.0 }
+    }
+}
+
+fn label(level: Level) -> string {
+    return match level {
+        Low => "low"
+        Mid => "mid"
+        High => "high"
+    }
+}
+
+fn classify(n: int) -> string {
+    return match n {
+        0 => "zero"
+        1..=9 => "small"
+        -5..0 => "slightly negative"
+        10 | 20 | 30 => "round"
+        _ => if n < 0 { "negative" } else { "large" }
+    }
+}
+
+fn main() {
+    card := Payment.Card { last4: "4242", brand: "visa" }
+    amex := Payment.Card { last4: "0005", brand: "amex" }
+    other: Payment = Card { last4: "1", brand: "visa" }
+    wire := Payment.Transfer { iban: "DE00" }
+    short := Payment.Transfer { iban: "D" }
+    cash: Payment = Cash
+    print(fee(card))
+    print(fee(amex))
+    print(fee(other))
+    print(fee(wire))
+    print(fee(short))
+    print(fee(cash))
+    print(fee(Payment.Cash))
+    print(card)
+    print(cash)
+
+    sale := Sale { amount: 10.0, payment: wire, level: High }
+    print(sale)
+    print(label(sale.level))
+    print(sale.level == Level.High)
+    print((Level.Low) < Level.Mid)
+    copy := sale
+    print(fee(copy.payment))
+
+    for n in [0, 7, -3, 20, 55, -40] { print(classify(n)) }
+
+    payments := [card, cash, wire]
+    var total := 0.0
+    for p in payments { total += fee(p) }
+    print(total)
+
+    word := "b"
+    print(match word {
+        "a" => 1
+        "b" => 2
+        _ => 0
+    })
+    flag := true
+    match flag {
+        true => print("yes")
+        false => print("no")
+    }
+}
+//= 2.0
+//= 3.5
+//= 2.5
+//= 0.5
+//= 0.0
+//= 0.0
+//= 0.0
+//= Card { last4: "4242", brand: "visa" }
+//= Cash
+//= Sale { amount: 10.0, payment: Transfer { iban: "DE00" }, level: High }
+//= high
+//= true
+//= true
+//= 0.5
+//= zero
+//= small
+//= slightly negative
+//= round
+//= large
+//= negative
+//= 2.5
+//= 2
+//= yes

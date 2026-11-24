@@ -1,0 +1,192 @@
+// The prelude: methods of lists, optionals, strings and numbers.
+type Person = { name: string, age: int }
+
+fn (self: Person) compare(other: Person) -> int {
+    return self.age.compare(other.age)
+}
+
+fn main() {
+    xs := [5, 3, 8, 1]
+    print(xs.map(x -> x * 2))
+    print(xs.filter(x -> x > 2))
+    print(xs.fold(0, (a, x) -> a + x))
+    print(xs.sum())
+    print([1.5, 2.5].sum())
+    print(xs.sorted())
+    print(xs.sorted_by((a, b) -> a > b))
+    print(xs.min())
+    print(xs.max())
+    print(xs.contains(8))
+    print(xs.index_of(8))
+    print(xs.index_of(9))
+    print(xs.any(x -> x > 7))
+    print(xs.all(x -> x > 1))
+    print(xs.count(x -> x % 2 == 1))
+    print(xs.find(x -> x > 4))
+    print(xs.position(x -> x == 1))
+    print(xs.first())
+    print(xs.last())
+    print(xs.reversed())
+    print(xs.take(2))
+    print(xs.skip(3))
+    print(xs.slice(1, 3))
+    print(xs.enumerate())
+    print(xs.zip(["a", "b"]))
+    print(xs.join(", "))
+    print(["x", "y", "z"].join("-"))
+    print(xs.map(x -> "<{x}>").join(""))
+    empty: [int] = []
+    print(empty.is_empty())
+    print(empty.first())
+    print(empty.min())
+    print(empty.sum())
+
+    var total := 0
+    xs.each(x -> total += x)
+    print(total)
+
+    var ys := xs
+    ys.sort()
+    ys.reverse()
+    ys.insert(1, 100)
+    print(ys.remove(0))
+    ys.extend([7, 7])
+    print(ys)
+    print(xs)
+
+    people := [
+        Person { name: "ann", age: 41 },
+        Person { name: "bob", age: 29 },
+        Person { name: "cy", age: 35 },
+    ]
+    print(people.sorted().map(p -> p.name))
+    print(people.sorted_by((a, b) -> a.name > b.name).map(p -> p.age))
+    print(people.max())
+    print(people.filter(p -> p.age > 30).map(p -> p.name).join(" and "))
+    words := ["pear", "fig", "apple", "kiwi", "plum"]
+    print(words.sorted())
+    print(words.sorted_by((a, b) -> a.len < b.len))
+    var many: [int] = []
+    for i in 0..1000 { many.push((i * 7919) % 1000) }
+    sorted := many.sorted()
+    print(sorted.take(5))
+    print(sorted[999])
+
+    // Optionals.
+    some: int? = 4
+    nothing: int? = none
+    print(some.is_some())
+    print(nothing.is_none())
+    print(some.map(n -> n * 10))
+    print(nothing.map(n -> n * 10))
+
+    // Strings.
+    s := "  Hello, World!  "
+    print(s.trim())
+    print(s.trim().to_upper())
+    print(s.trim().to_lower())
+    print(s.contains("World"))
+    print(s.find("World"))
+    print(s.find("Mars"))
+    t := s.trim()
+    print(t.starts_with("Hello"))
+    print(t.ends_with("?"))
+    print(t.slice(7, 12))
+    print(t.replace("l", "L"))
+    print(t.split(", "))
+    print("a,b,,c".split(","))
+    print(t.strip_prefix("Hello, "))
+    print(t.strip_suffix("nope"))
+    print("key: value: more".cut(": "))
+    print("no separator".cut("="))
+    print("one\ntwo\r\nthree\n".lines())
+    print("ab".repeat(3))
+    print("héllo".len)
+    print("héllo".count())
+    print("hi".bytes())
+    print(string.from_bytes([104, 105]) else "bad")
+    print(string.from_bytes([255, 254]) else e => "bad: {e.input}")
+    print("".is_empty())
+    (key, value) := "port=8080".cut("=") else ("", "")
+    print("{key} -> {int.parse(value) else 0}")
+
+    print(2.pow(10))
+    print(15.clamp(0, 10))
+    print(2.5.clamp(0.0, 1.0))
+}
+//= [10, 6, 16, 2]
+//= [5, 3, 8]
+//= 17
+//= 17
+//= 4.0
+//= [1, 3, 5, 8]
+//= [8, 5, 3, 1]
+//= 1
+//= 8
+//= true
+//= 2
+//= none
+//= true
+//= false
+//= 3
+//= 5
+//= 3
+//= 5
+//= 1
+//= [1, 8, 3, 5]
+//= [5, 3]
+//= [1]
+//= [3, 8]
+//= [(0, 5), (1, 3), (2, 8), (3, 1)]
+//= [(5, "a"), (3, "b")]
+//= 5, 3, 8, 1
+//= x-y-z
+//= <5><3><8><1>
+//= true
+//= none
+//= none
+//= 0
+//= 17
+//= 8
+//= [100, 5, 3, 1, 7, 7]
+//= [5, 3, 8, 1]
+//= ["bob", "cy", "ann"]
+//= [35, 29, 41]
+//= Person { name: "ann", age: 41 }
+//= ann and cy
+//= ["apple", "fig", "kiwi", "pear", "plum"]
+//= ["fig", "pear", "kiwi", "plum", "apple"]
+//= [0, 1, 2, 3, 4]
+//= 999
+//= true
+//= true
+//= 40
+//= none
+//= Hello, World!
+//= HELLO, WORLD!
+//= hello, world!
+//= true
+//= 9
+//= none
+//= true
+//= false
+//= World
+//= HeLLo, WorLd!
+//= ["Hello", "World!"]
+//= ["a", "b", "", "c"]
+//= World!
+//= none
+//= ("key", "value: more")
+//= none
+//= ["one", "two", "three"]
+//= ababab
+//= 6
+//= 5
+//= [104, 105]
+//= hi
+//= bad: bytes that are not UTF-8
+//= true
+//= port -> 8080
+//= 1024
+//= 10
+//= 1.0

@@ -1,0 +1,64 @@
+type Point = { x: float, y: float }
+type Order = { id: int, note: string = "", tags: [string] = [], total: float }
+
+fn Point.new(x: float, y: float) -> Point {
+    return Point { x, y }
+}
+
+fn (self: Point) length() -> float {
+    return (self.x * self.x + self.y * self.y).sqrt()
+}
+
+fn (self: var Point) scale(by: float) {
+    self.x *= by
+    self.y *= by
+}
+
+fn (self: take Order) with_note(note: string) -> Order {
+    var copy := self
+    copy.note = note
+    return copy
+}
+
+fn describe(order: Order) -> string {
+    return "order {order.id}: {order.note} ({order.tags.len} tags, {order.total:.2})"
+}
+
+fn bump(order: var Order) {
+    order.id += 1
+    order.tags.push("bumped")
+}
+
+fn main() {
+    var p := Point.new(3.0, 4.0)
+    print(p.length())
+    p.scale(2.0)
+    print(p)
+    q := p
+    p.x = 0.0
+    print(q.x)
+    print(p.x)
+
+    var order := Order { id: 1, total: 19.99 }
+    print(describe(order))
+    order.note = "first"
+    order.tags.push("new")
+    copy := order
+    bump(var order)
+    print(describe(order))
+    print(describe(copy))
+    print(order)
+    noted := copy.with_note("gift")
+    print(noted.note)
+    print(copy.note)
+}
+//= 5.0
+//= Point { x: 6.0, y: 8.0 }
+//= 6.0
+//= 0.0
+//= order 1:  (0 tags, 19.99)
+//= order 2: first (2 tags, 19.99)
+//= order 1: first (1 tags, 19.99)
+//= Order { id: 2, note: "first", tags: ["new", "bumped"], total: 19.99 }
+//= gift
+//= first

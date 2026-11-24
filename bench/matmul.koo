@@ -1,0 +1,37 @@
+fn matrix(n: int, seed: float) -> [[float]] {
+    var m: [[float]] = []
+    for i in 0..n {
+        var row: [float] = []
+        for j in 0..n {
+            row.push(seed * float.from(i - j) * float.from(i + j) / float.from(n))
+        }
+        m.push(row)
+    }
+    return m
+}
+
+fn multiply(a: [[float]], b: [[float]], n: int) -> [[float]] {
+    var c: [[float]] = []
+    for i in 0..n {
+        var row := List<float>.with_size(n)
+        for k in 0..n {
+            aik := a[i][k]
+            for j in 0..n {
+                row[j] += aik * b[k][j]
+            }
+        }
+        c.push(row)
+    }
+    return c
+}
+
+fn main() {
+    n := 600
+    a := matrix(n, 1.0)
+    b := matrix(n, 2.0)
+    c := multiply(a, b, n)
+    var trace := 0.0
+    for i in 0..n { trace += c[i][i] }
+    print("{trace:.3}")
+    print("{c[n / 2][n / 3]:.3}")
+}

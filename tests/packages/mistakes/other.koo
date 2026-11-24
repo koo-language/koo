@@ -1,0 +1,10 @@
+// This file uses `io` without importing it: the import in main.koo is main.koo's.
+
+fn helper() -> int {
+    io.write("x")
+    return 1
+}
+
+fn total(xs: [int]) -> int {
+    return "many"
+}

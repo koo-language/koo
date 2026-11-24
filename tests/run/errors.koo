@@ -1,0 +1,117 @@
+error NotFound { id: int }
+error Invalid { field: string, reason: string }
+error Conflict
+error LookupError = NotFound | Conflict
+
+type User = { id: int, name: string }
+
+fn find(users: [User], id: int) -> User ! NotFound {
+    for user in users {
+        if user.id == id { return user }
+    }
+    fail NotFound { id }
+}
+
+fn find_name(users: [User], id: int) -> string ! NotFound {
+    user := find(users, id)?
+    return user.name
+}
+
+fn validate(name: string) ! Invalid {
+    if name.len == 0 { fail Invalid { field: "name", reason: "empty" } }
+}
+
+fn register(users: var [User], name: string) -> int ! Invalid | Conflict {
+    validate(name)?
+    for user in users {
+        if user.name == name { fail Conflict }
+    }
+    id := users.len + 1
+    users.push(User { id, name })
+    return id
+}
+
+fn lookup(users: [User], id: int) -> string ! LookupError {
+    if id < 0 { fail Conflict }
+    return find_name(users, id)?
+}
+
+fn parse_sum(a: string, b: string) -> int ! ParseError {
+    return int.parse(a)? + int.parse(b)?
+}
+
+fn describe(users: [User], id: int) -> string {
+    match find(users, id) {
+        user => { return "found {user.name}" }
+        ! NotFound { id } => { return "no user {id}" }
+    }
+}
+
+fn main() ! Invalid | Conflict {
+    var users: [User] = []
+    print(register(var users, "ann")?)
+    print(register(var users, "bob")?)
+
+    print(find_name(users, 2) else "nobody")
+    print(find_name(users, 7) else "nobody")
+    print(find_name(users, 7) else e => "missing {e.id}")
+    print(describe(users, 1))
+    print(describe(users, 9))
+
+    match register(var users, "") {
+        id => print("registered {id}")
+        ! Invalid { field, reason } => print("invalid {field}: {reason}")
+        ! Conflict => print("conflict")
+    }
+    match register(var users, "ann") {
+        id => print("registered {id}")
+        ! e: Invalid => print("invalid {e.field}")
+        ! e => print("failed: {e}")
+    }
+    match lookup(users, -1) {
+        name => print(name)
+        ! NotFound => print("not found")
+        ! Conflict => print("conflict")
+    }
+
+    print(parse_sum("40", "2") else -1)
+    print(parse_sum("40", "x") else -1)
+    n := int.parse("12x") else e => e.input.len
+    print(n)
+    print(int.parse("-17") else 0)
+    print(float.parse("2.5") else 0.0)
+
+    result := find_name(users, 5)
+    name := result else e => "none for {e.id}"
+    print(name)
+    print(2.6.round() else 0)
+    print(1.0e30.floor() else -1)
+    print(byte.from(300) else 0)
+
+    count := register(var users, "cy")?
+    print(count)
+    register(var users, "cy")?
+    print("unreachable")
+}
+//= 1
+//= 2
+//= bob
+//= nobody
+//= missing 7
+//= found ann
+//= no user 9
+//= invalid name: empty
+//= failed: Conflict
+//= conflict
+//= 42
+//= -1
+//= 3
+//= -17
+//= 2.5
+//= none for 5
+//= 3
+//= -1
+//= 0
+//= 3
+//! exit 1
+//! stderr error: Conflict

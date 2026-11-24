@@ -1,0 +1,46 @@
+// Counts the words of a file or of standard input, and prints the most frequent.
+//
+//     koo run examples/wordcount.koo -- README.md
+//     koo run examples/wordcount.koo < README.md
+
+import std/io
+import std/os
+
+type Count = { word: string, n: int }
+
+fn words(text: string) -> [string] {
+    var out: [string] = []
+    for line in text.lines() {
+        for word in line.to_lower().split(" ") {
+            cleaned := word.trim()
+            if not cleaned.is_empty() { out.push(cleaned) }
+        }
+    }
+    return out
+}
+
+fn most_frequent(words: [string], limit: int) -> [Count] {
+    var counts: [string: int] = [:]
+    for word in words { counts.update(word, 0, n -> n + 1) }
+    return counts.entries()
+        .map(entry -> {
+            (word, n) := entry
+            return Count { word, n }
+        })
+        .sorted_by((a, b) -> a.n > b.n or (a.n == b.n and a.word < b.word))
+        .take(limit)
+}
+
+fn input() -> string ! IoError {
+    args := os.args()
+    if args.len > 0 { return io.read_file(args[0])? }
+    return io.read_lines().join("\n")
+}
+
+fn main() ! IoError {
+    all := words(input()?)
+    print("{all.len} words")
+    for count in most_frequent(all, 5) {
+        print("{count.n:5}  {count.word}")
+    }
+}

@@ -1,0 +1,7 @@
+fn main() {
+    xs := [1, 2, 3]
+    i := 3
+    print(xs[i])
+}
+//! exit 101
+//! stderr panic: index out of range

@@ -1,0 +1,365 @@
+(* The grammar of Koo. Specification version 0.5.
+
+   This file is normative (Section 3 of SPEC.md). The parser in compiler/koo-syntax
+   implements it rule for rule, and its tests parse every code block of SPEC.md.
+
+   Notation
+     =        definition                 |        alternative
+     [ x ]    zero or one x              { x }    zero or more x
+     ( x )    grouping                   "x"      the token x
+     x - y    an x that is not a y       (* *)    comment
+     NL       a line break that ends a statement (Part 2)
+     UPPER    a token defined in Part 1  lower    a rule of Parts 3 to 7
+
+   A comma-separated list written
+       item { "," item } [ "," ]
+   may always end with a comma. *)
+
+
+(* ===== Part 1. Lexical grammar ======================================================= *)
+
+(* Source is UTF-8. Outside comments and string, character and raw string literals, only
+   ASCII is allowed. White space is space, tab, carriage return and line feed. *)
+
+letter      = "A"…"Z" | "a"…"z" ;
+digit       = "0"…"9" ;
+word        = ( letter | "_" ) { letter | digit | "_" } ;
+
+(* The 32 reserved words. *)
+keyword     = "actor" | "and" | "as" | "break" | "continue" | "defer" | "distinct" | "else"
+            | "enum" | "error" | "fail" | "fn" | "for" | "if" | "import" | "in" | "interface"
+            | "is" | "match" | "not" | "or" | "pub" | "resource" | "return" | "scope"
+            | "select" | "spawn" | "take" | "type" | "unsafe" | "var" | "while" ;
+literal_word = "true" | "false" | "none" ;
+
+(* A word is classified by its first character. Case is enforced at declarations: a LOWER
+   name contains no uppercase letter, and an UPPER name contains no underscore. *)
+UPPER       = word that begins with "A"…"Z" ;
+LOWER       = ( word that begins with "a"…"z" or "_" ) - keyword - literal_word - "_" ;
+MEMBER      = word ;        (* any word at all, reserved or not: see `member` in Part 3 *)
+
+(* The primitive type names are predeclared LOWER names. They cannot be the name of a
+   binding, a parameter, a constant, a label or an import; they may be a MEMBER. *)
+primitive   = "int" | "float" | "bool" | "string" | "char" | "byte"
+            | "i8" | "i16" | "i32" | "i64" | "u8" | "u16" | "u32" | "u64" | "f32" | "f64" ;
+
+(* Five words are reserved only in one position each: "c" and "link" in an import, "after"
+   at the start of a select arm, and "all" and "race" as the bare callee of a call. *)
+
+(* Comments. There are no block comments. A doc comment belongs to the declaration, field,
+   variant or member that begins on the line after the last line of the comment. *)
+comment     = "//" { any character except line feed } ;
+doc_comment = "///" { any character except line feed } ;      (* and not "////" *)
+
+(* Numbers. An underscore may separate two digits. *)
+dec_digits  = digit { [ "_" ] digit } ;
+INT         = dec_digits
+            | "0x" hex_digit { [ "_" ] hex_digit }
+            | "0b" bin_digit { [ "_" ] bin_digit } ;
+hex_digit   = digit | "a"…"f" | "A"…"F" ;
+bin_digit   = "0" | "1" ;
+FLOAT       = dec_digits "." dec_digits [ exponent ]
+            | dec_digits exponent ;
+exponent    = ( "e" | "E" ) [ "+" | "-" ] dec_digits ;
+DECIMAL     = dec_digits [ "." dec_digits ] "d" ;
+DURATION    = dec_digits unit { dec_digits unit } ;       (* units from largest to smallest,
+                                                             each at most once: 1h30min *)
+unit        = "h" | "min" | "s" | "ms" | "us" | "ns" ;
+
+(* A number is followed by no word character other than the suffixes above. "5.abs" is the
+   integer 5, ".", and a member; "0..8" is a range. *)
+
+(* Characters and strings. *)
+escape      = "\n" | "\r" | "\t" | "\0" | "\\" | "\"" | "\'" | "\{"
+            | "\u{" hex_digit { hex_digit } "}" ;
+CHAR        = "'" ( escape | any character except "'" "\" and line feed ) "'" ;
+
+STRING      = '"' { str_item } '"' ;                      (* on one line *)
+str_item    = escape | interpolation | any character except '"' "\" "{" and line feed ;
+interpolation = "{" expr [ ":" format ] "}" ;             (* on one line; no comment inside *)
+format      = { any character except "}" and line feed } ;
+
+(* Inside an interpolation the expression is tokenized as usual, so it may contain string
+   literals and brackets. The first ":" outside every bracket of the expression begins the
+   format. A "}" outside an interpolation is an ordinary character. *)
+
+(* A text block. Nothing but white space follows the opening delimiter on its line, and
+   nothing but white space precedes the closing delimiter on its line. The white space
+   before the closing delimiter is removed from the start of every line; a line that is
+   not blank must begin with it. The value is the lines between the delimiters, joined by
+   line feeds, with no line feed at the end. Escapes and interpolations are as in STRING,
+   and '"' is an ordinary character. *)
+TEXT_BLOCK  = '"""' line_end { text_line line_end } { white_space } '"""' ;
+
+RAW_STRING  = "`" { any character except "`" } "`" ;       (* may span lines *)
+
+(* An import path is one token. It ends at white space. *)
+IMPORT_PATH = "std" "/" segment { "/" segment }                       (* standard library *)
+            | ( "./" | "../" { "../" } ) segment { "/" segment }      (* local package    *)
+            | host "/" segment "/" segment { "/" segment } ;          (* registry package *)
+segment     = ( letter | digit | "_" | "-" ) { letter | digit | "_" | "-" } ;
+host        = segment "." segment { "." segment } ;
+
+(* Punctuation. The longest match wins: "..." before "..=" before ".." before ".". *)
+punctuation = "(" | ")" | "[" | "]" | "{" | "}" | "," | ":" | ";" | "." | ".." | "..=" | "..."
+            | ":=" | "=" | "+=" | "-=" | "*=" | "/=" | "->" | "=>"
+            | "+" | "-" | "*" | "/" | "%" | "==" | "!=" | "<" | "<=" | ">" | ">=" | "?" | "!"
+            | "|" | "@" ;
+
+(* ";" appears only in a fixed array type. "&&", "||", "++", "--", "<<", "&", "^" and "~"
+   are not tokens. Two ">" that close nested type arguments are two tokens. *)
+
+
+(* ===== Part 2. Lines and braces ====================================================== *)
+
+(* Braces are of two kinds, and which kind a "{" is follows from the rule it appears in:
+
+     block braces     block, match, select, enum_body, interface_body, actor_body
+     literal braces   struct_type, struct_literal, the field list of a pattern
+
+   A line break is NL when
+     (a) the innermost open bracket is a block brace, or no bracket is open, and
+     (b) the next token is not one of
+           "."  "else"  "|"  "*"  "/"  "%"  "+"  ".."  "..="
+           "=="  "!="  "<"  "<="  ">"  ">="  "is"  "and"  "or"
+   Every other line break is white space. "(" , "[" and literal braces are the brackets
+   inside which condition (a) fails; "<" and ">" are not brackets. Nothing at the end of a
+   line makes the next line continue it, and a line that begins with "-" starts a new
+   statement.
+
+   Several line breaks in a row are one NL. In block braces an NL directly after the
+   opening brace or directly before the closing brace is ignored, so a block may be
+   written on one line: { f() }. So is an NL directly after an attribute, and after a ","
+   in an enum body. *)
+
+
+(* ===== Part 3. Files and declarations ================================================ *)
+
+file        = { import NL } { declaration NL } ;       (* the last NL may be the end of the file *)
+
+import      = "import" IMPORT_PATH [ major ] [ "as" LOWER ]
+            | "import" "c" plain_string [ "as" LOWER ] [ "link" plain_string ] ;
+major       = "v" digit { digit } ;                 (* required for a registry package only *)
+plain_string = STRING without interpolation | RAW_STRING ;
+
+(* An import binds the last segment of its path. "as" is required when that segment is not
+   a LOWER name. A C import binds "c" unless renamed. *)
+
+declaration = { attribute } [ "pub" ]
+              ( type_decl | resource_decl | enum_decl | error_decl | interface_decl
+              | actor_decl | fn_decl | const_decl ) ;
+
+attribute   = "@" LOWER [ "(" [ attr_arg { "," attr_arg } [ "," ] ] ")" ] ;
+attr_arg    = [ MEMBER ":" ] attr_value ;
+attr_value  = INT | FLOAT | DECIMAL | DURATION | CHAR | plain_string | "true" | "false"
+            | MEMBER { "." MEMBER } [ "(" [ attr_arg { "," attr_arg } [ "," ] ] ")" ] ;
+
+type_decl     = "type" UPPER [ type_params ] [ satisfies ] "="
+                ( struct_type | "distinct" type | type ) ;
+resource_decl = "resource" UPPER [ type_params ] [ satisfies ] "=" struct_type ;
+satisfies     = ":" named_type { "+" named_type } ;
+
+type_params = "<" type_param { "," type_param } [ "," ] ">" ;
+type_param  = UPPER [ ":" ( "resource" | named_type { "+" named_type } ) ] ;
+
+struct_type = "{" [ field { "," field } [ "," ] ] "}" ;
+field       = MEMBER ":" field_type { attribute } [ "=" expr ] ;      (* MEMBER is snake_case *)
+
+enum_decl   = "enum" UPPER [ type_params ] [ satisfies ] enum_body ;
+enum_body   = "{" { variant ( NL | "," ) } [ variant ] "}" ;
+variant     = UPPER [ struct_type ] ;
+
+error_decl  = "error" UPPER [ struct_type ]
+            | "error" UPPER "=" error_set ;
+
+interface_decl = [ "resource" ] "interface" UPPER [ type_params ] interface_body ;
+interface_body = "{" { fn_sig NL } "}" ;
+
+actor_decl  = "actor" UPPER [ type_params ] [ satisfies ] actor_body ;
+actor_body  = "{" { ( actor_field | [ "pub" ] fn_decl ) NL } "}" ;
+actor_field = [ "var" ] LOWER ":" type [ "=" expr ] ;
+
+fn_decl     = fn_sig block ;
+fn_sig      = "fn" [ receiver | local_type "." ] MEMBER [ type_params ] params
+              [ "->" type_no_result ] [ "!" [ error_set ] ] ;
+local_type  = primitive | UPPER [ type_args ] { "." UPPER } ;
+receiver    = "(" "self" ":" [ "var" | "take" ] [ type ] ")" ;
+params      = "(" [ param { "," param } [ "," ] ] ")" ;
+param       = LOWER ":" ( "..." type | [ "var" | "take" ] type ) [ "=" expr ] ;
+
+(* In fn_sig: MEMBER is snake_case. A receiver has a type everywhere except in an
+   interface, where it has none. "local_type ." makes a type-level function; in an
+   interface the type is "Self". A function in an actor has neither. A variadic parameter
+   is the last one. "!" with no error set asks for the set to be inferred. *)
+
+const_decl  = LOWER ":=" expr
+            | LOWER ":" type "=" expr ;
+
+
+(* ===== Part 4. Types ================================================================= *)
+
+type           = type_no_result [ "!" error_set ] ;
+error_set      = named_type { "|" named_type } ;
+field_type     = type ;         (* in which struct_type is also a type_atom *)
+
+type_no_result = type_atom { "?" } ;
+type_atom      = named_type
+               | "[" type "]"                                  (* list         *)
+               | "[" type ":" type "]"                         (* map          *)
+               | "[" type ";" expr "]"                         (* fixed array  *)
+               | "(" [ type { "," type } [ "," ] ] ")"         (* tuple; one type: grouping *)
+               | fn_type ;
+fn_type        = [ "resource" ] "fn" "(" [ fn_type_param { "," fn_type_param } [ "," ] ] ")"
+                 [ "->" type_no_result ] [ "!" error_set ] ;
+fn_type_param  = [ "var" | "take" ] type ;
+
+named_type     = primitive
+               | [ LOWER "." ] type_name [ type_args ] { "." UPPER } ;
+type_name      = UPPER
+               | LOWER ;        (* only after the prefix of a C import, Section 11.1 *)
+type_args      = "<" type { "," type } [ "," ] ">" ;
+
+(* In a function type, "!" after the return type belongs to the function type:
+   "fn() -> T ! E" is a function that may fail with E. A result whose success type is a
+   function is written "(fn() -> T) ! E". *)
+
+
+(* ===== Part 5. Statements ============================================================ *)
+
+block       = "{" { statement NL } "}" ;
+
+statement   = binding
+            | assignment
+            | if_expr                 (* the whole statement: nothing follows its last "}" *)
+            | match_expr              (* likewise *)
+            | expr                    (* a call, or an expr that ends in "?" or in an
+                                         "else" alternative *)
+            | jump
+            | [ LOWER ":" ] "while" condition block
+            | [ LOWER ":" ] "for" bind_pattern "in" [ "take" ] expr_no_struct block
+            | "scope" block
+            | "spawn" block
+            | "defer" block
+            | "unsafe" block
+            | select ;
+
+binding      = [ "var" ] bind_pattern ":=" expr
+             | [ "var" ] LOWER ":" type "=" expr ;
+bind_pattern = LOWER | "_" | "(" bind_pattern "," bind_pattern { "," bind_pattern } [ "," ] ")" ;
+
+assignment  = place ( "=" | "+=" | "-=" | "*=" | "/=" ) expr ;
+place       = LOWER { "." MEMBER | "[" expr "]" } ;
+
+jump        = "return" [ expr ]
+            | "fail" expr
+            | "break" [ LOWER ]
+            | "continue" [ LOWER ] ;
+
+(* A "break" or "continue" is inside a loop of the same function or lambda body. That is
+   checked after parsing, with the other rules about where a jump may appear. *)
+
+condition   = expr_no_struct
+            | bind_pattern ":=" expr_no_struct ;
+
+select      = "select" "{" { select_arm NL } "}" ;
+select_arm  = ( "after" expr_to_arrow | bind_pattern ":=" expr_to_arrow | expr_to_arrow ) "=>" body ;
+
+(* The body of a lambda, a match arm or a select arm, and the alternative of an "else". *)
+body        = block | jump | assignment | expr ;
+alternative = block | jump | expr ;
+
+
+(* ===== Part 6. Expressions =========================================================== *)
+
+(* Lowest precedence first. Levels 5 and 6 do not associate; level 10 associates to the
+   right; the others associate to the left. *)
+
+expr        = or_expr [ "else" [ LOWER "=>" ] alternative ] ;                   (* 10 *)
+or_expr     = and_expr { "or" and_expr } ;                                      (*  9 *)
+and_expr    = not_expr { "and" not_expr } ;                                     (*  8 *)
+not_expr    = "not" not_expr | comparison ;                                     (*  7 *)
+comparison  = range [ ( "==" | "!=" | "<" | "<=" | ">" | ">=" ) range           (*  6 *)
+                    | "is" named_type ] ;
+range       = additive [ ( ".." | "..=" ) additive ] ;                          (*  5 *)
+additive    = multiplicative { ( "+" | "-" ) multiplicative } ;                 (*  4 *)
+multiplicative = unary { ( "*" | "/" | "%" ) unary } ;                          (*  3 *)
+unary       = "-" unary | postfix ;                                             (*  2 *)
+postfix     = primary { "." MEMBER [ type_args ]                                (*  1 *)
+                      | args
+                      | "[" expr "]"
+                      | "?"
+                      | struct_literal } ;
+
+args        = "(" [ arg { "," arg } [ "," ] ] ")" ;
+arg         = [ LOWER ":" ] [ "var" ] expr ;         (* after a named arg, all are named *)
+
+struct_literal = "{" [ field_init { "," field_init } [ "," ] ] "}" ;
+field_init  = MEMBER ":" expr | LOWER ;
+
+primary     = INT | FLOAT | DECIMAL | DURATION | CHAR | STRING | TEXT_BLOCK | RAW_STRING
+            | "true" | "false" | "none"
+            | LOWER
+            | UPPER [ type_args ]
+            | "(" expr ")"
+            | "(" [ expr "," expr { "," expr } [ "," ] ] ")"                    (* tuple *)
+            | "[" [ expr { "," expr } [ "," ] ] "]"                             (* list  *)
+            | "[" ":" "]" | "[" map_entry { "," map_entry } [ "," ] "]"         (* map   *)
+            | lambda
+            | if_expr
+            | match_expr ;
+map_entry   = expr ":" expr ;
+
+lambda       = ( LOWER | "_" ) "->" body
+             | "(" [ lambda_param { "," lambda_param } [ "," ] ] ")" "->" body ;
+lambda_param = ( LOWER | "_" ) [ ":" [ "var" | "take" ] type ] ;
+
+if_expr     = "if" condition block [ "else" ( if_expr | block ) ] ;
+
+match_expr  = "match" expr_no_struct "{" { match_arm NL } "}" ;
+match_arm   = [ "!" ] pattern { "|" pattern } [ "if" expr_to_arrow ] "=>" body ;
+
+(* Rules that the productions above do not express.
+
+   Type paths. A type path is a chain of names joined by "." whose last name is UPPER,
+   with any type arguments: Order, Payment.Card, http.Response, Cache<string, int>. A name
+   after the prefix of a C import is never part of one.
+     - type_args are written only after a type path, and after a type path "<" always
+       begins them. They are followed by "." or by a struct_literal.
+     - struct_literal follows only a type path.
+
+   expr_no_struct is expr in which struct_literal is not recognized outside "(" ")",
+   "[" "]" and "{" "}". There a "{" after a type path opens the block of the statement.
+
+   expr_to_arrow is expr in which "else" is not followed by [ LOWER "=>" ] outside
+   "(" ")", "[" "]" and "{" "}". The "=>" after it belongs to the arm, so in
+   "A if cached(k) else fallback => f()" the alternative is "fallback".
+
+   Lambdas. "(" begins a lambda when the matching ")" is followed by "->" with no NL
+   between them. In the same way "(" begins a tuple binding when the matching ")" is
+   followed by ":=".
+
+   Blocks used for a value. An if_expr or match_expr that begins a statement is that
+   statement. Anywhere else it is used for its value, and each block of an if_expr is
+   then one expr of any form, or statements that leave the block.
+
+   Postfix operators other than "." are on the line of their operand, by the NL rule:
+   "(" , "[" and "?" do not continue a line.
+
+   Depth. A syntax tree is at most 512 levels deep, where a level is one bracket, one
+   block, or one operand added to a chain: "((x))" is two levels deep, and so is
+   "a + b + c". A deeper program is rejected. String literals nest inside interpolations
+   at most 8 deep. *)
+
+
+(* ===== Part 7. Patterns ============================================================== *)
+
+pattern     = "_"
+            | "none"
+            | literal_pattern [ ( ".." | "..=" ) literal_pattern ]
+            | LOWER [ ":" type_no_result ]                              (* binding *)
+            | [ LOWER "." ] UPPER { "." UPPER } [ field_patterns ]      (* type or variant *)
+            | "(" [ pattern { "," pattern } [ "," ] ] ")" ;             (* tuple; one: grouping *)
+literal_pattern = [ "-" ] ( INT | FLOAT | DECIMAL | DURATION )
+                | CHAR | plain_string | "true" | "false" ;
+field_patterns  = "{" [ ".." | field_pattern { "," field_pattern } [ "," [ ".." ] ] ] "}" ;
+field_pattern   = MEMBER ":" pattern | LOWER ;

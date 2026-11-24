@@ -1,0 +1,39 @@
+// Programs the fourth independent review found to be wrongly accepted, or to hang the
+// compiler.
+
+type P = { name: string, n: int }
+type Q = { n: int }
+type R = { n: int }
+
+// `<` calls `compare` and a map calls `hash` where nothing says `var`: they only read.
+fn (self: var P) compare(other: var P) -> int {
+    self.n += 100
+    return 0
+}
+
+fn (self: var Q) hash() -> int {
+    self.n += 1
+    return self.n
+}
+
+fn (self: R) compare(other: take R) -> int { return 0 }
+
+// A generic function, and a generic type, that ask for themselves with a type twice the
+// size each time: the limit on size stops them long before the limit on depth would.
+fn wider<T>(x: T, n: int) -> int {
+    if n == 0 { return 0 }
+    return wider((x, x, x), n - 1) + 1
+}
+
+type Grow<T> = { next: [Grow<(T, T)>], v: T }
+
+fn main() {
+    print(wider(1, 3))
+    g := Grow<int> { next: [], v: 1 }
+    print(g.v)
+}
+//! error a method named `compare` only reads: it takes neither `var` nor `take`
+//! error a method named `hash` only reads: it takes neither `var` nor `take`
+//! error a method named `compare` only reads: it takes neither `var` nor `take`
+//! error `wider` is needed for a type nested more than 24 deep, or of more than 512 parts
+//! error `Grow` is needed for a type nested more than 24 deep, or of more than 512 parts

@@ -1,0 +1,11 @@
+[package]
+name = "koo-rt"
+description = "The support library linked into every Koo program"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+# The `koo` command does not link this crate. Its build script compiles `src/lib.rs` into a
+# static library and embeds it, so that `koo build` can link it into the programs it makes.
+# The crate is a workspace member so that the same file is checked, linted and tested.

@@ -1,0 +1,123 @@
+// Programs that an early version of the compiler got wrong.
+type P = { name: string, n: int }
+type Stack = { data: [int] }
+
+enum Shape {
+    Circle { r: float }
+    Dot
+}
+
+fn (self: Stack) to_string() -> string { return "a stack of {self.data.len}" }
+
+fn (self: Shape) to_string() -> string {
+    return match self {
+        Circle { r } => "circle {r}"
+        Dot => "dot"
+    }
+}
+
+fn inc(n: var int) -> bool {
+    n += 1
+    return false
+}
+
+fn grow(xs: var [string]) -> bool {
+    for i in 0..100 { xs.push("s{i}") }
+    xs[0] = "changed"
+    return false
+}
+
+fn opt(i: int) -> int? {
+    if i > 0 { return i }
+    return none
+}
+
+// An early exit while an element of a list literal is half built frees what was built.
+fn build(s: string, i: int) -> [P]? {
+    return [P { name: s + "x", n: opt(i)? }]
+}
+
+fn build_all(names: [string]) -> [[P]] {
+    var out: [[P]] = []
+    for name in names {
+        out.push([P { name: name + "!", n: opt(name.len - 1) else { continue } }])
+    }
+    return out
+}
+
+// The `break` belongs to the inner loop, so the outer one ends only by returning.
+fn spin(x: int) -> int {
+    while true {
+        for i in 0..3 {
+            if i == x { break }
+        }
+        return 1
+    }
+}
+
+fn choose(c: bool) -> int {
+    y := (if c { return 1 } else { return 2 }) else 5
+    return y
+}
+
+fn scale(n: int) -> int {
+    return n * (if n > 100 { panic("too big") } else { 2 })
+}
+
+fn main() {
+    // A guard that changes the scrutinee does not change what the later arms see.
+    var x := 1
+    print(match x {
+        1 if inc(var x) => "one"
+        2 => "two"
+        _ => "other"
+    })
+    print(x)
+    var xs := ["a" + "b", "c"]
+    match xs[0] {
+        s if grow(var xs) => print("guard {s}")
+        "changed" => print("saw changed")
+        s => print("got {s}")
+    }
+    print(xs[0])
+
+    print(build("a", 1))
+    print(build("a", 0))
+    print(build_all(["ab", "c", "def"]))
+    print(spin(0))
+    print(choose(true))
+    print(scale(4))
+
+    // A hand-written to_string replaces the generated text form, wherever it is used.
+    stack := Stack { data: [1, 2] }
+    print(stack)
+    print("{stack} and {[stack]}")
+    shapes: [Shape] = [Circle { r: 1.5 }, Dot]
+    print(shapes)
+
+    // min and max use the total order, in which NaN is last.
+    nan := 0.0 / 0.0
+    print(1.0.max(nan))
+    print(1.0.min(nan))
+    print(nan.min(2.0))
+    print(nan == nan)
+    print(0.0.max(-0.0))
+}
+//= other
+//= 2
+//= got ab
+//= changed
+//= [P { name: "ax", n: 1 }]
+//= none
+//= [[P { name: "ab!", n: 1 }], [P { name: "def!", n: 2 }]]
+//= 1
+//= 1
+//= 8
+//= a stack of 2
+//= a stack of 2 and [a stack of 2]
+//= [circle 1.5, dot]
+//= NaN
+//= 1.0
+//= 2.0
+//= false
+//= 0.0

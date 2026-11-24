@@ -1,0 +1,80 @@
+// A small inventory: structs, enums, errors and pattern matching.
+//
+//     koo run examples/inventory.koo
+
+type Item = { sku: string, name: string, qty: int, price: float }
+
+enum Change {
+    Receive { sku: string, qty: int }
+    Sell { sku: string, qty: int }
+    Reprice { sku: string, price: float }
+    Audit
+}
+
+error UnknownSku { sku: string }
+error OutOfStock { sku: string, wanted: int, have: int }
+error BadPrice
+
+fn find(items: [Item], sku: string) -> int ! UnknownSku {
+    for i in 0..items.len {
+        if items[i].sku == sku { return i }
+    }
+    fail UnknownSku { sku }
+}
+
+fn apply(items: var [Item], change: Change) -> string ! UnknownSku | OutOfStock | BadPrice {
+    match change {
+        Receive { sku, qty } => {
+            i := find(items, sku)?
+            items[i].qty += qty
+            return "received {qty} of {sku}"
+        }
+        Sell { sku, qty } => {
+            i := find(items, sku)?
+            have := items[i].qty
+            if have < qty { fail OutOfStock { sku, wanted: qty, have } }
+            items[i].qty -= qty
+            return "sold {qty} of {sku} for {float.from(qty) * items[i].price:.2}"
+        }
+        Reprice { sku, price } => {
+            if price <= 0.0 { fail BadPrice }
+            i := find(items, sku)?
+            items[i].price = price
+            return "{sku} now costs {price:.2}"
+        }
+        Audit => {
+            var value := 0.0
+            for item in items { value += float.from(item.qty) * item.price }
+            return "{items.len} items worth {value:.2}"
+        }
+    }
+}
+
+fn main() {
+    var items := [
+        Item { sku: "pen", name: "Ballpoint pen", qty: 120, price: 1.25 },
+        Item { sku: "ink", name: "Ink bottle", qty: 8, price: 6.50 },
+    ]
+    before := items
+
+    changes := [
+        Change.Receive { sku: "ink", qty: 12 },
+        Change.Sell { sku: "pen", qty: 30 },
+        Change.Sell { sku: "ink", qty: 50 },
+        Change.Reprice { sku: "pen", price: 1.40 },
+        Change.Reprice { sku: "ink", price: -1.0 },
+        Change.Sell { sku: "cap", qty: 1 },
+        Change.Audit,
+    ]
+    for change in changes {
+        match apply(var items, change) {
+            done => print(done)
+            ! OutOfStock { sku, wanted, have } => print("cannot sell {wanted} of {sku}: only {have} left")
+            ! e: UnknownSku => print("no such item: {e.sku}")
+            ! BadPrice => print("a price must be positive")
+        }
+    }
+
+    // `before` is a value: the changes above did not touch it.
+    print("pens before: {before[0].qty}, after: {items[0].qty}")
+}

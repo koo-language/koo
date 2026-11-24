@@ -1,0 +1,168 @@
+// Generic types and functions, and interfaces as constraints (Sections 4.9 and 4.10).
+type Stack<T> = { items: [T] }
+
+fn Stack<T>.new() -> Stack<T> {
+    return Stack { items: [] }
+}
+
+fn (self: var Stack<T>) push(item: T) {
+    self.items.push(item)
+}
+
+fn (self: var Stack<T>) pop() -> T? {
+    return self.items.pop()
+}
+
+fn (self: Stack<T>) len() -> int {
+    return self.items.len
+}
+
+fn (self: Stack<T>) peek() -> T? {
+    if self.items.len == 0 { return none }
+    return self.items[self.items.len - 1]
+}
+
+type Pair<A, B> = { first: A, second: B }
+
+fn (self: Pair<A, B>) swap() -> Pair<B, A> {
+    return Pair<B, A> { first: self.second, second: self.first }
+}
+
+enum Tree<T> {
+    Leaf { value: T }
+    Node { children: [Tree<T>] }
+}
+
+fn total(tree: Tree<int>) -> int {
+    match tree {
+        Leaf { value } => { return value }
+        Node { children } => {
+            var sum := 0
+            for child in children { sum += total(child) }
+            return sum
+        }
+    }
+}
+
+type Version = { major: int, minor: int }
+
+fn (self: Version) compare(other: Version) -> int {
+    if self.major != other.major { return self.major.compare(other.major) }
+    return self.minor.compare(other.minor)
+}
+
+fn largest<T: Ordered>(items: [T]) -> T? {
+    if items.len == 0 { return none }
+    var best := items[0]
+    for item in items {
+        if item > best { best = item }
+    }
+    return best
+}
+
+fn contains<T: Equatable>(items: [T], wanted: T) -> bool {
+    for item in items {
+        if item == wanted { return true }
+    }
+    return false
+}
+
+fn first_or<T>(items: [T], fallback: T) -> T {
+    if items.len == 0 { return fallback }
+    return items[0]
+}
+
+fn pair_up<A, B>(a: A, b: B) -> Pair<A, B> {
+    return Pair<A, B> { first: a, second: b }
+}
+
+pub interface Shape {
+    fn area() -> float
+    fn name() -> string
+}
+
+type Circle = { r: float }
+type Rect = { w: float, h: float }
+
+fn (self: Circle) area() -> float { return 3.0 * self.r * self.r }
+fn (self: Circle) name() -> string { return "circle" }
+fn (self: Rect) area() -> float { return self.w * self.h }
+fn (self: Rect) name() -> string { return "rect" }
+
+// An interface as a parameter's type is a type parameter (Section 4.9).
+fn describe(shape: Shape) -> string {
+    return "{shape.name()} of area {shape.area()}"
+}
+
+fn bigger<S: Shape>(a: S, b: S) -> S {
+    if a.area() >= b.area() { return a }
+    return b
+}
+
+fn main() {
+    var numbers := Stack<int>.new()
+    numbers.push(1)
+    numbers.push(2)
+    numbers.push(3)
+    print(numbers.len())
+    print(numbers.peek())
+    print(numbers.pop())
+    print(numbers)
+
+    var words: Stack<string> = Stack.new()
+    words.push("a")
+    words.push("b")
+    print(words.pop() else "empty")
+    print(words.len())
+
+    pair := pair_up("one", 1)
+    print(pair)
+    print(pair.swap())
+
+    tree: Tree<int> = Node { children: [Leaf { value: 1 }, Node { children: [Leaf { value: 2 }, Leaf { value: 3 }] }] }
+    print(total(tree))
+
+    print(largest([3, 9, 4]))
+    print(largest(["pear", "apple", "zebra"]))
+    print(largest([2.5, 1.5]))
+    empty: [int] = []
+    print(largest(empty))
+    versions := [Version { major: 1, minor: 9 }, Version { major: 2, minor: 0 }, Version { major: 1, minor: 10 }]
+    print(largest(versions))
+    print(versions[0] < versions[2])
+    print(versions[1] >= versions[1])
+
+    print(contains([1, 2, 3], 2))
+    print(contains(["a"], "b"))
+    print(contains(versions, Version { major: 2, minor: 0 }))
+    print(first_or(empty, 7))
+    print(first_or(["x"], "y"))
+
+    print(describe(Circle { r: 1.0 }))
+    print(describe(Rect { w: 2.0, h: 3.0 }))
+    print(bigger(Rect { w: 1.0, h: 1.0 }, Rect { w: 2.0, h: 2.0 }))
+}
+//= 3
+//= 3
+//= 3
+//= Stack<int> { items: [1, 2] }
+//= b
+//= 1
+//= Pair<string, int> { first: "one", second: 1 }
+//= Pair<int, string> { first: 1, second: "one" }
+//= 6
+//= 9
+//= zebra
+//= 2.5
+//= none
+//= Version { major: 2, minor: 0 }
+//= true
+//= true
+//= true
+//= false
+//= true
+//= 7
+//= x
+//= circle of area 3.0
+//= rect of area 6.0
+//= Rect { w: 2.0, h: 2.0 }

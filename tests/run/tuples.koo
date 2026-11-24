@@ -1,0 +1,120 @@
+// Tuples are taken apart by destructuring (Section 4.5), and `==` is structural (3.4).
+type Point = { x: int, y: int }
+
+enum Shape {
+    Circle { center: Point, r: int }
+    Line { from: Point, to: Point }
+    Empty
+}
+
+fn min_max(xs: [int]) -> (int, int) {
+    var lo := xs[0]
+    var hi := xs[0]
+    for x in xs {
+        if x < lo { lo = x }
+        if x > hi { hi = x }
+    }
+    return (lo, hi)
+}
+
+fn split(text: string, n: int) -> (string, int)? {
+    if n < 0 { return none }
+    return (text, n * 2)
+}
+
+fn classify(pair: (int, bool)) -> string {
+    return match pair {
+        (0, _) => "zero"
+        (n, true) if n > 10 => "big and set"
+        (_, true) => "set"
+        (n, _) => "unset {n}"
+    }
+}
+
+fn main() {
+    (lo, hi) := min_max([4, -2, 9, 0])
+    print("{lo}..{hi}")
+    pair := (1, "one")
+    print(pair)
+    (number, word) := pair
+    print("{word} is {number}")
+    var (a, b) := (10, 20)
+    a += b
+    print(a)
+    ((x, y), z) := ((1, 2), 3)
+    print(x + y + z)
+    (_, second) := ("skip", 2.5)
+    print(second)
+    print(split("ab", 2))
+    print(split("ab", -1))
+    if found := split("cd", 1) {
+        (text, doubled) := found
+        print("{text} {doubled}")
+    }
+    for (name, score) in [("ann", 3), ("bob", 5)] {
+        print("{name}: {score}")
+    }
+    print(classify((0, true)))
+    print(classify((11, true)))
+    print(classify((2, true)))
+    print(classify((2, false)))
+    points := [(1, 2), (3, 4)]
+    var sum := 0
+    for (px, py) in points { sum += px * py }
+    print(sum)
+
+    // Structural equality.
+    p := Point { x: 1, y: 2 }
+    q := Point { x: 1, y: 2 }
+    print(p == q)
+    print(p != Point { x: 1, y: 3 })
+    print([1, 2, 3] == [1, 2, 3])
+    print([1, 2, 3] == [1, 2])
+    print((1, "a") == (1, "a"))
+    print(["a", "b"] != ["a", "c"])
+    circle := Shape.Circle { center: p, r: 2 }
+    print(circle == Shape.Circle { center: q, r: 2 })
+    print(circle == Shape.Empty)
+    print(Shape.Line { from: p, to: q } == Shape.Line { from: q, to: p })
+    maybe: int? = 3
+    nothing: int? = none
+    print(maybe == nothing)
+    print([p, q] == [q, p])
+    print(p.hash() == q.hash())
+    print("abc".hash() == "abc".hash())
+    print(1.compare(2))
+    print("b".compare("a"))
+    print(2.5.compare(2.5))
+}
+//= -2..9
+//= (1, "one")
+//= one is 1
+//= 30
+//= 6
+//= 2.5
+//= ("ab", 4)
+//= none
+//= cd 2
+//= ann: 3
+//= bob: 5
+//= zero
+//= big and set
+//= set
+//= unset 2
+//= 14
+//= true
+//= true
+//= true
+//= false
+//= true
+//= true
+//= true
+//= false
+//= true
+//= false
+//= true
+//= true
+//= true
+//= -1
+//= 1
+//= 0

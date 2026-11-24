@@ -1,0 +1,157 @@
+// Maps and sets (Section 4.5).
+type Point = { x: int, y: int }
+
+enum Color { Red, Green, Blue }
+
+fn count_words(text: string) -> [string: int] {
+    var counts: [string: int] = [:]
+    for word in text.split(" ") {
+        counts.update(word, 0, n -> n + 1)
+    }
+    return counts
+}
+
+fn invert(m: [string: int]) -> [int: [string]] {
+    var out: [int: [string]] = [:]
+    for (word, n) in m {
+        var words := out[n] else []
+        words.push(word)
+        out[n] = words
+    }
+    return out
+}
+
+fn main() {
+    var ages := ["ann": 41, "bob": 29]
+    print(ages)
+    print(ages.len)
+    print(ages["ann"])
+    print(ages["zed"])
+    print(ages["bob"] else 0)
+    ages["cy"] = 35
+    ages["bob"] = 30
+    print(ages)
+    print(ages.contains("cy"))
+    print(ages.remove("ann"))
+    print(ages.remove("ann"))
+    print(ages.keys())
+    print(ages.values())
+    print(ages.len)
+
+    for (name, age) in ages {
+        print("{name} is {age}")
+    }
+    var total := 0
+    for entry in ages {
+        (_, age) := entry
+        total += age
+    }
+    print(total)
+
+    // A map is a value: a copy does not change with the original.
+    snapshot := ages
+    ages["dee"] = 50
+    print(snapshot.len)
+    print(ages.len)
+
+    counts := count_words("the cat and the dog and the bird")
+    print(counts)
+    print(counts["the"] else 0)
+    print(invert(counts))
+
+    empty: [string: int] = [:]
+    print(empty)
+    print(empty.is_empty())
+
+    // Any hashable type is a key: integers, structs, enums, tuples.
+    var squares: [int: int] = [:]
+    for i in 0..1000 { squares[i] = i * i }
+    print(squares.len)
+    print(squares[999])
+    for i in 0..1000 {
+        if i % 2 == 0 { squares.remove(i) }
+    }
+    print(squares.len)
+    print(squares[998])
+    print(squares[997])
+    for i in 1000..3000 { squares[i] = i }
+    print(squares.len)
+    print(squares[2999])
+
+    var grid: [Point: string] = [:]
+    grid[Point { x: 0, y: 0 }] = "origin"
+    grid[Point { x: 1, y: 2 }] = "treasure"
+    print(grid[Point { x: 1, y: 2 }])
+    print(grid.len)
+    names: [Color: string] = [Color.Red: "red", Color.Blue: "blue"]
+    print(names[Color.Blue])
+    print(names[Color.Green])
+    pairs: [(int, int): bool] = [(1, 2): true]
+    print(pairs[(1, 2)])
+    print(pairs[(2, 1)])
+    nested: [string: [string: int]] = ["a": ["x": 1], "b": [:]]
+    print(nested)
+    print((nested["a"] else [:])["x"])
+
+    var seen := Set<string>.new()
+    print(seen.insert("a"))
+    print(seen.insert("b"))
+    print(seen.insert("a"))
+    print(seen.len)
+    print(seen.contains("b"))
+    print(seen.remove("b"))
+    print(seen.contains("b"))
+    print(seen)
+    unique := Set<int>.from_list([3, 1, 3, 2, 1])
+    print(unique.items())
+    var sum := 0
+    for n in unique { sum += n }
+    print(sum)
+}
+//= ["ann": 41, "bob": 29]
+//= 2
+//= 41
+//= none
+//= 29
+//= ["ann": 41, "bob": 30, "cy": 35]
+//= true
+//= 41
+//= none
+//= ["bob", "cy"]
+//= [30, 35]
+//= 2
+//= bob is 30
+//= cy is 35
+//= 65
+//= 2
+//= 3
+//= ["the": 3, "cat": 1, "and": 2, "dog": 1, "bird": 1]
+//= 3
+//= [3: ["the"], 1: ["cat", "dog", "bird"], 2: ["and"]]
+//= [:]
+//= true
+//= 1000
+//= 998001
+//= 500
+//= none
+//= 994009
+//= 2500
+//= 2999
+//= treasure
+//= 2
+//= blue
+//= none
+//= true
+//= none
+//= ["a": ["x": 1], "b": [:]]
+//= 1
+//= true
+//= true
+//= false
+//= 2
+//= true
+//= true
+//= false
+//= Set["a"]
+//= [3, 1, 2]
+//= 6

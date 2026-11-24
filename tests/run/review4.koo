@@ -1,0 +1,70 @@
+// What the fourth independent review found, fixed: each of these was wrong before.
+
+type Tree = { kids: [Tree], v: int }
+
+enum Expr {
+    Num { value: int }
+    Sum { parts: [Expr] }
+}
+
+fn kill(xs: var [string]) -> string {
+    xs = []
+    return "z" + "z"
+}
+
+fn side(tag: string) -> int {
+    print("side effect: {tag}")
+    return 1
+}
+
+fn tuple_case(c: bool) -> int {
+    t := (side("tuple"), if c { return 7 } else { return 70 })
+    return 0
+}
+
+fn main() {
+    // `a.compare(b)`: `b` empties the list that `a` is read from.
+    var xs := ["a" + "b", "c" + "d"]
+//= -1
+    print(xs[0].compare(kill(var xs)))
+//= []
+    print(xs)
+
+    // A tuple with an element that never returns still evaluates the ones before it.
+//= side effect: tuple
+//= 7
+    print(tuple_case(true))
+
+    // Sorting floats is by `compare`: -0.0 before 0.0, NaN last.
+    nan := 0.0 / 0.0
+//= [-0.0, 0.0, 1.0, 3.0, NaN]
+    print([3.0, nan, 0.0, 1.0, -0.0].sorted())
+//= NaN NaN -1.0
+    print("{[3.0, nan, 1.0].max()} {[nan, 3.0, 1.0].max()} {[nan, -1.0, 3.0].min()}")
+    var ys := [2.5, nan, -1.0, nan, 0.5]
+    ys.sort()
+//= [-1.0, 0.5, 2.5, NaN, NaN]
+    print(ys)
+
+    // `==`, `contains`, a set and a map of a type that holds itself.
+    leaf := Tree { kids: [], v: 1 }
+    tree := Tree { kids: [leaf, leaf], v: 1 }
+//= false true true
+    print("{leaf == tree} {tree == Tree { kids: [leaf, leaf], v: 1 }} {[tree, leaf].contains(leaf)}")
+    var seen := Set<Tree>.new()
+    seen.insert(tree)
+    seen.insert(leaf)
+    seen.insert(Tree { kids: [], v: 1 })
+//= 2 true
+    print("{seen.len} {seen.contains(tree)}")
+    var names: [Tree: string] = [leaf: "leaf"]
+    names[tree] = "tree"
+//= tree
+    print(names[tree] else "none")
+    empty: Expr = Sum { parts: [] }
+    sum: Expr = Sum { parts: [Num { value: 1 }, empty] }
+    same: Expr = Sum { parts: [Num { value: 1 }, empty] }
+    other: Expr = Num { value: 1 }
+//= true false
+    print("{sum == same} {sum == other}")
+}

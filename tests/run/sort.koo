@@ -1,0 +1,43 @@
+type P = { key: int, tag: string }
+fn main() {
+    var seed := 99
+    for n in [0, 1, 2, 15, 16, 17, 31, 32, 33, 100, 1000, 4097] {
+        var xs: [int] = []
+        var ps: [P] = []
+        for i in 0..n {
+            seed = (seed * 1103515245 + 12345) % 2147483648
+            xs.push(seed % 50)
+            ps.push(P { key: seed % 5, tag: "t{i}" })
+        }
+        xs.sort()
+        var ok := true
+        for i in 1..xs.len { if xs[i - 1] > xs[i] { ok = false } }
+        ps.sort_by((a, b) -> a.key < b.key)
+        // Stable: equal keys keep the order of their tags' numbers.
+        for i in 1..ps.len {
+            if ps[i - 1].key > ps[i].key { ok = false }
+            if ps[i - 1].key == ps[i].key {
+                a := int.parse(ps[i - 1].tag.slice(1, ps[i - 1].tag.len)) else 0
+                b := int.parse(ps[i].tag.slice(1, ps[i].tag.len)) else 0
+                if a > b { ok = false }
+            }
+        }
+        var down := xs
+        down.reverse()
+        down.sort()
+        if not (down == xs) { ok = false }
+        print("{n}: {ok}")
+    }
+}
+//= 0: true
+//= 1: true
+//= 2: true
+//= 15: true
+//= 16: true
+//= 17: true
+//= 31: true
+//= 32: true
+//= 33: true
+//= 100: true
+//= 1000: true
+//= 4097: true

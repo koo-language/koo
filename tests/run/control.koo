@@ -1,0 +1,73 @@
+fn collatz(start: int) -> int {
+    var n := start
+    var steps := 0
+    while n != 1 {
+        if n % 2 == 0 { n /= 2 } else { n = 3 * n + 1 }
+        steps += 1
+    }
+    return steps
+}
+
+fn primes(limit: int) -> [int] {
+    var sieve := List<bool>.with_size(limit + 1)
+    var found: [int] = []
+    for n in 2..=limit {
+        if sieve[n] { continue }
+        found.push(n)
+        var m := n * n
+        while m <= limit {
+            sieve[m] = true
+            m += n
+        }
+    }
+    return found
+}
+
+fn first_over(xs: [int], bound: int) -> int {
+    var result := -1
+    for x in xs {
+        if x <= bound { continue }
+        result = x
+        break
+    }
+    return result
+}
+
+fn main() {
+    print(collatz(27))
+    print(primes(30))
+    print(first_over([1, 5, 9, 12], 6))
+    var count := 0
+    for i in 0..10 {
+        for j in 0..10 {
+            if j > i { break }
+            if (i + j) % 2 == 0 { continue }
+            count += 1
+        }
+    }
+    print(count)
+    var down := 3
+    while true {
+        if down == 0 { break }
+        down -= 1
+    }
+    print(down)
+    for i in 5..5 { print(i) }
+    for i in 5..=5 { print(i) }
+    for i in 3..=1 { print(i) }
+    for _ in 0..2 { print("twice") }
+    ok := count > 20 and collatz(6) == 8 or false
+    print(ok)
+    sign := if count < 0 { -1 } else if count == 0 { 0 } else { 1 }
+    print(sign)
+}
+//= 111
+//= [2, 3, 5, 7, 11, 13, 17, 19, 23, 29]
+//= 9
+//= 25
+//= 0
+//= 5
+//= twice
+//= twice
+//= true
+//= 1

@@ -2,9 +2,59 @@
 
 Koo is a compiled programming language for backend services. It aims for the performance of Rust with the ease of a scripting language: no garbage collector, no borrow checker, no `async`/`await`. Programs compile to native binaries for x86-64 and arm64, and to WebAssembly.
 
-> **Status: design stage.** The language is specified in [`SPEC.md`](SPEC.md) (version 0.5, draft). There is no compiler yet, and the performance figures in the specification are targets, not measurements.
+> **Status: early.** The language is specified in [`SPEC.md`](SPEC.md) (version 0.5, draft) and its grammar in [`spec/grammar.ebnf`](spec/grammar.ebnf). The compiler builds and runs programs written in the part of the language described under [What works today](#what-works-today), and the [tour](docs/tour.md) teaches that part with programs the test suite runs. Most of the standard library, concurrency, packages and WebAssembly are specified and not yet built. It is not ready for production use.
 
-## A complete service
+## Try it
+
+You need a recent stable Rust toolchain and `clang` on your `PATH`.
+
+```sh
+cargo build --release
+./target/release/koo run examples/hello.koo
+./target/release/koo run examples/wordcount.koo -- README.md
+./target/release/koo build --release examples/inventory.koo -o inventory
+./target/release/koo test tests/test/stack_test.koo
+./target/release/koo run tests/packages/shop        # a program in several files
+```
+
+Then read the [tour](docs/tour.md): it goes through the language in about fifteen short programs.
+
+```koo
+type Item = { sku: string, qty: int, price: float }
+
+error UnknownSku { sku: string }
+error OutOfStock { sku: string, wanted: int, have: int }
+
+fn find(items: [Item], sku: string) -> int ! UnknownSku {
+    for i in 0..items.len {
+        if items[i].sku == sku { return i }
+    }
+    fail UnknownSku { sku }
+}
+
+fn sell(items: var [Item], sku: string, qty: int) -> float ! UnknownSku | OutOfStock {
+    i := find(items, sku)?
+    have := items[i].qty
+    if have < qty { fail OutOfStock { sku, wanted: qty, have } }
+    items[i].qty -= qty
+    return float.from(qty) * items[i].price
+}
+
+fn main() {
+    var items := [Item { sku: "pen", qty: 120, price: 1.25 }]
+    before := items                      // a value: later changes do not touch it
+    match sell(var items, "pen", 30) {
+        total => print("sold for {total:.2}")
+        ! OutOfStock { have, .. } => print("only {have} left")
+        ! e: UnknownSku => print("no such item: {e.sku}")
+    }
+    print("before: {before[0].qty}, after: {items[0].qty}")
+}
+```
+
+## Where it is going
+
+The specification describes the whole language. This service is its reference example; it does not compile yet.
 
 ```koo
 import std/os
@@ -59,18 +109,96 @@ fn main() ! sql.Error | http.Error {
 | `wasm32-none` | Core WebAssembly module for plugins and embedding | 1 |
 | `x86_64-macos`, `x86_64-windows`, `arm64-windows` | Native binary | 2 |
 
+## What works today
+
+The compiler implements the part of the language below and rejects everything else with a message that says so.
+
+| Area | In |
+| --- | --- |
+| Types | `int`, `float`, `bool`, `byte`, `string`, lists `[T]`, maps `[K: V]`, `Set<T>`, tuples, optionals `T?`, structs with default fields, enums with fields, error types and named error sets, results `T ! E`, function types |
+| Functions | Free functions, methods, type-level functions, the three parameter kinds (borrow, `var`, `take`), named arguments, default values |
+| Generics | Generic functions, structs and enums, compiled once for each type they are used with; interfaces as constraints, satisfied by having the methods; `Ordered`, `Equatable` and `Hashable` derived for every type that can have them |
+| Lambdas | `x -> e` and `(a, b) -> { ... }`. One passed straight to a function works on the variables around it; one that is kept holds copies |
+| Values | Value semantics throughout: copying is lazy, a change copies first if the storage is shared, and the uniqueness check is hoisted out of loops |
+| Chains | `xs.filter(f).map(g).sum()` is one pass that builds no list, when the functions only compute; otherwise it runs step by step, as written |
+| Errors | `fail`, `?`, `else`, `else e =>`, `match` on results with `!` arms; unhandled results and incomplete error sets are compile errors |
+| Control flow | `if`, `while`, `for` over ranges, lists, maps and sets, binding conditions (`if x := e`, `if (a, b) := e`), `break`, `continue`, `match` with guards and exhaustiveness checking, `if` and `match` used for a value |
+| Safety | Checked integer arithmetic, bounds-checked indexing, no null; a panic reports the file and line |
+| Text | Interpolation with formats (`{x:8.2}`, `{id:05}`, `{name:>10}`), text blocks, raw strings, a text form for every value |
+| Built in | About sixty methods on lists, strings, optionals and numbers (`map`, `filter`, `fold`, `sort_by`, `join`, `split`, `trim`, `replace`, ...), written in Koo |
+| Standard packages | `std/os` (arguments, environment, exit), `std/io` (files, standard input and output), `std/test` (assertions) |
+| Packages | A directory is a package: its files are one program and share one namespace. `koo run dir`, `koo test dir` |
+| Diagnostics | Every error names its place and says what to do; a name that is nearly right gets a "did you mean", and habits from other languages (`nil`, `println`, `.length`, `String`) get the Koo spelling |
+| Tooling | `koo run`, `koo build`, `koo check`, `koo test`, `koo parse`, with `--release`, `--emit-llvm` and `--sanitize` |
+
+Not yet: importing one package of your own from another, the package manager, the rest of the standard library (HTTP, JSON, SQL, time), interface values, tasks, actors and everything else concurrent, `Decimal`, resources, `defer`, `==` on maps, variadic parameters, the WebAssembly targets, Linux and Windows (the compiler has only been run on macOS on Apple Silicon), the formatter and the language server.
+
+What has been checked, and how:
+
+- The test suite builds every test program unoptimized and optimized, compares its output, and fails if it ends with memory still allocated. The same programs pass under AddressSanitizer.
+- The compiler has had four independent adversarial reviews, each of which wrote programs meant to break it. The third found sixteen problems, four of them memory-unsafe, in lambdas, generics and maps. The fourth went back over those fixes with about a hundred new programs and found them sound, and found seven new problems elsewhere: two memory-unsafe ones in `compare`, three ways to crash or stall the compiler with recursive or fast-growing types, and two wrong results (sorting floats with a NaN among them, and a tuple that skipped an element's side effect). All were fixed and became regression tests (`tests/run/blocks.koo`, `tests/run/review4.koo`, `tests/fail/blocks.koo`, `tests/fail/review.koo`, `tests/fail/review4.koo`). The fixes for the fourth have not been reviewed independently yet.
+- Known and not fixed: a program that calls itself without end, or frees a value nested hundreds of thousands deep, ends with a crash where the specification asks for a panic; a `match` on a tuple sometimes needs a `_` arm that is not strictly necessary; a `var` method cannot be called on a temporary.
+- That is far from proof. The compiler is new, nobody outside the project has used it, and it has not been fuzzed at scale. Expect bugs.
+
+## Benchmarks
+
+`python3 bench/run.py` builds each program in [`bench`](bench) in Koo and in Rust, checks that the two print the same thing, and times them. On an Apple Silicon Mac with Apple clang 21 and rustc 1.95, best of five runs:
+
+| Benchmark | What it stresses | Koo | Rust | Rust with overflow checks | Koo / Rust | Koo / Rust with checks |
+| --- | --- | --- | --- | --- | --- | --- |
+| `sort` | Sorting three million integers | 0.045 s | 0.063 s | 0.064 s | 0.72 | 0.71 |
+| `wordfreq` | A map from strings to counts | 0.100 s | 0.120 s | 0.119 s | 0.83 | 0.84 |
+| `strings` | Building and formatting text | 0.283 s | 0.308 s | 0.313 s | 0.92 | 0.91 |
+| `sieve` | A large list of flags | 0.552 s | 0.547 s | 0.542 s | 1.01 | 1.02 |
+| `nbody` | Floating point, a list of structs | 0.669 s | 0.645 s | 0.645 s | 1.04 | 1.04 |
+| `fib` | Calls and integer arithmetic | 0.890 s | 0.709 s | 0.888 s | 1.26 | 1.00 |
+| `matmul` | Nested lists | 0.099 s | 0.077 s | 0.077 s | 1.29 | 1.29 |
+| `collatz` | Integer arithmetic | 0.957 s | 0.621 s | 0.942 s | 1.54 | 1.02 |
+| `sortby` | Sorting 1.5 million records by a key | 0.069 s | 0.044 s | 0.044 s | 1.58 | 1.58 |
+| `pipeline` | `map`, `filter` and `fold` over a list | 0.027 s | 0.016 s | 0.028 s | 1.66 | 0.95 |
+| `errors` | Results and `?` in a hot loop | 0.068 s | 0.038 s | 0.052 s | 1.78 | 1.31 |
+
+- Koo is level with Rust or ahead of it on five of the eleven. Its map, which is written in Koo, is faster on `wordfreq` than Rust's `HashMap` with its default hasher.
+- On `fib`, `collatz` and `pipeline` it is level with Rust built with `-C overflow-checks=on`. Koo checks integer overflow in every build (Section 4.2 of the specification) and Rust's release builds do not; the gap to default Rust on those three is the price of that check. On `pipeline` the check also keeps the loop from being vectorized, which Rust's is.
+- `pipeline` was seven times slower than Rust until the compiler learned to fuse a chain: `xs.map(f).filter(g).fold(...)` is now one loop that builds no list, when `f`, `g` and the last function only compute. A chain whose functions print or change variables still runs step by step.
+- `sort` on a list of integers uses the support library's unstable sort, which is sound because equal integers cannot be told apart. Every other sort is the merge sort written in Koo, which `sortby` measures: 1.6 times slower than Rust's.
+- On `matmul` and `errors` it is about 1.3 times slower than Rust even with checks on. In `matmul` the inner loop reads a list's length from memory on every pass, where Rust keeps it in a register. In `errors` the whole loop is inlined and allocates nothing; the cause has not been tracked down.
+- These are eleven small single-threaded programs, not the benchmark suite the specification defines in Section 13.6. They say nothing yet about services, concurrency or large programs, and the optimizations the specification plans for reference counts are mostly not implemented.
+
+Compile times are not comparable yet: every program here is small enough that both compilers finish in about a tenth of a second.
+
 ## Roadmap
 
 | Milestone | Scope |
 | --- | --- |
-| 0.1 | Parser, type checker, ownership pass, debug backend, `koo run`, `koo test` |
-| 0.2 | LLVM release builds, C FFI, first published benchmarks against Rust |
+| 0.1 | Parser, type checker, ownership pass, LLVM backend, `koo run`, `koo test`, first published benchmarks against Rust |
+| 0.2 | Cranelift debug backend, generics, interfaces, lambdas, C FFI (generics, interface constraints and lambdas are built already) |
 | 0.3 | Tasks and scheduler, WebAssembly targets, `std/http`, `std/json` |
-| 0.4 | Actors and supervision, `std/sql/postgres`; the example above runs natively and as a Wasm component |
+| 0.4 | Actors and supervision, `std/sql/postgres`; the reference example runs natively and as a Wasm component |
 | 0.5 to 0.9 | Formatter, language server, package manager, gRPC, TLS, Windows, public beta |
 | 1.0 | Stability commitment begins |
 
-Section 13.7 of the specification has the full list.
+Section 13.7 of the specification has the full list. The compiler is part of the way through milestone 0.1.
+
+## Building and testing
+
+```sh
+cargo test                # everything, including the programs in tests/, docs/tour.md and every code block in SPEC.md
+python3 bench/run.py      # the benchmarks, against Rust
+```
+
+The end-to-end tests build each program in `tests/run` unoptimized and optimized, run it, and fail if it prints the wrong thing, exits with the wrong status, or ends with memory still allocated. Each program in `tests/fail` must be rejected with exactly the errors it lists, and each program in the tour must print what the tour says.
+
+| Path | Contents |
+| --- | --- |
+| `SPEC.md` | The language specification |
+| `spec/grammar.ebnf` | The grammar, normative |
+| `docs/tour.md` | A tour of the language as it is built today |
+| `compiler/koo-syntax` | Lexer, syntax tree and parser |
+| `compiler/koo-compiler` | Type checker, LLVM code generator, and the prelude (`src/prelude.koo`) |
+| `compiler/koo-rt` | The support library linked into every program |
+| `compiler/koo` | The `koo` command |
+| `examples`, `tests`, `bench` | Example programs, end-to-end tests, benchmarks |
 
 ## Contributing
 

@@ -1,0 +1,52 @@
+type Stack<T> = { items: [T] }
+
+fn Stack<T>.new() -> Stack<T> {
+    return Stack { items: [] }
+}
+
+fn (self: var Stack<T>) push(item: T) {
+    self.items.push(item)
+}
+
+type Money = { cents: int }
+type Temp = { degrees: float }
+
+fn largest<T: Ordered>(items: [T]) -> T? {
+    return none
+}
+
+fn key<T: Hashable>(item: T) -> int {
+    return item.hash()
+}
+
+interface Named {
+    fn name() -> string
+}
+
+fn greet(who: Named) -> string {
+    return "hi {who.name()}"
+}
+
+fn broken<T>(item: T) -> int {
+    return item + 1
+}
+
+fn main() {
+    s := Stack.new()
+    var t := Stack<int>.new()
+    t.push("text")
+    u: Stack<int, string> = Stack.new()
+    print(largest([Money { cents: 1 }]))
+    print(key(Temp { degrees: 1.5 }))
+    print(greet(Money { cents: 2 }))
+    print(broken("text"))
+    v: Named = Money { cents: 3 }
+}
+//! error the type parameter `T` of `Stack<T>.new` is not known here
+//! error expected `int`, found `string`
+//! error `Stack` takes 1 type argument, found 2
+//! error `Money` does not satisfy `Ordered`
+//! error `Temp` does not satisfy `Hashable`
+//! error `Money` does not satisfy `Named`
+//! error `+` cannot be applied to `string` and `int`
+//! error the interface `Named` cannot be used as a type here yet

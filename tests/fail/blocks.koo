@@ -1,0 +1,85 @@
+// What a block may not do (Sections 5.4 and 5.7). Each of these was once accepted, and
+// crashed or gave a wrong answer when it ran.
+
+fn each(items: [int], f: fn(int)) {
+    for item in items { f(item) }
+}
+
+fn run2(a: fn(fn()), b: fn()) { a(b) }
+
+fn set(s: var string, f: fn()) {
+    f()
+    s += "!"
+}
+
+fn fill(xs: var [int], f: fn()) {
+    for i in 0..xs.len {
+        f()
+        xs[i] = 0
+    }
+}
+
+// A closure that is returned cannot use a function that was only lent.
+fn keep(f: fn(int) -> int) -> fn(int) -> int {
+    return x -> f(x)
+}
+
+// Nor can a block put one where it outlives the call.
+fn keep_through_block(f: fn(int) -> int) -> fn(int) -> int {
+    var out := (x: int) -> x
+    each([1], _ -> {
+        out = f
+    })
+    return out
+}
+
+fn main() {
+    // A `var` argument and a block that uses the same variable.
+    var xs := ["a" + "b"]
+    set(var xs[0], () -> {
+        xs = []
+    })
+
+    // The same through a method that changes its receiver.
+    var m: [string: [int]] = ["a": [1]]
+    m.update("a", [], n -> {
+        m = [:]
+        return n
+    })
+    var numbers := [5, 3, 9]
+    numbers.sort_by((a, b) -> {
+        numbers = [1]
+        return a < b
+    })
+
+    // Reading counts too: the block would see the list half changed.
+    var copy: [int] = []
+    fill(var numbers, () -> {
+        copy = numbers
+    })
+
+    // Two blocks of one call: the first changes what the second may use.
+    run2(share -> set(var xs[0], share), () -> {
+        xs = []
+    })
+    run2(share -> {
+        fill(var numbers, () -> share())
+    }, () -> {
+        copy = numbers
+    })
+    print(keep(x -> x)(1))
+    print(keep_through_block(x -> x)(1))
+    print(copy)
+
+    dup := (x: int, x: int) -> x
+    print(dup(1, 2))
+}
+//! error this closure uses `f`, a function that was only lent
+//! error `f` is a function that was only lent to this one
+//! error this block uses `xs`, which the same call changes
+//! error this block uses `m`, which the same call changes
+//! error this block uses `numbers`, which the same call changes
+//! error this block uses `numbers`, which the same call changes
+//! error `share` may use `xs`, which the same call changes
+//! error `share` may use `numbers`, which the same call changes
+//! error the parameter `x` is declared twice

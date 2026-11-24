@@ -1,0 +1,28 @@
+type Point = { x: float, y: float }
+
+fn main() {
+    a := 1 + 2.0
+    b: int = "text"
+    c := Point { x: 1.0 }
+    d := Point { x: 1.0, y: 2.0, z: 3.0 }
+    e := undefined_name
+    f := 3 / 2.0
+    g: float = 1
+    h := [1, "two"]
+    i := not 5
+    j := "a" - "b"
+    k := Point { x: 1.0, y: 2.0 } < Point { x: 1.0, y: 2.0 }
+    print(a.missing)
+    print(c.len)
+}
+//! error `+` cannot be applied to `int` and `float`
+//! error expected `int`, found `string`
+//! error `Point` is missing the field `y`
+//! error `Point` has no field `z`
+//! error unknown name `undefined_name`
+//! error `/` cannot be applied to `int` and `float`
+//! error expected `float`, found `int`
+//! error expected `int`, found `string`
+//! error expected `bool`, found `int`
+//! error `-` is not defined for `string`
+//! error `<` is not defined for `Point`

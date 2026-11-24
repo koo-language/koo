@@ -1,0 +1,146 @@
+// Lambdas and function values (Sections 4.11 and 5.7).
+error Bad { n: int }
+
+type Counter = { step: int, label: string }
+
+fn each<T>(items: [T], f: fn(T)) {
+    for item in items { f(item) }
+}
+
+fn map<T, U>(items: [T], f: fn(T) -> U) -> [U] {
+    var out: [U] = []
+    for item in items { out.push(f(item)) }
+    return out
+}
+
+fn filter<T>(items: [T], keep: fn(T) -> bool) -> [T] {
+    var out: [T] = []
+    for item in items {
+        if keep(item) { out.push(item) }
+    }
+    return out
+}
+
+fn fold<T, A>(items: [T], start: A, f: fn(A, T) -> A) -> A {
+    var acc := start
+    for item in items { acc = f(acc, item) }
+    return acc
+}
+
+fn apply_twice(f: fn(int) -> int, x: int) -> int {
+    return f(f(x))
+}
+
+fn try_each(items: [int], f: fn(int) -> int ! Bad) -> [int] ! Bad {
+    var out: [int] = []
+    for item in items { out.push(f(item)?) }
+    return out
+}
+
+// A function that keeps the function it is given takes it.
+fn make_adder(n: int) -> fn(int) -> int {
+    return x -> x + n
+}
+
+fn compose(f: take fn(int) -> int, g: take fn(int) -> int) -> fn(int) -> int {
+    return x -> g(f(x))
+}
+
+fn greeter(greeting: string) -> fn(string) -> string {
+    return name -> "{greeting}, {name}!"
+}
+
+fn double(x: int) -> int { return x * 2 }
+
+fn update(counter: var Counter, f: fn(var Counter)) {
+    f(var counter)
+}
+
+fn checked(n: int) -> int ! Bad {
+    if n < 0 { fail Bad { n } }
+    return n * 10
+}
+
+fn main() {
+    xs := [1, 2, 3, 4]
+
+    // A block works on the enclosing variables directly.
+    var total := 0
+    each(xs, x -> total += x)
+    print(total)
+    var seen: [string] = []
+    each(["a", "b"], s -> {
+        seen.push(s + "!")
+        total += 1
+    })
+    print(seen)
+    print(total)
+
+    print(map(xs, x -> x * x))
+    print(map(xs, x -> "n{x}"))
+    print(filter(xs, x -> x % 2 == 0))
+    print(fold(xs, 0, (acc, x) -> acc + x))
+    print(fold(["a", "b", "c"], "", (acc, s) -> acc + s))
+    factor := 3
+    print(map(xs, x -> x * factor))
+    print(map(filter(xs, x -> x > 1), x -> float.from(x) / 2.0))
+
+    // Named functions and stored closures are values.
+    print(apply_twice(double, 5))
+    print(apply_twice(x -> x + 1, 5))
+    add5 := make_adder(5)
+    print(add5(1))
+    both := compose(add5, double)
+    print(both(1))
+    hello := greeter("hello")
+    print(hello("koo"))
+    fns := [make_adder(1), make_adder(10), double]
+    for f in fns { print(f(100)) }
+
+    // A closure holds a copy of what it captured.
+    var base := 1
+    plus_base := (x: int) -> x + base
+    base = 100
+    print(plus_base(1))
+
+    // A lambda's error set is inferred, and `?` leaves the lambda.
+    print(try_each([1, 2], n -> checked(n)) else e => [e.n])
+    print(try_each([1, -2], n -> checked(n)) else e => [e.n])
+    print(try_each([3], n -> {
+        tenfold := checked(n)?
+        return tenfold + 1
+    }) else e => [e.n])
+
+    var counter := Counter { step: 2, label: "c" }
+    update(var counter, c -> c.step *= 5)
+    print(counter)
+
+    // Blocks nest and reach through to the outer function.
+    var grid_sum := 0
+    each([[1, 2], [3]], row -> each(row, cell -> grid_sum += cell))
+    print(grid_sum)
+}
+//= 10
+//= ["a!", "b!"]
+//= 12
+//= [1, 4, 9, 16]
+//= ["n1", "n2", "n3", "n4"]
+//= [2, 4]
+//= 10
+//= abc
+//= [3, 6, 9, 12]
+//= [1.0, 1.5, 2.0]
+//= 20
+//= 7
+//= 6
+//= 12
+//= hello, koo!
+//= 101
+//= 110
+//= 200
+//= 2
+//= [10, 20]
+//= [-2]
+//= [31]
+//= Counter { step: 10, label: "c" }
+//= 6

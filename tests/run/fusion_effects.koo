@@ -1,0 +1,116 @@
+// Chains whose functions do something a program could notice: each must run stage by
+// stage, as written. Every line here would print something else if its chain were fused.
+
+type Celsius = { degrees: int }
+
+fn (self: Celsius) to_string() -> string {
+    print("formatting {self.degrees}")
+    return "{self.degrees}C"
+}
+
+type Handler = { run: fn(int) -> int }
+
+fn log_it(x: int) -> int {
+    print("saw {x}")
+    return x
+}
+
+fn through(x: int) -> int { return log_it(x) + 0 }
+
+fn apply(f: fn(int) -> int, x: int) -> int { return f(x) }
+
+fn bump(n: var int) -> int {
+    n += 1
+    return n
+}
+
+fn fact(n: int) -> int {
+    if n <= 1 { return 1 }
+    return n * fact(n - 1)
+}
+
+fn main() {
+    xs := [3, 1, 2]
+
+    // A named function that prints, two calls down.
+//= saw 3
+//= saw 1
+//= saw 2
+//= [3]
+    print(xs.map(through).filter(x -> x > 2))
+
+    // A method of the prelude given a block that prints.
+//= each 3
+//= each 1
+//= each 2
+//= 2
+    print(xs.map(x -> {
+        [x].each(y -> print("each {y}"))
+        return x
+    }).count(x -> x < 3))
+
+    // Text made by a `to_string` that prints.
+//= formatting 3
+//= formatting 1
+//= formatting 2
+//= ["3C", "1C"]
+    print(xs.map(x -> "{Celsius { degrees: x }}").filter(s -> s != "2C"))
+
+    // A function kept in a value.
+    handler := Handler { run: log_it }
+//= saw 3
+//= saw 1
+//= saw 2
+//= 6
+    print(xs.map(x -> (handler.run)(x)).filter(x -> x > 0).sum())
+
+    // A function handed to another.
+//= saw 3
+//= saw 1
+//= saw 2
+//= true
+    print(xs.map(x -> apply(log_it, x)).any(x -> x == 2))
+
+    // A function in a variable.
+    shout := (x: int) -> {
+        print("shout {x}")
+        return x
+    }
+//= shout 3
+//= shout 1
+//= shout 2
+//= 3
+    print(xs.map(x -> shout(x)).filter(x -> x != 1).find(x -> x > 0) else 0)
+
+    // A stage that fills a list through a block of its own, which a later stage reads.
+    var log: [int] = []
+    late := xs.map(x -> {
+        [x].each(y -> log.push(y))
+        return x
+    }).filter(x -> log.len == 3)
+//= [3, 1, 2] [3, 1, 2]
+    print("{late} {log}")
+
+    // A stage that changes a set, which a later stage reads.
+    var seen := Set<int>.new()
+    sizes := [1, 1, 2, 2, 3].filter(x -> seen.insert(x)).map(x -> seen.len)
+//= [3, 3, 3]
+    print(sizes)
+
+    // A stage that passes a variable on with `var`.
+    var counter := 0
+    counted := xs.map(x -> bump(var counter)).filter(x -> counter == 3)
+//= [1, 2, 3]
+    print(counted)
+
+    // The start of a `fold` that changes what a stage reads.
+    var base := 0
+    folded := xs.map(x -> x + base).fold(bump(var base), (a, x) -> a + x)
+//= 7
+    print(folded)
+
+    // And one that is fused all the same: a function that calls itself, and reads.
+    limit := 4
+//= [6, 2]
+    print(xs.map(fact).filter(x -> x < limit * 2).filter(x -> x > 1))
+}

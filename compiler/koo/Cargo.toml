@@ -1,0 +1,11 @@
+[package]
+name = "koo"
+description = "The Koo compiler and command-line tool"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+koo-syntax = { path = "../koo-syntax" }
+koo-compiler = { path = "../koo-compiler" }

@@ -1,0 +1,10 @@
+fn main() {
+    print("before")
+    var x := 9223372036854775807
+    x += 1
+    print("after")
+}
+//= before
+//! exit 101
+//! stderr panic: integer overflow
+//! stderr panic_overflow.koo:4

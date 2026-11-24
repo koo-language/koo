@@ -1,0 +1,10 @@
+// An import belongs to its file: this file does not use `std/io`, and does not import it.
+
+fn receipt(cart: Cart) -> string {
+    var text := ""
+    for line in cart.lines {
+        cost := line.item.price * float.from(line.count)
+        text += "{line.item.name:<12}{line.count:6}{cost:8.2}\n"
+    }
+    return text + "{"total":<18}{cart.total():8.2}\n"
+}

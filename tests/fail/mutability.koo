@@ -1,0 +1,44 @@
+type Counter = { n: int }
+
+fn (self: var Counter) bump() { self.n += 1 }
+
+fn add(total: var int, n: int) { total += n }
+
+fn peek(counter: Counter) {
+    counter.n = 5
+}
+
+fn main() {
+    x := 1
+    x = 2
+    c := Counter { n: 0 }
+    c.n = 1
+    c.bump()
+    xs := [1, 2]
+    xs.push(3)
+    xs[0] = 9
+    var t := 0
+    add(t, 1)
+    add(var x, 1)
+    add(var t, var t)
+    for item in xs { item = 0 }
+    var d := Counter { n: 0 }
+    swap(var d.n, var d.n)
+}
+
+fn swap(a: var int, b: var int) {
+    old := a
+    a = b
+    b = old
+}
+//! error cannot assign to `counter`, which is not `var`
+//! error cannot assign to `x`, which is not `var`
+//! error cannot assign to `c`, which is not `var`
+//! error cannot change `c`, which is not `var`
+//! error cannot change `xs`, which is not `var`
+//! error cannot assign to `xs`, which is not `var`
+//! error changes this argument, so it is passed with `var`
+//! error cannot pass as `var` `x`, which is not `var`
+//! error the parameter `n` is not `var`
+//! error cannot assign to `item`, which is not `var`
+//! error this argument overlaps another `var` argument

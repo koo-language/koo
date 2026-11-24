@@ -1,0 +1,7 @@
+[package]
+name = "koo-syntax"
+description = "Lexer, syntax tree and parser for the Koo language"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true

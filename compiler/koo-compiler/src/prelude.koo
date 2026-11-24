@@ -1,0 +1,764 @@
+// The Koo prelude: the part of the standard library that is in scope in every program
+// (Section 4.1 of SPEC.md). It is written in Koo, and compiled with each program; only the
+// functions a program uses become part of it.
+//
+// A name that begins with `__` is a function of the support library (`koo-rt`). Only the
+// prelude may call one.
+
+// ---- numbers ----------------------------------------------------------------------------
+
+fn int.zero() -> int { return 0 }
+fn float.zero() -> float { return 0.0 }
+
+/// `self` raised to a power that is not negative. Overflow panics, as it does for `*`.
+fn (self: int) pow(exponent: int) -> int {
+    if exponent < 0 { panic("a negative exponent") }
+    var result := 1
+    var base := self
+    var left := exponent
+    while left > 0 {
+        if left % 2 == 1 { result *= base }
+        left /= 2
+        if left > 0 { base *= base }
+    }
+    return result
+}
+
+/// `self` held between `low` and `high`.
+fn (self: int) clamp(low: int, high: int) -> int {
+    return self.max(low).min(high)
+}
+
+fn (self: float) clamp(low: float, high: float) -> float {
+    return self.max(low).min(high)
+}
+
+// ---- optionals --------------------------------------------------------------------------
+
+fn (self: T?) is_some() -> bool {
+    match self {
+        none => { return false }
+        _ => { return true }
+    }
+}
+
+fn (self: T?) is_none() -> bool {
+    match self {
+        none => { return true }
+        _ => { return false }
+    }
+}
+
+/// The value with `f` applied to it, or `none`.
+fn (self: T?) map<U>(f: fn(T) -> U) -> U? {
+    match self {
+        none => { return none }
+        value => { return f(value) }
+    }
+}
+
+// ---- lists ------------------------------------------------------------------------------
+
+fn (self: [T]) is_empty() -> bool { return self.len == 0 }
+
+fn (self: [T]) first() -> T? {
+    if self.len == 0 { return none }
+    return self[0]
+}
+
+fn (self: [T]) last() -> T? {
+    if self.len == 0 { return none }
+    return self[self.len - 1]
+}
+
+/// Calls `f` with each element in turn.
+fn (self: [T]) each(f: fn(T)) {
+    for item in self { f(item) }
+}
+
+/// A list of what `f` returns for each element.
+fn (self: [T]) map<U>(f: fn(T) -> U) -> [U] {
+    var out := List<U>.with_capacity(self.len)
+    for item in self { out.push(f(item)) }
+    return out
+}
+
+/// The elements for which `keep` is true.
+fn (self: [T]) filter(keep: fn(T) -> bool) -> [T] {
+    var out: [T] = []
+    for item in self {
+        if keep(item) { out.push(item) }
+    }
+    return out
+}
+
+/// Combines the elements into one value, starting from `start`.
+fn (self: [T]) fold<A>(start: A, f: fn(A, T) -> A) -> A {
+    var result := start
+    for item in self { result = f(result, item) }
+    return result
+}
+
+fn (self: [T]) any(test: fn(T) -> bool) -> bool {
+    for item in self {
+        if test(item) { return true }
+    }
+    return false
+}
+
+fn (self: [T]) all(test: fn(T) -> bool) -> bool {
+    for item in self {
+        if not test(item) { return false }
+    }
+    return true
+}
+
+/// How many elements `test` is true for.
+fn (self: [T]) count(test: fn(T) -> bool) -> int {
+    var n := 0
+    for item in self {
+        if test(item) { n += 1 }
+    }
+    return n
+}
+
+/// The first element `test` is true for.
+fn (self: [T]) find(test: fn(T) -> bool) -> T? {
+    for item in self {
+        if test(item) { return item }
+    }
+    return none
+}
+
+/// The index of the first element `test` is true for.
+fn (self: [T]) position(test: fn(T) -> bool) -> int? {
+    for i in 0..self.len {
+        if test(self[i]) { return i }
+    }
+    return none
+}
+
+fn (self: [T]) contains(wanted: T) -> bool {
+    for item in self {
+        if item == wanted { return true }
+    }
+    return false
+}
+
+fn (self: [T]) index_of(wanted: T) -> int? {
+    for i in 0..self.len {
+        if self[i] == wanted { return i }
+    }
+    return none
+}
+
+/// The sum of the elements, for a type with `+` and a `zero`.
+fn (self: [T]) sum() -> T {
+    var total := T.zero()
+    for item in self { total += item }
+    return total
+}
+
+/// The smallest element, by the order that `sort` uses.
+fn (self: [T]) min() -> T? {
+    if self.len == 0 { return none }
+    var best := self[0]
+    for item in self {
+        if __before(item, best) { best = item }
+    }
+    return best
+}
+
+/// The largest element, by the order that `sort` uses.
+fn (self: [T]) max() -> T? {
+    if self.len == 0 { return none }
+    var best := self[0]
+    for item in self {
+        if __before(best, item) { best = item }
+    }
+    return best
+}
+
+/// The text of each element, with `separator` between them.
+fn (self: [T]) join(separator: string) -> string {
+    var out := ""
+    for i in 0..self.len {
+        if i > 0 { out += separator }
+        out += "{self[i]}"
+    }
+    return out
+}
+
+/// The elements from index `from` up to, not including, index `to`.
+fn (self: [T]) slice(from: int, to: int) -> [T] {
+    if from < 0 or to > self.len or from > to { panic("slice out of range") }
+    var out := List<T>.with_capacity(to - from)
+    for i in from..to { out.push(self[i]) }
+    return out
+}
+
+/// The first `n` elements, or all of them if there are fewer.
+fn (self: [T]) take(n: int) -> [T] {
+    return self.slice(0, n.clamp(0, self.len))
+}
+
+/// What is left after the first `n` elements.
+fn (self: [T]) skip(n: int) -> [T] {
+    return self.slice(n.clamp(0, self.len), self.len)
+}
+
+fn (self: [T]) reversed() -> [T] {
+    var out := List<T>.with_capacity(self.len)
+    var i := self.len
+    while i > 0 {
+        i -= 1
+        out.push(self[i])
+    }
+    return out
+}
+
+fn (self: var [T]) reverse() {
+    var i := 0
+    var j := self.len - 1
+    while i < j {
+        self.swap(i, j)
+        i += 1
+        j -= 1
+    }
+}
+
+/// Each element with its index.
+fn (self: [T]) enumerate() -> [(int, T)] {
+    var out := List<(int, T)>.with_capacity(self.len)
+    for i in 0..self.len { out.push((i, self[i])) }
+    return out
+}
+
+/// Pairs of the elements of two lists, as many as the shorter list has.
+fn (self: [T]) zip<U>(other: [U]) -> [(T, U)] {
+    n := self.len.min(other.len)
+    var out := List<(T, U)>.with_capacity(n)
+    for i in 0..n { out.push((self[i], other[i])) }
+    return out
+}
+
+/// Adds every element of `other` at the end.
+fn (self: var [T]) extend(other: [T]) {
+    for item in other { self.push(item) }
+}
+
+/// Puts `item` at `index`, moving what was there and after it up by one.
+fn (self: var [T]) insert(index: int, item: T) {
+    if index < 0 or index > self.len { panic("index out of range") }
+    self.push(item)
+    var i := self.len - 1
+    while i > index {
+        self.swap(i, i - 1)
+        i -= 1
+    }
+}
+
+/// Takes out the element at `index`, moving what was after it down by one.
+fn (self: var [T]) remove(index: int) -> T {
+    item := self[index]
+    var i := index
+    while i + 1 < self.len {
+        self.swap(i, i + 1)
+        i += 1
+    }
+    self.pop()
+    return item
+}
+
+/// Sorts the list with `less`, which says whether its first argument goes before its
+/// second. The sort is stable: elements that are equal by `less` keep their order.
+fn (self: var [T]) sort_by(less: fn(T, T) -> bool) {
+    n := self.len
+    if n < 2 { return }
+    // Short runs are sorted in place by insertion.
+    run := 16
+    var first := 0
+    while first < n {
+        last := (first + run).min(n)
+        var i := first + 1
+        while i < last {
+            item := self[i]
+            var j := i
+            while j > first and less(item, self[j - 1]) {
+                self[j] = self[j - 1]
+                j -= 1
+            }
+            self[j] = item
+            i += 1
+        }
+        first += run
+    }
+    if n <= run { return }
+    // Then the runs are merged from the bottom up, between the list and one buffer of the
+    // same size.
+    var buffer := self
+    var width := run
+    while width < n {
+        var start := 0
+        while start < n {
+            mid := (start + width).min(n)
+            end := (start + 2 * width).min(n)
+            var i := start
+            var j := mid
+            var k := start
+            // Two runs that are in order already are only copied.
+            if mid < end and less(self[mid], self[mid - 1]) {
+                // Which run gives the next element is as good as random, so each step is
+                // written without a branch on it: a processor that guesses wrong half
+                // the time spends most of the sort recovering.
+                var plain := true
+                if end - mid == mid - start {
+                    // Two runs of one length. The first half of the result is merged
+                    // from the front and the second half from the back, turn about:
+                    // neither waits for the other, so the two go at once.
+                    var left_last := mid - 1
+                    var right_last := end - 1
+                    var back := end - 1
+                    var steps := mid - start
+                    while steps > 0 {
+                        right := less(self[j], self[i])
+                        buffer[k] = self[if right { j } else { i }]
+                        step := if right { 1 } else { 0 }
+                        j = j.wrapping_add(step)
+                        i = i.wrapping_add(1 - step)
+                        k += 1
+                        left := less(self[right_last], self[left_last])
+                        buffer[back] = self[if left { left_last } else { right_last }]
+                        down := if left { 1 } else { 0 }
+                        left_last = left_last.wrapping_sub(down)
+                        right_last = right_last.wrapping_sub(1 - down)
+                        back -= 1
+                        steps -= 1
+                    }
+                    if i == left_last + 1 and j == right_last + 1 {
+                        plain = false
+                        i = mid
+                        j = end
+                    } else {
+                        // The two halves did not meet: `less` contradicted itself. The
+                        // plain merge at least keeps every element, so it starts over.
+                        i = start
+                        j = mid
+                        k = start
+                    }
+                }
+                if plain {
+                    while i < mid and j < end {
+                        right := less(self[j], self[i])
+                        buffer[k] = self[if right { j } else { i }]
+                        step := if right { 1 } else { 0 }
+                        j = j.wrapping_add(step)
+                        i = i.wrapping_add(1 - step)
+                        k += 1
+                    }
+                }
+            }
+            while i < mid {
+                buffer[k] = self[i]
+                i += 1
+                k += 1
+            }
+            while j < end {
+                buffer[k] = self[j]
+                j += 1
+                k += 1
+            }
+            start += 2 * width
+        }
+        merged := buffer
+        buffer = self
+        self = merged
+        width *= 2
+    }
+}
+
+/// Sorts the list by `<`, and floats by `compare`, which is an order when `<` is not:
+/// -0.0 comes before 0.0, and NaN comes last.
+fn (self: var [T]) sort() {
+    self.sort_by((a, b) -> __before(a, b))
+}
+
+fn (self: [T]) sorted_by(less: fn(T, T) -> bool) -> [T] {
+    var out := self
+    out.sort_by(less)
+    return out
+}
+
+fn (self: [T]) sorted() -> [T] {
+    var out := self
+    out.sort()
+    return out
+}
+
+// ---- strings ----------------------------------------------------------------------------
+
+fn (self: string) is_empty() -> bool { return self.len == 0 }
+
+fn (self: string) contains(needle: string) -> bool {
+    return __str_find(self, needle, 0) >= 0
+}
+
+/// The byte offset of the first `needle` (Section 4.4).
+fn (self: string) find(needle: string) -> int? {
+    at := __str_find(self, needle, 0)
+    if at < 0 { return none }
+    return at
+}
+
+fn (self: string) starts_with(prefix: string) -> bool {
+    return __str_starts_with(self, prefix)
+}
+
+fn (self: string) ends_with(suffix: string) -> bool {
+    return __str_ends_with(self, suffix)
+}
+
+/// The text from byte offset `from` up to `to`. An offset that is out of range or inside
+/// a character panics.
+fn (self: string) slice(from: int, to: int) -> string {
+    return __str_slice(self, from, to)
+}
+
+/// The text without `prefix`, if it begins with it.
+fn (self: string) strip_prefix(prefix: string) -> string? {
+    if not __str_starts_with(self, prefix) { return none }
+    return __str_slice(self, prefix.len, self.len)
+}
+
+/// The text without `suffix`, if it ends with it.
+fn (self: string) strip_suffix(suffix: string) -> string? {
+    if not __str_ends_with(self, suffix) { return none }
+    return __str_slice(self, 0, self.len - suffix.len)
+}
+
+/// The text before and after the first `separator`.
+fn (self: string) cut(separator: string) -> (string, string)? {
+    at := __str_find(self, separator, 0)
+    if at < 0 { return none }
+    return (__str_slice(self, 0, at), __str_slice(self, at + separator.len, self.len))
+}
+
+/// The text without white space at either end.
+fn (self: string) trim() -> string { return __str_trim(self) }
+
+fn (self: string) to_upper() -> string { return __str_upper(self) }
+
+fn (self: string) to_lower() -> string { return __str_lower(self) }
+
+fn (self: string) replace(from: string, to: string) -> string {
+    return __str_replace(self, from, to)
+}
+
+/// The pieces of the text between occurrences of `separator`.
+fn (self: string) split(separator: string) -> [string] {
+    return __str_split(self, separator)
+}
+
+/// The lines of the text, without their line endings.
+fn (self: string) lines() -> [string] {
+    var out: [string] = []
+    for line in __str_split(self, "\n") {
+        out.push(line.strip_suffix("\r") else line)
+    }
+    if out.len > 0 and out[out.len - 1].len == 0 { out.pop() }
+    return out
+}
+
+fn (self: string) repeat(times: int) -> string { return __str_repeat(self, times) }
+
+/// The number of Unicode scalar values; `len` is the number of bytes.
+fn (self: string) count() -> int { return __str_count(self) }
+
+fn (self: string) bytes() -> [byte] { return __str_bytes(self) }
+
+/// The text that the bytes are in UTF-8.
+fn string.from_bytes(bytes: [byte]) -> string ! ParseError {
+    if not __bytes_valid_utf8(bytes) { fail ParseError { input: "bytes that are not UTF-8" } }
+    return __bytes_to_str(bytes)
+}
+
+// ---- maps -------------------------------------------------------------------------------
+
+/// `[K: V]`: a hash map that keeps its keys in the order they were added (Section 4.5).
+///
+/// The entries live in three lists, side by side; `_slots` is an open-addressing table of
+/// indexes into them, with -1 for an empty slot. A removed entry stays in the lists,
+/// marked dead, until the table next grows.
+pub type Map<K: Hashable, V> = {
+    _keys: [K],
+    _values: [V],
+    _live: [bool],
+    _slots: [int],
+    _len: int,
+}
+
+fn Map<K, V>.new() -> Map<K, V> {
+    return Map<K, V> { _keys: [], _values: [], _live: [], _slots: [], _len: 0 }
+}
+
+/// The map of a literal: `keys[i]` maps to `values[i]`, and a later entry replaces an
+/// earlier one with the same key.
+fn Map<K, V>._from_lists(keys: [K], values: [V]) -> Map<K, V> {
+    var map := Map<K, V>.new()
+    for i in 0..keys.len { map.insert(keys[i], values[i]) }
+    return map
+}
+
+/// The index of the entry for a key, or -1.
+fn (self: Map<K, V>) _find(key: K) -> int {
+    if self._slots.len == 0 { return -1 }
+    mask := self._slots.len - 1
+    var slot := key.hash().bit_and(mask)
+    while true {
+        entry := self._slots[slot]
+        if entry < 0 { return -1 }
+        if self._live[entry] and self._keys[entry] == key { return entry }
+        slot = (slot + 1).bit_and(mask)
+    }
+}
+
+/// Points a free slot of the table at an entry.
+fn (self: var Map<K, V>) _place(entry: int, key: K) {
+    mask := self._slots.len - 1
+    var slot := key.hash().bit_and(mask)
+    while self._slots[slot] >= 0 { slot = (slot + 1).bit_and(mask) }
+    self._slots[slot] = entry
+}
+
+/// Makes the table larger, leaving out the entries that were removed.
+fn (self: var Map<K, V>) _grow() {
+    var keys: [K] = []
+    var values: [V] = []
+    for i in 0..self._keys.len {
+        if self._live[i] {
+            keys.push(self._keys[i])
+            values.push(self._values[i])
+        }
+    }
+    var size := 8
+    while size < (keys.len + 1) * 4 { size *= 2 }
+    var slots := List<int>.with_size(size)
+    for i in 0..size { slots[i] = -1 }
+    var live := List<bool>.with_size(keys.len)
+    for i in 0..keys.len { live[i] = true }
+    self._slots = slots
+    self._live = live
+    for i in 0..keys.len { self._place(i, keys[i]) }
+    self._keys = keys
+    self._values = values
+}
+
+/// The value for a key, if the map has one. `m[key]` means this.
+fn (self: Map<K, V>) get(key: K) -> V? {
+    entry := self._find(key)
+    if entry < 0 { return none }
+    return self._values[entry]
+}
+
+fn (self: Map<K, V>) contains(key: K) -> bool {
+    return self._find(key) >= 0
+}
+
+/// Sets the value for a key, adding the key if the map does not have it.
+/// `m[key] = value` means this.
+fn (self: var Map<K, V>) insert(key: K, value: V) {
+    entry := self._find(key)
+    if entry >= 0 {
+        self._values[entry] = value
+        return
+    }
+    if (self._keys.len + 1) * 2 > self._slots.len { self._grow() }
+    self._place(self._keys.len, key)
+    self._keys.push(key)
+    self._values.push(value)
+    self._live.push(true)
+    self._len += 1
+}
+
+/// Takes a key out of the map, returning the value it had.
+fn (self: var Map<K, V>) remove(key: K) -> V? {
+    entry := self._find(key)
+    if entry < 0 { return none }
+    self._live[entry] = false
+    self._len -= 1
+    return self._values[entry]
+}
+
+/// Changes the value for a key with `f`, starting from `start` if the key is absent.
+fn (self: var Map<K, V>) update(key: K, start: V, f: fn(V) -> V) {
+    entry := self._find(key)
+    if entry >= 0 {
+        self._values[entry] = f(self._values[entry])
+    } else {
+        self.insert(key, f(start))
+    }
+}
+
+fn (self: Map<K, V>) is_empty() -> bool { return self._len == 0 }
+
+/// The keys, in the order they were added.
+fn (self: Map<K, V>) keys() -> [K] {
+    var out := List<K>.with_capacity(self._len)
+    for i in 0..self._keys.len {
+        if self._live[i] { out.push(self._keys[i]) }
+    }
+    return out
+}
+
+fn (self: Map<K, V>) values() -> [V] {
+    var out := List<V>.with_capacity(self._len)
+    for i in 0..self._keys.len {
+        if self._live[i] { out.push(self._values[i]) }
+    }
+    return out
+}
+
+/// The keys with their values, in the order the keys were added. A `for` loop over a map
+/// walks these.
+fn (self: Map<K, V>) entries() -> [(K, V)] {
+    var out := List<(K, V)>.with_capacity(self._len)
+    for i in 0..self._keys.len {
+        if self._live[i] { out.push((self._keys[i], self._values[i])) }
+    }
+    return out
+}
+
+fn (self: Map<K, V>) to_string() -> string {
+    if self._len == 0 { return "[:]" }
+    var out := "["
+    var first := true
+    for i in 0..self._keys.len {
+        if self._live[i] {
+            if not first { out += ", " }
+            first = false
+            out += __repr(self._keys[i])
+            out += ": "
+            out += __repr(self._values[i])
+        }
+    }
+    return out + "]"
+}
+
+// ---- sets -------------------------------------------------------------------------------
+
+/// A set that keeps its elements in the order they were added (Section 4.5).
+pub type Set<T: Hashable> = { _items: Map<T, bool>, _len: int }
+
+fn Set<T>.new() -> Set<T> {
+    return Set<T> { _items: Map<T, bool>.new(), _len: 0 }
+}
+
+fn Set<T>.from_list(items: [T]) -> Set<T> {
+    var set := Set<T>.new()
+    for item in items { set.insert(item) }
+    return set
+}
+
+/// Adds an element. Returns whether it was new.
+fn (self: var Set<T>) insert(item: T) -> bool {
+    if self._items.contains(item) { return false }
+    self._items.insert(item, true)
+    self._len += 1
+    return true
+}
+
+fn (self: Set<T>) contains(item: T) -> bool {
+    return self._items.contains(item)
+}
+
+/// Takes an element out. Returns whether it was there.
+fn (self: var Set<T>) remove(item: T) -> bool {
+    match self._items.remove(item) {
+        none => { return false }
+        _ => {
+            self._len -= 1
+            return true
+        }
+    }
+}
+
+fn (self: Set<T>) is_empty() -> bool { return self._len == 0 }
+
+/// The elements, in the order they were added.
+fn (self: Set<T>) items() -> [T] {
+    return self._items.keys()
+}
+
+fn (self: Set<T>) to_string() -> string {
+    return "Set" + __repr(self._items.keys())
+}
+
+// ---- std/os -----------------------------------------------------------------------------
+//
+// The functions of a standard package are declared here as `package__name`, and are
+// reached as `package.name` by a file that imports the package.
+
+/// The program's arguments, without its own name.
+fn os__args() -> [string] { return __args() }
+
+/// The value of an environment variable.
+fn os__env(name: string) -> string? {
+    if not __env_has(name) { return none }
+    return __env(name)
+}
+
+/// Ends the program with an exit status.
+fn os__exit(status: int) { __exit_now(status) }
+
+// ---- std/io -----------------------------------------------------------------------------
+
+/// The next line of standard input, without its line ending; `none` at the end.
+fn io__read_line() -> string? {
+    line := __read_line()
+    if __at_end() { return none }
+    return line
+}
+
+/// Every remaining line of standard input.
+fn io__read_lines() -> [string] {
+    var lines: [string] = []
+    while line := io__read_line() { lines.push(line) }
+    return lines
+}
+
+/// The text of a file.
+fn io__read_file(path: string) -> string ! IoError {
+    text := __read_file(path)
+    if __failed() { fail IoError { message: __last_error() } }
+    return text
+}
+
+/// Writes a file, replacing what was there.
+fn io__write_file(path: string, text: string) ! IoError {
+    if not __write_file(path, text) { fail IoError { message: __last_error() } }
+}
+
+/// Writes text to standard output, with no line feed after it.
+fn io__write(text: string) { __write(text) }
+
+/// Writes a line to standard error.
+fn io__eprint(text: string) { __eprint(text) }
+
+// ---- std/test ---------------------------------------------------------------------------
+
+/// Fails the test unless `ok` holds.
+fn test__assert(ok: bool, location: string) {
+    if not ok { panic("assertion failed at {location}") }
+}
+
+/// Fails the test unless the two values are equal, and shows both.
+fn test__assert_eq<T>(left: T, right: T, location: string) {
+    if not (left == right) {
+        panic("assertion failed at {location}\n   left: {__repr(left)}\n  right: {__repr(right)}")
+    }
+}
+
+/// Fails the test with a message.
+fn test__fail(message: string, location: string) {
+    panic("{message}, at {location}")
+}

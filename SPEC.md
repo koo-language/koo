@@ -148,7 +148,7 @@ Identifiers are ASCII letters, digits and underscores, not starting with a digit
 
 A capitalized identifier followed by `{` is a struct literal or a destructuring pattern, depending on position (Section 3.9). A capitalized identifier followed by `.` is a type-level access (`Order.from_row`, `Payment.Cash`, `Channel<int>.new`). Acronyms are written as words: `HttpServer`, `user_id`, `to_json`.
 
-The primitive type names of Section 4.2 are predeclared. They cannot be declared again or used as the name of a binding, parameter, function or package, though they may name a member (`row.int("amount")`). A name imported from C is always written after its import's prefix (`c.Z_OK`), and after that prefix case carries no meaning (Section 11.1).
+The primitive type names of Section 4.2 are predeclared. They cannot be declared again or used as the name of a binding, parameter, constant, label or import. Like the reserved words they may name a member (`row.int("amount")`, Section 3.2). A name imported from C is always written after its import's prefix (`c.Z_OK`), and after that prefix case carries no meaning (Section 11.1).
 
 ### 3.2 Keywords
 
@@ -156,18 +156,18 @@ The complete reserved word list, 32 words:
 
 `actor` `and` `as` `break` `continue` `defer` `distinct` `else` `enum` `error` `fail` `fn` `for` `if` `import` `in` `interface` `is` `match` `not` `or` `pub` `resource` `return` `scope` `select` `spawn` `take` `type` `unsafe` `var` `while`
 
-A word that follows `.` is always a member name, so the reserved words are free there: `log.error(...)`, `rows.all()`, `event.type`. Such a member is declared the same way, with the word as a function or method name after `fn` or as a field name before `:` (`fn error(...)` in `std/log`, `{ type: string }`), and is reachable only after a `.` or in a struct literal. `true`, `false` and `none` are literals. `self` is an ordinary identifier bound inside methods, and `Self` is a type name bound inside interfaces (Section 4.9). Five words are **contextual**, reserved only in the position named: `c` (after `import` and before a string), `link` (in an `import c` declaration), `after` (at the start of a `select` arm), and `all` and `race` (as the bare callee of a call, Section 7.2).
+A word that follows `.` is always a member name, so the reserved words are free there: `log.error(...)`, `rows.all()`, `event.type`. Such a member is declared the same way, with the word as a function or method name after `fn` or as a field name before `:` (`fn error(...)` in `std/log`, `{ type: string }`), and is reachable only after a `.` or in a struct literal. The primitive type names (Section 3.1) may name members on the same terms. `true`, `false` and `none` are literals. `self` is an ordinary identifier bound inside methods, and `Self` is a type name bound inside interfaces (Section 4.9). Five words are **contextual**, reserved only in the position named: `c` (after `import` and before a string), `link` (in an `import c` declaration), `after` (at the start of a `select` arm), and `all` and `race` (as the bare callee of a call, Section 7.2).
 
 ### 3.3 Literals
 
 | Literal | Form | Type |
 | --- | --- | --- |
-| Integer | `42`, `1_000_000`, `0xFF`, `0b1010` | `int`, or a sized type when the context requires one |
+| Integer | `42`, `1_000_000`, `0xFF`, `0b1010`; an underscore may separate two digits | `int`, or a sized type when the context requires one |
 | Float | `3.14`, `1e9`, `2.5e-3` | `float` |
 | Decimal | `19.99d`, `0.1d`, `110d` | `Decimal` |
 | Duration | `30s`, `5min`, `2h`, `250ms`, `10us`, `1h30min` | `Duration` |
 | Character | `'a'`, `'\n'`, `'\u{1F600}'` | `char` |
-| String | `"hello"`, with `\n` `\t` `\"` `\\` `\{` `\u{1F600}` escapes | `string` |
+| String | `"hello"`, with the escapes `\n` `\r` `\t` `\0` `\\` `\"` `\'` `\{` `\u{1F600}`; on one line | `string` |
 | Interpolated string | `"total: {order.total}"`; a literal brace is `\{` | `string` |
 | Text block | `"""` on its own line, then lines of text, then `"""`; interpolated; the closing delimiter's indentation is removed from every line | `string` |
 | Raw string | `` `no \escapes or {interpolation} here` `` (backticks, may span lines) | `string` |
@@ -178,7 +178,7 @@ A word that follows `.` is always a member name, so the reserved words are free 
 | Tuple | `(1, "a")`, `()` | `(int, string)`, `()` |
 | Struct | `Order { id: id, total: 10d }` or shorthand `Order { id, total }` | `Order` |
 
-The `d` suffix is the only way to write a decimal literal; `0.1` without it is a float. It follows decimal digits only, so `0x1d` is the hexadecimal integer 29. The duration units are `ns`, `us`, `ms`, `s`, `min` and `h`; there is no day unit (Section 10.6), so `d` is never ambiguous. A duration literal is one or more number-unit pairs with no spaces, largest unit first. Every string literal is interpolated unless raw; `{` inside a string begins an expression and is escaped as `\{`; `}` outside an interpolation is an ordinary character. An interpolation may end with a format after a colon: `{ratio:.2}`, `{id:08}`, `{name:>10}`. A text block is the form for multi-line SQL, and like any interpolated literal it may be a template (below). Maps use square brackets so that braces always mean a block, a struct literal or a pattern. A field-less struct, error or enum variant is written by its name alone: `Timeout`, `Payment.Cash`.
+The `d` suffix is the only way to write a decimal literal; `0.1` without it is a float. It follows decimal digits only, so `0x1d` is the hexadecimal integer 29. The duration units are `ns`, `us`, `ms`, `s`, `min` and `h`; there is no day unit (Section 10.6), so `d` is never ambiguous. A duration literal is one or more pairs of a whole number and a unit with no spaces, largest unit first, each unit at most once; a fraction is written in the smaller unit (`1500ms`, `1h30min`). Every string literal is interpolated unless raw; `{` inside a string begins an expression and is escaped as `\{`; `}` outside an interpolation is an ordinary character. An interpolation is written on one line and holds any expression, string literals included; it may end with a format after a colon: `{ratio:.2}`, `{id:08}`, `{name:>10}`. A text block is the form for multi-line SQL, and like any interpolated literal it may be a template (below). Maps use square brackets so that braces always mean a block, a struct literal or a pattern. A field-less struct, error or enum variant is written by its name alone: `Timeout`, `Payment.Cash`.
 
 **Template types.** When the expected type of an interpolated string literal is a *template type*, the literal is not built into a string: the compiler passes the literal's fixed segments and its interpolated values to the type separately. A template type declares a type-level function `from_template(parts: [string], values: ...P)` returning the type: it receives the literal's fixed segments, one more than it has interpolations, and then the interpolated values, each of which must satisfy the parameter type `P`. An interpolation format (`{x:.2}`) is a compile error in a template, because the value is not being turned into text. Only `std` may declare a template type. There are two: `sql.Query`, whose values are `sql.Param`s and become bound parameters (Section 10.3), and `log.Message`, whose values become structured fields. A `string` value is not accepted where a template type is expected.
 
@@ -207,7 +207,7 @@ No operator can be given a new meaning. Arithmetic is defined on the built-in nu
 
 `name := expr` declares an immutable binding with inferred type. `var name := expr` declares a mutable one. `name: Type = expr` and `var name: Type = expr` give an explicit type. Redeclaring a name in the same scope is a compile error; an inner scope may shadow an outer name.
 
-Top-level declarations are constants: types, functions, actors, interfaces, errors, and bindings whose initializer is a compile-time constant expression (a literal, or an operator or constructor applied to constants). Anything that runs at startup happens in `main`. There is no initialization order because there is no runtime initialization outside `main`.
+Top-level declarations are constants: types, functions, actors, interfaces, errors, and bindings whose initializer is a compile-time constant expression (a literal, or an operator or constructor applied to constants). A top-level binding names one constant and is never `var`. Anything that runs at startup happens in `main`. There is no initialization order because there is no runtime initialization outside `main`.
 
 ### 3.6 Comments and documentation
 
@@ -217,13 +217,13 @@ Top-level declarations are constants: types, functions, actors, interfaces, erro
 
 Statements end at newline; there are no semicolons. Braces are of two kinds. **Block braces** hold statements or declarations, one per line: the bodies of functions, lambdas, control flow, `match`, `select`, `scope`, `spawn`, `defer` and `unsafe`, and of `actor`, `interface` and `enum` declarations (in an `enum` body a comma may stand for the newline). **Literal braces** hold a comma-separated list: a struct literal, a struct type or a pattern. Which kind a brace is follows from what precedes it (Section 3.9), never from what is inside it.
 
-A newline ends a statement when the innermost open bracket is a block brace, or when no bracket is open. Inside `(`, `[` and literal braces a newline is white space; a block nested inside them, such as a lambda body passed as an argument, has significant newlines again. In addition, a statement continues onto the next line when that line begins with `.`, `else`, `|`, or a binary operator from levels 3 to 9 of Section 3.4 other than `-`. A line that begins with `-` starts a new statement, because `-` also begins an expression; a long subtraction is wrapped inside parentheses. Nothing about how a line ends causes continuation. A long error set is therefore wrapped with each `|` leading its line. `koo fmt` enforces one statement per line.
+A newline ends a statement when the innermost open bracket is a block brace, or when no bracket is open. Inside `(`, `[` and literal braces a newline is white space, and the list they hold may end with a comma; a block nested inside them, such as a lambda body passed as an argument, has significant newlines again. The angle brackets of a type-argument list are not brackets in this sense. In addition, a statement continues onto the next line when that line begins with `.`, `else`, `|`, or a binary operator from levels 3 to 9 of Section 3.4 other than `-`. A line that begins with `-` starts a new statement, because `-` also begins an expression; a long subtraction is wrapped inside parentheses. Nothing about how a line ends causes continuation. A long error set is therefore wrapped with each `|` leading its line, and the `{` that opens a block is on the line of the statement it belongs to. `koo fmt` enforces one statement per line.
 
 An expression used as a statement must be a call, or end in `?` or in an `else` alternative (`done.recv() else return`). Its value is discarded, unless it is a result, which may not be (Section 6.3).
 
 ### 3.8 Attributes
 
-An attribute is `@name` or `@name(args)` placed before a declaration or after a field's type. The set of attributes is closed and defined by the compiler and the standard library; packages cannot define new attributes except deriver names inside `@derive`.
+An attribute is `@name` or `@name(args)` placed before a declaration or after a field's type. An argument is a literal or a name; a name may be dotted (`yaml.codec`) or take arguments of its own (`restart(max: 5)`), and an argument may be given by name (`tag: "kind"`). The set of attributes is closed and defined by the compiler and the standard library; packages cannot define new attributes except deriver names inside `@derive`.
 
 | Attribute | On | Meaning |
 | --- | --- | --- |
@@ -240,12 +240,13 @@ An attribute is `@name` or `@name(args)` placed before a declaration or after a 
 ### 3.9 Disambiguation rules
 
 - **Type arguments are never written at call sites.** `largest(xs)` infers `T`; to pin a type, annotate the result (`m: int? = largest(xs)`) or an argument. Type arguments appear only after a type name. Because case is enforced (Section 3.1), an UpperCamelCase identifier followed by `<` always begins a type-argument list, in declarations, type expressions and expressions alike (`Cache<string, Order>`, `Channel<int>.new(capacity: 8)`); to compare two enum variants with `<`, parenthesize the left one. A name after a C import's prefix never takes type arguments, so `c.Z_OK < n` is a comparison (Section 11.1). For type-level calls the list and map types have the names `List<T>` and `Map<K, V>` (`List<byte>.with_size(n)`, `Map<string, int>.new()`); everywhere else they are written `[T]` and `[K: V]`, and `koo fmt` rewrites the long form.
-- **Lambdas.** `x -> body` for one untyped parameter; `(a, b) -> body` for several or for a typed parameter `(e: NotFound) -> body`; `() -> body` for none. The body is an expression, an assignment (`x -> total += x`, whose value is `()`) or a brace block. A parenthesized list followed by `->` is a lambda; otherwise it is a tuple or a parenthesized expression, and `()` is the empty tuple. `return`, `fail` and `?` in a lambda body leave the lambda, not the enclosing function.
+- **Lambdas.** `x -> body` for one untyped parameter; `(a, b) -> body` for several or for a typed parameter `(e: NotFound) -> body`; `() -> body` for none. The body is a brace block or one simple statement: an expression, an assignment (`x -> total += x`, whose value is `()`), a `return` or a `fail`. A parenthesized list followed by `->` is a lambda; otherwise it is a tuple or a parenthesized expression, and `()` is the empty tuple. `return`, `fail` and `?` in a lambda body leave the lambda, not the enclosing function.
 - **Braces.** After a capitalized name in an expression, `{` opens a struct literal, except in the positions the next rule names. In a `type`, `resource`, `error` or enum-variant declaration, and inside a type, it opens a struct type. In a `match` arm before `=>`, it opens a pattern. Every other `{` opens a block.
 - **Struct literals in conditions.** The condition of `if` and `while`, the scrutinee of `match` and the subject of `for` may not contain a struct literal unless parenthesized: `if a == (Order { id }) { ... }`. Without this rule `Order {` would be ambiguous with the block.
 - **Bare variants.** Where a value of an enum type is expected, a bare capitalized name is looked up among that enum's variants first, then among types.
 - **Patterns.** `Name { ... }` is a destructuring pattern only in a `match` arm, where it ends at `=>`. The `is` operator takes a bare type name and no braces (Section 6.6), so `if p is Cash {` is unambiguous.
-- **Binding `else`.** After `else`, an identifier followed by `=>` binds the error (Section 6.4); anything else is the alternative expression.
+- **Binding `else`.** After `else`, an identifier followed by `=>` binds the error (Section 6.4); anything else is the alternative expression. A `match` guard and a `select` operand end at the arm's own `=>`, so in them `else` never binds unless it is parenthesized: in `Card if cached(k) else fallback => f()` the alternative is `fallback`.
+- **Statements that begin with `if` or `match`.** They are that statement, and nothing follows the closing brace. To use the value, bind it or parenthesize it: `(match k { ... })?`.
 - **Labels.** `label: for ...` and `label: while ...` name a loop; `break label` and `continue label` target it. A label is distinguishable from a typed declaration because a keyword follows the colon.
 
 ## 4. Type system
@@ -318,7 +319,7 @@ A substring shares the original's buffer (Section 5.1). Because strings are immu
 
 **Indexing.** `xs[i]` on a list or fixed array panics when `i` is out of range; `xs.get(i)` returns `T?`. `m[k]` on a map returns `V?`; `m[k] = v` inserts or replaces and requires a `var` binding; `m.update(k, 0, n -> n + 1)` changes an entry in place, starting from the given value when the key is absent. `xs[a..b]` is a slice: a list sharing the original's buffer until either is mutated. A constant index into a fixed array is checked at compile time.
 
-**Values.** Collections are values (Section 5). Collection methods (`map`, `filter`, `sort`, `sum`, `group_by`, and so on) are eager: each returns a new collection, and each stage runs to completion before the next begins. When the lambdas in a chain such as `xs.filter(f).map(g)` do not suspend, fail or assign anything outside themselves, the compiler fuses the chain into one pass with one allocation. The only difference a program could then observe is which panic is reported when two stages would both panic, and that is unspecified. For a sequence too large to hold, use an iterator (Section 6.7).
+**Values.** Collections are values (Section 5). Collection methods (`map`, `filter`, `sort`, `sum`, `group_by`, and so on) are eager: each returns a new collection, and each stage runs to completion before the next begins. When the functions in a chain such as `xs.filter(f).map(g)` do nothing that could be noticed from outside (they do not suspend, do no input or output, change no variable but their own, and call only functions of which the same is known), the compiler fuses the chain into one pass with at most one allocation. The only differences a program could then observe concern a panic: which one is reported when two stages would both panic, and, for a chain that ends in `any`, `all` or `find`, which stop at the first answer, whether a panic in a later element happens at all. Both are unspecified. For a sequence too large to hold, use an iterator (Section 6.7).
 
 ### 4.6 Structs
 
@@ -339,7 +340,7 @@ A field's type may be written inline as another struct type, so a type can mirro
 
 Every struct has `==` when all its fields have `==`, satisfies `Hashable` when all its fields do, and has a generated `to_string()` method for debugging, which a hand-written `to_string()` replaces. JSON and other formats are in Sections 10.4 and 10.5.
 
-**Methods** are declared in the same package as the type, and are visible outside it when `pub`. The receiver kind follows Section 5.3:
+**Methods** are declared in the same package as the type, and are visible outside it when `pub`. The receiver is always named `self`, and its kind follows Section 5.3:
 
 ```koo
 fn (self: Order) describe() -> string { ... }               // borrow
@@ -391,7 +392,7 @@ Absence nests, because generic code requires it: `xs.get(i)` on an `[int?]` is a
 
 ### 4.9 Interfaces
 
-An interface names a set of signatures: methods, and type-level functions written `fn Self.name(...)`. A type satisfies an interface by having them (structural, as in Go): the same parameter types, and a return type that is the interface's or widens to it (Section 4), which includes an error set that is smaller. Parameter kinds must agree on `var`. Borrow and `take` satisfy one another, because `take` is an optimization (Section 5.3), except where the parameter is a resource or a function: for those `take` changes what the callee may do, so the kinds must be the same. A type may state `pub type Postgres: Database = { ... }` to get a compile-time check and a clearer error message.
+An interface names a set of signatures: methods, and type-level functions written `fn Self.name(...)`. A type satisfies an interface by having them (structural, as in Go): the same parameter types, and a return type that is the interface's or widens to it (Section 4), which includes an error set that is smaller. Parameter kinds must agree on `var`. Borrow and `take` satisfy one another, because `take` is an optimization (Section 5.3), except where the parameter is a resource or a function: for those `take` changes what the callee may do, so the kinds must be the same. A declaration may state what its type satisfies, to get a compile-time check and a clearer error message: `pub type Postgres: Database = { ... }`, with `+` between several interfaces. `resource`, `enum` and `actor` declarations may do the same.
 
 ```koo
 pub interface Database {
@@ -444,7 +445,7 @@ There are no higher-kinded types, no associated types, no specialization, no gen
 
 ### 4.11 Function types
 
-`fn(A, B) -> R ! E` is the type of a function taking `A` and `B` and returning the result type `R ! E`. `fn(A) -> R` has an empty error set. `fn()` takes nothing and returns `()`. Named functions and lambdas are values of these types. Parameter kinds (Section 5.3) are part of the type: `fn(var [int])` and `fn([int])` are different types.
+`fn(A, B) -> R ! E` is the type of a function taking `A` and `B` and returning the result type `R ! E`. `fn(A) -> R` has an empty error set. `fn()` takes nothing and returns `()`. The `!` after a function type's return type belongs to the function type; a result whose success is a function is written `(fn() -> R) ! E`, and parentheses around any one type only group. Named functions and lambdas are values of these types. Parameter kinds (Section 5.3) are part of the type: `fn(var [int])` and `fn([int])` are different types.
 
 A lambda or named function written directly as an argument is compiled into the callee's instantiation and inlined like any other code, so `xs.map(x -> x + 1)` costs what the equivalent loop costs. A function value that is stored, in a variable, a field or a collection, is called indirectly.
 
@@ -630,7 +631,7 @@ Parameters are typed. The return type follows `->`; a function with no `->` retu
 
 `return expr` ends the function with a success value. **`fail expr`** ends it with an error, which must be in the function's error set. The two are different statements so that a reader, and the compiler, never has to infer which one a value means.
 
-A **variadic** parameter `name: ...T` must be last and collects zero or more arguments into a `[T]`. When `T` is an interface the elements are interface values (Section 4.9), so the arguments may be of different types. Parameters may have defaults (`port: int = 5432`); any argument may be passed by name (`connect(host, port: 5432)`), and after the first named argument all must be named. There is no overloading: one name, one function. The built-in conversions of Section 4.2 are the single exception. A type-level function is declared in the package that declares the type.
+A **variadic** parameter `name: ...T` must be last and collects zero or more arguments into a `[T]`. When `T` is an interface the elements are interface values (Section 4.9), so the arguments may be of different types. Parameters may have defaults (`port: int = 5432`), which are constants; any argument may be passed by name (`connect(host, port: 5432)`), and after the first named argument all must be named. There is no overloading: one name, one function. The built-in conversions of Section 4.2 are the single exception. A type-level function is declared in the package that declares the type.
 
 `main` is `fn main()` or `fn main() ! E`. An error returned from `main` is printed and the process exits with status 1.
 
@@ -675,7 +676,7 @@ There are three ways, and `?` and `else` also apply to `T?`.
 order := get_order(db, id)?
 ```
 
-**Inspect with `match`.** Arms for the success value are ordinary patterns. An arm for an error begins with `!`, as the error set does in the type, so a success and an error can never be confused, whatever their types. Every outcome must be covered; `! e` covers every remaining error. An arm for an error that is not in the set is a warning, not an error, so that a library may stop returning an error without breaking its callers (Section 8.5).
+**Inspect with `match`.** Arms for the success value are ordinary patterns. An arm for an error begins with `!`, as the error set does in the type, so a success and an error can never be confused, whatever their types. The `!` applies to the whole arm, so `! NotFound | Conflict` matches either error. Every outcome must be covered; `! e` covers every remaining error. An arm for an error that is not in the set is a warning, not an error, so that a library may stop returning an error without breaking its callers (Section 8.5).
 
 ```koo
 match get_order(db, id) {
@@ -735,7 +736,7 @@ match payment {
 
 A name bound by a pattern holds a copy of the part it matched (a lazy one, Section 5.1), so the matched value may be changed inside the arm. Matching a value that contains a resource consumes it.
 
-`match` must be exhaustive, with the catch-all that Section 4.7 requires for another package's open enum. A `match` on a result must cover the success value and every error in the set. **Values.** A block of statements never has a value in Koo. `match` and `if`/`else` may still be used for their value. Every arm or branch is then a single expression (for `if`, the one expression inside its braces: `larger := if a > b { a } else { b }`), and all of them have the same type. An arm or branch that ends by leaving, with `return`, `fail`, `break`, `continue` or `panic`, has any type and may be a block. A computation that needs statements to produce a value is a function. Used as statements, `match` and `if` take an expression, a statement or a block in each arm, and any value is discarded as in an expression statement (Section 3.7).
+`match` must be exhaustive, with the catch-all that Section 4.7 requires for another package's open enum. A `match` on a result must cover the success value and every error in the set. **Values.** A block of statements never has a value in Koo. `match` and `if`/`else` may still be used for their value. Every arm or branch is then a single expression (for `if`, the one expression inside its braces: `larger := if a > b { a } else { b }`), and all of them have the same type. An arm or branch that ends by leaving, with `return`, `fail`, `break`, `continue` or `panic`, has any type and may be a block. A computation that needs statements to produce a value is a function. Used as a statement, `match` takes in each arm a block or one simple statement (an expression, an assignment, `return`, `fail`, `break` or `continue`), `if` takes blocks, and any value is discarded.
 
 `x is T` is a `bool` that tests whether `x`'s variant or dynamic type is `T`; it binds nothing and takes no braces. To bind, use `match`.
 
@@ -743,7 +744,7 @@ A name bound by a pattern holds a copy of the part it matched (a lazy one, Secti
 
 `if`/`else if`/`else`, no parentheses. `while cond`. `break` and `continue`, optionally labeled (Section 3.9). No `do-while`, no `goto`, no three-clause `for`.
 
-**Binding conditions.** `if name := expr { ... }` evaluates `expr`, which must be a `T?`, and runs the block with `name` bound to the value when there is one; an `else` branch runs otherwise. `while name := expr { ... }` repeats for as long as there is one.
+**Binding conditions.** `if name := expr { ... }` evaluates `expr`, which must be a `T?`, and runs the block with `name` bound to the value when there is one; an `else` branch runs otherwise. `while name := expr { ... }` repeats for as long as there is one. As in any `:=`, a tuple pattern or `_` may stand in place of the name.
 
 ```koo
 if user := find_user(email) { greet(user) }
@@ -950,7 +951,7 @@ select {
 }
 ```
 
-The operands of every arm are evaluated before the wait, and a value offered to `send` is moved only if that arm runs. An arm's body is an expression, a statement or a block.
+The operands of every arm are evaluated before the wait, and a value offered to `send` is moved only if that arm runs. An arm's body is a block or one simple statement, as in `match` (Section 6.6).
 
 ### 7.7 Cancellation and context
 
@@ -993,7 +994,7 @@ import pkg.koo.io/acme/stripe v2
 import ./orders
 ```
 
-An import binds the package's last path segment: `http.App`, `postgres.connect`, `orders.get_order`. `import x as y` renames, and is required when the last segment is not an identifier. Imports are per file. An unused import is a compile error. Packages may not import one another in a cycle.
+An import binds the package's last path segment: `http.App`, `postgres.connect`, `orders.get_order`. `import x as y` renames, and is required when the last segment is not an identifier. Imports are per file and come before its declarations. An unused import is a compile error. Packages may not import one another in a cycle.
 
 The standard library is `std/...`. Local packages are relative paths. Registry packages are `pkg.koo.io/owner/name` followed by their major version; the major must match a dependency in the manifest, and two majors of one package may coexist in a build.
 
@@ -1153,10 +1154,10 @@ The reference example in Section 1.4 relies on these facts.
 JSON needs no annotation, no import beyond `std/json` and no schema file. For every type whose fields are serializable, the following exist, generated when first used:
 
 ```koo
-T.from_json(bytes: take [byte]) -> T ! json.Error // decode and validate
-t.to_json() -> [byte]                              // encode
-t.write_json(w: var Writer) ! IoError              // encode to a stream without an intermediate buffer
-T.json_schema() -> Json                            // JSON Schema 2020-12, for OpenAPI and tool definitions
+fn T.from_json(bytes: take [byte]) -> T ! json.Error   // decode and validate
+fn (self: T) to_json() -> [byte]                       // encode
+fn (self: T) write_json(w: var Writer) ! IoError       // encode to a stream without an intermediate buffer
+fn T.json_schema() -> Json                             // JSON Schema 2020-12, for OpenAPI and tool definitions
 ```
 
 They are the members of two interfaces: `json.Encode` (`to_json`, `write_json`, `json_schema`) and `json.Decode` (`from_json`). A serializable type satisfies both automatically, as it satisfies `Hashable` (Section 4.9), and generic code asks for them as constraints: `fn (self: Request) json<T: json.Decode>() -> T ! json.Error`. A type that declares one of these functions by hand keeps its own, and the rest are still generated.
@@ -1379,6 +1380,8 @@ The compiler is a multi-stage pipeline with three code generators behind one int
 
 Cranelift generates native code only, which is why Wasm debug builds have their own emitter. All three consume the same KIR after step 8. A behavioral difference between them is a compiler bug.
 
+LLVM is the first of the three to exist, because the language's first claim is speed and that claim can only be tested against the optimizer Rust uses. Until milestone 0.2 it also makes the debug builds, and the compiler drives it by writing LLVM IR as text and running the system's `clang`, which keeps the compiler free of a build-time dependency on LLVM.
+
 ### 13.3 Targets
 
 Target names are `<arch>-<os>[-<libc>]`.
@@ -1449,8 +1452,8 @@ Section 5.11 lists where Koo's design costs more than Rust's. The targets above 
 
 | Milestone | Scope |
 | --- | --- |
-| 0.1 | Parser, declaration and body checking, ownership pass with the exclusivity check, Cranelift backend, core types, results, `T?`, resources, core mode, `koo run`, `koo test`, `std/test`. Hello world. |
-| 0.2 | LLVM backend and release builds. FFI with header import. **Gate 1:** memory-model benchmarks (copies, reference-count operations, allocation microbenchmarks) published against Rust and Swift. |
+| 0.1 | Parser, declaration and body checking, ownership pass with the exclusivity check, LLVM backend and release builds, core types, results, `T?`, resources, core mode, `koo run`, `koo test`, `std/test`. Hello world. **Gate 1:** memory-model benchmarks (copies, reference-count operations, allocation microbenchmarks) published against Rust and Swift. |
+| 0.2 | Cranelift backend for debug builds. Generics, interfaces and lambdas. FFI with header import. |
 | 0.3 | Suspension lowering. Runtime: tasks, scheduler, context, deadlines and cancellation, scopes, channels, `map_parallel`, `all`, `race`, `with_timeout`, `isolate`. WebAssembly emitter; `wasm32-none` and `wasm32-wasip3` pass the conformance suite for everything implemented so far. The deriver sandbox and the JSON deriver. `std/net`, `std/http` (HTTP/1.1), `std/json`. **Gate 2:** task and HTTP benchmarks published, with compile time and binary size; open questions 8 and 10 settled. |
 | 0.4 | Actors, supervision, `Shared`. `std/sql/postgres` with the row deriver, `std/log`. The reference example runs end to end natively and as a `wasi:http` component. Section 14 settled. |
 | 0.5 | `koo fmt`, `koo lsp`, `--show-copies`, cross-compilation. Package manager, pkg.koo.io, `koo publish`, `@derive` for third-party derivers. |
@@ -1500,6 +1503,10 @@ Version 0.5 is the result of reading 0.4 as its implementer would. It settles ev
 **Compilation.** Core is a restriction on what a package uses, not a way of compiling it (9.1). A second inferred summary, *may keep*, makes reference-count elision sound across calls (5.3, 5.6). An indirect call tests one bit to learn whether it needs a frame (13.5). Unwinding through suspended frames and at `@c` boundaries is specified (13.5, 11.3). The pipeline checks everything before it instantiates anything, and derivers run on demand (13.1). Call depth has one description (7.1, 13.5).
 
 **Smaller fixes.** `Decimal` division by zero (4.2, 4.3). Chain fusion no longer requires lambdas that cannot panic (4.5). Actor handles satisfy interfaces; a task spawned by an actor starts with an empty ask chain; a `send` to `self` on a full mailbox panics (7.3). What the compiler derives for a public type is part of its API (8.5). Derivers are functions with function names and must be core code (10.5). `Json` is `@closed` (10.4). Milestones are reordered so that nothing precedes what it depends on, and specification versions are distinguished from milestones (13.7).
+
+**Settled by the grammar.** Writing `spec/grammar.ebnf` and the parser that implements it (`compiler/koo-syntax`, whose tests parse every code block in this document) fixed the points the prose had left open. The primitive type names may name members, as reserved words do (3.1, 3.2). The escapes `\r`, `\0` and `\'` exist; a duration literal uses whole numbers; an interpolation is written on one line (3.3). Every comma-separated list may end with a comma, angle brackets do not suspend newlines, and an opening brace is on the line of its statement (3.7). The body of a lambda, a `match` arm or a `select` arm is a block or one simple statement (3.9, 6.6, 7.6). `!` applies to a whole `match` arm (6.4). `resource`, `enum` and `actor` declarations may state the interfaces they satisfy (4.9). A receiver is named `self` (4.6). A top-level binding is one name and never `var` (3.5). `:=` takes a tuple pattern or `_` wherever it takes a name (6.7). Attribute arguments have a grammar (3.8). `!` after a function type's return type belongs to the function type (4.11). Imports come first in a file (8.2). A `match` guard and a `select` operand end at the arm's `=>`, and a statement that begins with `if` or `match` ends at its closing brace (3.9). An underscore in a number separates two digits (3.3). A syntax tree is at most 512 levels deep (`spec/grammar.ebnf`). The four signatures in 10.4 are now written as Koo.
+
+**Settled by the compiler.** The first code generator is LLVM, not Cranelift, and Gate 1 moves to milestone 0.1 with it (13.2, 13.7). An interpolation format is an optional alignment (`<`, `>`, `^`), an optional `0` that pads a number with zeros after its sign, an optional width counted in characters, and for a `float` an optional `.` and a number of decimals; without an alignment a number goes to the right and anything else to the left (3.3). The default of a parameter is a constant: a literal, `none`, a list or map of constants, or a field-less enum variant. It is checked where it is declared, and a `var` or `take` parameter has none (3.9). A binding condition takes a tuple pattern: `if (key, value) := text.cut("=")` (6.7). A name that contains `__` is reserved for the standard library. `koo test` runs each test in a process of its own, so a test that panics fails alone (12.4). `IoError { message: string }` is the error of `std/io`, and it is predeclared. `koo run file.koo` runs one file as a program, and `koo run dir` runs the package in a directory; `koo test dir` adds its `*_test.koo` files (8.1, 12.4). An import belongs to its file. Exclusivity extends to blocks: a call that changes a variable through a `var` argument or a `var` receiver may not be given a block that uses that variable, and where the variable belongs to an enclosing function it may not be given a lent function either, since that one may be such a block (5.4, 5.7). Whether a function parameter is lent is decided by its declared type: a parameter declared with a type parameter is not, whatever the type argument (5.7). Text that arrives from outside the program (arguments, the environment, standard input) becomes a `string` with U+FFFD in place of bytes that are not UTF-8 (4.3). A hand-written `hash` takes nothing and returns `int` (4.9). A generic function or type is made for types nested at most 24 deep and of at most 512 parts. A method named `compare`, `hash` or `to_string` takes its receiver and its parameter to read, never `var` or `take`: `<`, a map and interpolation call it where nothing says a value may change (4.6, 4.9). `sort`, `sorted`, `min` and `max` order floats by `compare`, so NaN comes last (4.2). A chain of `map` and `filter` on a list, alone or ended by `fold`, `sum`, `count`, `any`, `all` or `find`, is fused when every function in it is a lambda or a named function that the compiler can see does no input or output, changes no variable outside itself and calls nothing unknown; a function received as a parameter or kept in a variable is unknown, so a chain that uses one runs stage by stage (4.5). `xs.sort()` on a list of integers need not be stable, since equal integers cannot be told apart; every other sort is (4.5). The elements of a tuple are not reached by number: `pair.0` is an error that says to destructure (4.5).
 
 ### 15.2 Changes in 0.4
 

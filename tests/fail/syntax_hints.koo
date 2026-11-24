@@ -1,0 +1,11 @@
+// Mistakes the parser meets, and what it says to help.
+fn main() {
+    pair := (1, "a")
+    print(pair.0)
+    var none := 3
+}
+
+//! error expected a member name, found `0`
+//! stderr take it apart with a pattern, as in `(first, second) := pair`
+//! error expected a variable name, found `none`
+//! stderr `none` is the value of an optional that holds nothing

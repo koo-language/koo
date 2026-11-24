@@ -1,0 +1,30 @@
+fn now() -> int { return 1 }
+
+fn a(x: int = now()) -> int { return x }
+fn b(x: int = "text") -> int { return x }
+fn c(x: var [int] = []) {}
+fn d(x: int, y: int = x) -> int { return y }
+fn e(x: int = 1, y: int) -> int { return x + y }
+
+fn main() {
+    print(a())
+    print(b())
+    print(d(1))
+    print(e(2))
+    print(e(y: 2))
+    if (p, q) := 5 {
+        print(p)
+    }
+    if (p, q, r) := "a=b".cut("=") {
+        print(p)
+    }
+}
+//! error a default must be a constant
+//! error expected `int`, found `string`
+//! error a `var` or `take` parameter cannot have a default
+//! error a default must be a constant
+//! error this call of `a` is missing `x`
+//! error this call of `d` is missing `y`
+//! error this call of `e` is missing `y`
+//! error a binding condition takes an optional, found `int`
+//! error this pattern names 3 elements, but the value is `(string, string)`

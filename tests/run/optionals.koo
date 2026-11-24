@@ -1,0 +1,91 @@
+type User = { name: string, age: int? }
+
+fn find(names: [string], wanted: string) -> int? {
+    var i := 0
+    for name in names {
+        if name == wanted { return i }
+        i += 1
+    }
+    return none
+}
+
+fn first_long(names: [string]) -> string? {
+    for name in names {
+        if name.len > 3 { return name }
+    }
+    return none
+}
+
+fn index_plus_one(names: [string], wanted: string) -> int? {
+    i := find(names, wanted)?
+    return i + 1
+}
+
+fn describe(user: User) -> string {
+    return match user.age {
+        none => "{user.name} (age unknown)"
+        age => "{user.name} ({age})"
+    }
+}
+
+fn main() {
+    names := ["al", "bea", "carl", "dora"]
+    print(find(names, "carl"))
+    print(find(names, "zed"))
+    print(find(names, "bea") else -1)
+    print(find(names, "zed") else -1)
+    print(index_plus_one(names, "dora"))
+    print(index_plus_one(names, "nope"))
+    print(first_long(names) else "none")
+
+    if i := find(names, "bea") {
+        print("found at {i}")
+    } else {
+        print("missing")
+    }
+    if name := first_long(["a", "b"]) { print(name) } else { print("no long name") }
+
+    var stack := [1, 2, 3]
+    var sum := 0
+    while top := stack.pop() { sum += top }
+    print(sum)
+
+    young := User { name: "kid", age: 7 }
+    unknown := User { name: "ghost", age: none }
+    print(describe(young))
+    print(describe(unknown))
+    print(young)
+    print(unknown)
+
+    maybe: string? = "text"
+    print(maybe)
+    nothing: string? = none
+    print(nothing)
+    nested: [int?] = [1, none, 3]
+    print(nested)
+    print(nested.get(1))
+    larger := if young.name.len > 2 { young.name } else { "short" }
+    print(larger)
+    picked: int? = if sum > 5 { sum } else { none }
+    print(picked)
+}
+//= 2
+//= none
+//= 1
+//= -1
+//= 4
+//= none
+//= carl
+//= found at 1
+//= no long name
+//= 6
+//= kid (7)
+//= ghost (age unknown)
+//= User { name: "kid", age: 7 }
+//= User { name: "ghost", age: none }
+//= text
+//= none
+//= [1, none, 3]
+//= none
+//= kid
+//= 6

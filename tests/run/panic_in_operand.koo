@@ -1,0 +1,13 @@
+// An operand that never arrives is still evaluated in its turn.
+fn note(s: string) -> int {
+    print(s)
+    return 1
+}
+
+fn main() {
+    x := note("evaluated") + panic("boom")
+    print("not reached {x}")
+}
+//= evaluated
+//! exit 101
+//! stderr panic: boom

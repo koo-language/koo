@@ -1,0 +1,38 @@
+// Formats in interpolations (Section 3.3).
+fn main() {
+    n := 42
+    x := 3.14159
+    name := "koo"
+    print("[{n:5}]")
+    print("[{n:<5}]")
+    print("[{n:^5}]")
+    print("[{n:05}]")
+    print("[{-n:05}]")
+    print("[{n:1}]")
+    print("[{x:.2}]")
+    print("[{x:8.2}]")
+    print("[{x:<8.2}]")
+    print("[{x:08.2}]")
+    print("[{name:6}]")
+    print("[{name:>6}]")
+    print("[{name:^7}]")
+    print("[{"héllo":>7}]")
+    print("[{true:6}]")
+    print("[{[1, 2]:>8}]")
+}
+//= [   42]
+//= [42   ]
+//= [ 42  ]
+//= [00042]
+//= [-0042]
+//= [42]
+//= [3.14]
+//= [    3.14]
+//= [3.14    ]
+//= [00003.14]
+//= [koo   ]
+//= [   koo]
+//= [  koo  ]
+//= [  héllo]
+//= [true  ]
+//= [  [1, 2]]

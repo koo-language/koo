@@ -1,0 +1,9 @@
+fn main() {
+    var xs: [int] = []
+    for i in 0..3_000_000 { xs.push(i) }
+    var total := 0
+    for round in 0..10 {
+        total += xs.map(x -> x * 3 + round).filter(x -> x % 2 == 0).fold(0, (a, x) -> a + x % 7)
+    }
+    print(total)
+}

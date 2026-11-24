@@ -1,0 +1,34 @@
+error Negative { value: int }
+error TooLarge
+
+fn checked(n: int) -> int ! Negative | TooLarge {
+    if n < 0 { fail Negative { value: n } }
+    if n > 1_000_000 { fail TooLarge }
+    return n * 2
+}
+
+fn pipeline(n: int) -> int ! Negative | TooLarge {
+    a := checked(n)?
+    b := checked(a / 2 + 1)?
+    return checked(b / 2 - 3)?
+}
+
+fn main() {
+    var ok := 0
+    var failed := 0
+    var sum := 0
+    for i in 0..60_000_000 {
+        match pipeline(i % 1_000_100 - 50) {
+            v => {
+                ok += 1
+                sum += v
+            }
+            ! Negative { value } => {
+                failed += 1
+                sum -= value
+            }
+            ! TooLarge => { failed += 1 }
+        }
+    }
+    print("{ok} ok, {failed} failed, sum {sum}")
+}

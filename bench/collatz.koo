@@ -1,0 +1,22 @@
+fn steps(start: int) -> int {
+    var n := start
+    var count := 0
+    while n != 1 {
+        if n % 2 == 0 { n /= 2 } else { n = 3 * n + 1 }
+        count += 1
+    }
+    return count
+}
+
+fn main() {
+    var best := 0
+    var best_start := 0
+    for start in 1..5_000_000 {
+        s := steps(start)
+        if s > best {
+            best = s
+            best_start = start
+        }
+    }
+    print("{best_start} takes {best} steps")
+}

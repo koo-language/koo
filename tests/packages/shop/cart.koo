@@ -1,0 +1,26 @@
+// The cart. Nothing here is imported by main.koo: the files share one namespace.
+
+type Item = { name: string, price: float }
+type Line = { item: Item, count: int }
+type Cart = { items: [Item], lines: [Line] }
+
+error NotEnough { missing: float }
+
+fn Cart.new() -> Cart {
+    return Cart { items: [], lines: [] }
+}
+
+fn (self: var Cart) add(item: Item, count: int) {
+    self.items.push(item)
+    self.lines.push(Line { item, count })
+}
+
+fn (self: Cart) total() -> float {
+    return self.lines.fold(0.0, (sum, line) -> sum + line.item.price * float.from(line.count))
+}
+
+fn (self: Cart) checkout(paid: float) -> float ! NotEnough {
+    total := self.total()
+    if paid < total { fail NotEnough { missing: total - paid } }
+    return paid - total
+}

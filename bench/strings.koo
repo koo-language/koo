@@ -1,0 +1,25 @@
+type Row = { id: int, name: string, score: float }
+
+fn render(row: Row) -> string {
+    return "id={row.id} name={row.name} score={row.score:.2}"
+}
+
+fn main() {
+    var rows: [Row] = []
+    for i in 0..200_000 {
+        rows.push(Row { id: i, name: "user{i % 1000}", score: float.from(i) / 7.0 })
+    }
+    var total := 0
+    var report := ""
+    for round in 0..10 {
+        report = ""
+        for row in rows {
+            line := render(row)
+            total += line.len
+            report += line
+            report += "\n"
+        }
+    }
+    print(total)
+    print(report.len)
+}

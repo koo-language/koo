@@ -1,0 +1,25 @@
+// A package: the files of this directory are one program (Section 8.1).
+//
+//     koo run tests/packages/shop
+//     koo test tests/packages/shop
+
+import std/io
+
+fn main() {
+    var cart := Cart.new()
+    cart.add(Item { name: "pen", price: 1.25 }, 4)
+    cart.add(Item { name: "ink", price: 8.0 }, 1)
+    io.write(receipt(cart))
+    match cart.checkout(10.0) {
+        change => print("change {change:.2}")
+        ! e => print("short by {e.missing:.2}")
+    }
+    print(cart.items[5].name)
+}
+//= pen              4    5.00
+//= ink              1    8.00
+//= total                13.00
+//= short by 3.00
+//! exit 101
+//! stderr panic: index out of range
+//! stderr main.koo:17

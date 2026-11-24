@@ -1,0 +1,17 @@
+import std/test
+
+fn test_total_of_an_empty_cart() {
+    test.assert_eq(Cart.new().total(), 0.0)
+}
+
+fn test_checkout_gives_change() ! NotEnough {
+    var cart := Cart.new()
+    cart.add(Item { name: "pen", price: 1.5 }, 2)
+    test.assert_eq(cart.checkout(5.0)?, 2.0)
+}
+
+fn test_receipt_lists_every_line() {
+    var cart := Cart.new()
+    cart.add(Item { name: "pen", price: 1.5 }, 2)
+    test.assert_eq(receipt(cart).lines().len, 2)
+}

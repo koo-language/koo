@@ -1,0 +1,65 @@
+import std/io
+
+type User = { name: string, age: int }
+
+enum Color { Red, Green, Blue }
+
+fn shout(items: [string], m: [string: int]) -> String {
+    println("x")
+    print(len(items))
+    print(items.length)
+    print(items.len())
+    items.forEach(i -> print(i))
+    print(items.first)
+    print("abc".toUpperCase())
+    print(m.has("a"))
+    return this
+}
+
+fn main() {
+    user := User { name: "ada", age: 3 }
+    print(usre.name)
+    print(user.nmae)
+    print(Color.Gren)
+    names := ["a", "b"]
+    print(names.frist())
+    x := nil
+    prnt("hello")
+    print(io.read_fil("x"))
+    v: Vec<int> = []
+}
+//! error unknown type `String`
+//! stderr in Koo that is `string`
+//! error unknown function `println`
+//! error unknown function `len`
+//! stderr the number of elements is a field: `x.len`
+//! error `[string]` has no field `length`
+//! error `[string]` has no method `len`
+//! stderr `len` is a field: write it without the parentheses, `.len`
+//! error `[string]` has no method `forEach`
+//! stderr in Koo that is `.each`
+//! error the type of this parameter is not known here
+//! error `[string]` has no field `first`
+//! stderr `first` is a method: call it, `.first()`
+//! error `string` has no method `toUpperCase`
+//! stderr in Koo that is `.to_upper`
+//! error `[string: int]` has no method `has`
+//! stderr in Koo that is `.contains`
+//! error unknown name `this`
+//! stderr a method names its receiver `self`
+//! error unknown name `usre`
+//! stderr did you mean `user`?
+//! error `User` has no field `nmae`
+//! stderr did you mean `name`?
+//! error `Color` has no variant `Gren`
+//! stderr did you mean `Green`?
+//! error `[string]` has no method `frist`
+//! stderr did you mean `first`?
+//! error unknown name `nil`
+//! stderr Koo has no null
+//! error unknown function `prnt`
+//! stderr did you mean `print`?
+//! error the package `io` has no function `read_fil`
+//! stderr did you mean `read_file`?
+//! error unknown generic type `Vec`
+//! stderr in Koo that is a list, written `[T]`

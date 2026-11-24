@@ -1,0 +1,58 @@
+// The standard packages there are so far: std/os and std/io.
+import std/io
+import std/os
+
+fn round_trip(path: string) -> string ! IoError {
+    io.write_file(path, "one\ntwo\n")?
+    return io.read_file(path)?
+}
+
+fn main() {
+    print(os.args())
+    print(os.env("KOO_SURELY_NOT_SET"))
+    print((os.env("PATH") else "").len > 0)
+
+    dir := os.env("TMPDIR") else "/tmp"
+    path := "{dir}/koo_stdlib_test.txt"
+    match round_trip(path) {
+        text => print(text.lines())
+        ! e => print("unexpected: {e.message}")
+    }
+    match io.read_file("/surely/not/here.txt") {
+        _ => print("unexpected")
+        ! e => print(e.message)
+    }
+    match io.write_file("/surely/not/here.txt", "x") {
+        _ => print("unexpected")
+        ! e => print(e.message)
+    }
+    // A directory is not a file, and a path with a NUL in it names nothing.
+    match io.read_file(dir) {
+        _ => print("unexpected")
+        ! e => print(e.message.ends_with("Is a directory"))
+    }
+    match io.write_file("{dir}/koo_visible\0hidden.txt", "x") {
+        _ => print("unexpected")
+        ! e => print(e.message.ends_with("koo_visible\\0hidden.txt: Invalid argument"))
+    }
+    io.write("no line feed, ")
+    io.write("then one\n")
+    io.eprint("to standard error")
+    print(io.read_line())
+    print(io.read_lines())
+    os.exit(3)
+    print("not reached")
+}
+//= []
+//= none
+//= true
+//= ["one", "two"]
+//= cannot read /surely/not/here.txt: No such file or directory
+//= cannot write /surely/not/here.txt: No such file or directory
+//= true
+//= true
+//= no line feed, then one
+//= none
+//= []
+//! stderr to standard error
+//! exit 3

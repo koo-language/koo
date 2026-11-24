@@ -1,0 +1,18 @@
+fn count_primes(limit: int) -> int {
+    var composite := List<bool>.with_size(limit + 1)
+    var count := 0
+    for n in 2..=limit {
+        if composite[n] { continue }
+        count += 1
+        var m := n * n
+        while m <= limit {
+            composite[m] = true
+            m += n
+        }
+    }
+    return count
+}
+
+fn main() {
+    print(count_primes(100_000_000))
+}

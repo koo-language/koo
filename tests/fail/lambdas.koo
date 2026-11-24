@@ -1,0 +1,25 @@
+fn keep(f: fn(int) -> int) -> fn(int) -> int {
+    return f
+}
+
+fn store(f: fn(int)) {
+    g := f
+    g(1)
+}
+
+fn main() {
+    var n := 0
+    bump := () -> n += 1
+    h := x -> x + 1
+    k := (x: int) -> x + 1
+    print(k("a"))
+    print(k(1, 2))
+    print(n(3))
+}
+//! error `f` is a function that was only lent to this one
+//! error `f` is a function that was only lent to this one
+//! error cannot assign to `n`, which is not `var`
+//! error the type of this parameter is not known here
+//! error expected `int`, found `string`
+//! error this function takes 1 argument, found 2
+//! error `int` is not a function and cannot be called

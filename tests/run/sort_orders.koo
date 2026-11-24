@@ -1,0 +1,86 @@
+// Sorting with the prelude's merge sort, and with a `less` that is no order at all: the
+// result is then in no particular order, but it is still the same elements.
+
+type Entry = { group: int, at: int }
+
+fn numbers(n: int, seed: int) -> [int] {
+    var state := seed
+    var out: [int] = []
+    for _ in 0..n {
+        state = (state * 1103515245 + 12345) % 2147483648
+        out.push(state % 1000)
+    }
+    return out
+}
+
+fn same_elements(a: [string], b: [string]) -> bool {
+    return a.sorted() == b.sorted()
+}
+
+fn main() {
+    var ok := true
+    for n in [0, 1, 5, 16, 17, 31, 32, 33, 64, 100, 128, 1000, 4096] {
+        ints := numbers(n, n + 1)
+        words := ints.map(x -> "w{x}")
+
+        // The integer sort of the support library and the merge sort agree.
+        by_less := ints.sorted_by((a, b) -> a < b)
+        if not (ints.sorted() == by_less) { ok = false }
+        for i in 1..by_less.len {
+            if by_less[i - 1] > by_less[i] { ok = false }
+        }
+
+        // Floats and strings go through the merge sort.
+        floats := ints.map(x -> float.from(x) / 8.0).sorted()
+        for i in 1..floats.len {
+            if floats[i - 1] > floats[i] { ok = false }
+        }
+        sorted_words := words.sorted()
+        for i in 1..sorted_words.len {
+            if sorted_words[i - 1] > sorted_words[i] { ok = false }
+        }
+        if not same_elements(words, sorted_words) { ok = false }
+
+        // A `less` that always says yes, one that always says no, and one that changes
+        // its mind.
+        always := words.sorted_by((a, b) -> true)
+        never := words.sorted_by((a, b) -> false)
+        var calls := 0
+        fickle := words.sorted_by((a, b) -> {
+            calls += 1
+            return calls % 3 == 0 or a.len > b.len
+        })
+        if not same_elements(words, always) { ok = false }
+        if not (never == words) { ok = false }
+        if not same_elements(words, fickle) { ok = false }
+
+        var fickle_ints := ints
+        fickle_ints.sort_by((a, b) -> (a + b) % 2 == 0)
+        if fickle_ints.sum() != ints.sum() or fickle_ints.len != ints.len { ok = false }
+        if not (fickle_ints.sorted() == ints.sorted()) { ok = false }
+    }
+//= true
+    print(ok)
+
+    // Stable: entries that are equal by `group` keep the order of `at`.
+    var entries: [Entry] = []
+    for i in 0..200 { entries.push(Entry { group: i * 7 % 5, at: i }) }
+    entries.sort_by((a, b) -> a.group < b.group)
+    var stable := true
+    for i in 1..entries.len {
+        if entries[i - 1].group == entries[i].group and entries[i - 1].at > entries[i].at { stable = false }
+    }
+//= true 0 0 4 197
+    print("{stable} {entries[0].group} {entries[0].at} {entries[199].group} {entries[199].at}")
+
+    // Sorting a list that another variable shares leaves the other as it was.
+    original := [3, 1, 2]
+    var copy := original
+    copy.sort()
+//= [3, 1, 2] [1, 2, 3]
+    print("{original} {copy}")
+    var nothing: [int] = []
+    nothing.sort()
+//= []
+    print(nothing)
+}

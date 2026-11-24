@@ -1,0 +1,1200 @@
+//! Checking calls: user functions, methods, and the built-in functions and methods.
+
+use std::collections::HashMap;
+
+use koo_syntax::Span;
+use koo_syntax::ast;
+use koo_syntax::token::is_primitive;
+
+use super::{Checker, Owner, TypeName};
+use crate::hir::*;
+
+/// One step from a variable to a part of it.
+#[derive(PartialEq)]
+enum Step {
+    Field(usize),
+    Index,
+}
+
+/// The variable a place belongs to, and the path from it to the place.
+fn place_path(expr: &Expr) -> Option<(LocalId, Vec<Step>)> {
+    match &expr.kind {
+        ExprKind::Local(id) => Some((*id, Vec::new())),
+        ExprKind::Field(base, index) => {
+            let (root, mut path) = place_path(base)?;
+            path.push(Step::Field(*index));
+            Some((root, path))
+        }
+        ExprKind::Index(base, _) => {
+            let (root, mut path) = place_path(base)?;
+            path.push(Step::Index);
+            Some((root, path))
+        }
+        _ => None,
+    }
+}
+
+/// Whether two places may name the same storage (Section 5.4): the same variable, and no
+/// step at which they take different fields.
+fn overlap(a: &(LocalId, Vec<Step>), b: &(LocalId, Vec<Step>)) -> bool {
+    a.0 == b.0
+        && !a
+            .1
+            .iter()
+            .zip(&b.1)
+            .any(|(x, y)| matches!((x, y), (Step::Field(i), Step::Field(j)) if i != j))
+}
+
+impl<'a> Checker<'a> {
+    fn mk_call(&self, kind: ExprKind, ty: Ty, span: Span) -> Expr {
+        Expr { kind, ty, span }
+    }
+
+    /// Checks that a built-in was given `count` plain arguments, and returns them unchecked.
+    fn plain_args<'e>(
+        &mut self,
+        args: &'e [ast::Arg],
+        count: usize,
+        what: &str,
+        span: Span,
+    ) -> Option<Vec<&'e ast::Expr>> {
+        for arg in args {
+            if let Some(name) = &arg.name {
+                self.error(name.span, format!("{what} takes no named arguments"));
+            }
+            if arg.var {
+                self.error(arg.value.span, format!("{what} takes no `var` arguments"));
+            }
+        }
+        if args.len() != count {
+            let takes = match count {
+                0 => "no arguments".to_string(),
+                1 => "one argument".to_string(),
+                n => format!("{n} arguments"),
+            };
+            self.error(span, format!("{what} takes {takes}, found {}", args.len()));
+            for arg in args {
+                self.expr(&arg.value, None);
+            }
+            return None;
+        }
+        Some(args.iter().map(|a| &a.value).collect())
+    }
+
+    pub(super) fn call(&mut self, callee: &ast::Expr, args: &[ast::Arg], span: Span, expected: Option<&Ty>) -> Expr {
+        match &callee.kind {
+            ast::ExprKind::Name(name) if !name.is_upper() => {
+                if self.resolve_local(&name.name).is_some() {
+                    // A variable that holds a function. Calling it is one of the two
+                    // things a function that was only lent may be used for.
+                    self.lent_fn_ok = true;
+                    let function = self.expr(callee, None);
+                    self.lent_fn_ok = false;
+                    return self.call_value(function, args, span);
+                }
+                if self.body_in_prelude
+                    && let Some(intrinsic) = name.name.strip_prefix("__").and_then(crate::intrinsics::find)
+                {
+                    // The prelude calling the support library.
+                    let mut values = Vec::new();
+                    for (arg, param) in args.iter().zip(intrinsic.params) {
+                        values.push(self.expr_as(&arg.value, &param.ty()));
+                    }
+                    return self.mk_call(
+                        ExprKind::Intrinsic {
+                            name: intrinsic.name,
+                            args: values,
+                        },
+                        intrinsic.ret.ty(),
+                        span,
+                    );
+                }
+                if self.body_in_prelude && name.name == "__before" && args.len() == 2 {
+                    // Whether the first comes before the second in the order that sorting
+                    // uses. It is `<`, but for floats, where `<` is no order at all once a
+                    // NaN is among them: there it is `compare`, which puts NaN last
+                    // (Section 4.2).
+                    let less = self.binary(ast::BinaryOp::Lt, &args[0].value, &args[1].value, span, None);
+                    return match less.kind {
+                        ExprKind::Binary(BinOp::Lt, a, b) if a.ty == Ty::Float => {
+                            let order = self.mk(ExprKind::Builtin(Builtin::Compare, vec![*a, *b]), Ty::Int, span);
+                            let zero = self.mk(ExprKind::Int(0), Ty::Int, span);
+                            self.mk(
+                                ExprKind::Binary(BinOp::Lt, Box::new(order), Box::new(zero)),
+                                Ty::Bool,
+                                span,
+                            )
+                        }
+                        kind => Expr { kind, ..less },
+                    };
+                }
+                if self.body_in_prelude && name.name == "__repr" && args.len() == 1 {
+                    let value = self.expr(&args[0].value, None);
+                    return self.mk_call(ExprKind::Builtin(Builtin::Repr, vec![value]), Ty::Str, span);
+                }
+                match name.name.as_str() {
+                    "print" => {
+                        let Some(values) = self.plain_args(args, 1, "`print`", span) else {
+                            return self.unknown(span);
+                        };
+                        let value = self.expr(values[0], None);
+                        self.require_printable(&value);
+                        self.mk_call(ExprKind::Builtin(Builtin::Print, vec![value]), Ty::Unit, span)
+                    }
+                    "panic" => {
+                        let Some(values) = self.plain_args(args, 1, "`panic`", span) else {
+                            return self.unknown(span);
+                        };
+                        let message = self.expr_as(values[0], &Ty::Str);
+                        self.mk_call(ExprKind::Panic(Box::new(message)), Ty::Never, span)
+                    }
+                    "all" | "race" | "with_timeout" | "isolate" => {
+                        self.unsupported(callee.span, "tasks are");
+                        self.unknown(span)
+                    }
+                    _ if name.name.contains("__") && !self.body_in_prelude => {
+                        self.error(callee.span, format!("unknown function `{}`", name.name));
+                        for arg in args {
+                            self.expr(&arg.value, None);
+                        }
+                        self.unknown(span)
+                    }
+                    _ if self.generic_fns.contains_key(&name.name) => {
+                        let template = self.generic_fns[&name.name];
+                        self.generic_call(template, None, HashMap::new(), args, span, expected)
+                    }
+                    _ => match self.free_fns.get(&name.name) {
+                        Some(&id) => self.user_call(id, None, args, span),
+                        None => {
+                            let (known, habit) = (self.function_names(), super::suggest::function_habit(&name.name));
+                            let message = format!("unknown function `{}`", name.name);
+                            self.error_near(callee.span, message, &name.name, known, habit);
+                            for arg in args {
+                                self.expr(&arg.value, None);
+                            }
+                            self.unknown(span)
+                        }
+                    },
+                }
+            }
+            ast::ExprKind::Field { base, name } => {
+                // `os.env(...)`: a function of an imported standard package.
+                if let ast::ExprKind::Name(module) = &base.kind
+                    && !self.body_in_prelude
+                    && self.modules.contains_key(&(self.file, module.name.clone()))
+                    && self.resolve_local(&module.name).is_none()
+                {
+                    self.modules.get_mut(&(self.file, module.name.clone())).unwrap().1 = true;
+                    let function = format!("{}__{}", module.name, name.name);
+                    if let Some(&template) = self.generic_fns.get(&function) {
+                        return self.generic_call(template, None, HashMap::new(), args, span, expected);
+                    }
+                    if let Some(&id) = self.free_fns.get(&function) {
+                        return self.user_call(id, None, args, span);
+                    }
+                    let known = self.package_names(&module.name);
+                    let message = format!("the package `{}` has no function `{}`", module.name, name.name);
+                    self.error_near(name.span, message, &name.name, known, None);
+                    for arg in args {
+                        self.expr(&arg.value, None);
+                    }
+                    return self.unknown(span);
+                }
+                // `int.parse(s)`: a function of a primitive type.
+                if let ast::ExprKind::Name(type_name) = &base.kind
+                    && is_primitive(&type_name.name)
+                    && self.lookup(&type_name.name).is_none()
+                {
+                    return self.primitive_call(&type_name.name, name, args, span);
+                }
+                // `Order.new(...)`: a type-level function.
+                if let ast::ExprKind::Name(type_name) = &base.kind
+                    && type_name.is_upper()
+                {
+                    return self.type_level_call(type_name, name, args, span, expected);
+                }
+                // `List<int>.new()`.
+                if let ast::ExprKind::TypeApp {
+                    base: generic,
+                    args: type_args,
+                } = &base.kind
+                {
+                    return self.generic_type_call(generic, type_args, name, args, span, expected);
+                }
+                let receiver = self.expr(base, None);
+                self.method_call(receiver, name, args, span, expected)
+            }
+            _ => {
+                let function = self.expr(callee, None);
+                self.call_value(function, args, span)
+            }
+        }
+    }
+
+    /// A call of a function value (Section 4.11).
+    fn call_value(&mut self, function: Expr, args: &[ast::Arg], span: Span) -> Expr {
+        let Ty::Fn(ty) = function.ty.clone() else {
+            if !function.ty.is_unknown() {
+                let found = self.ty_name(&function.ty);
+                self.error(
+                    function.span,
+                    format!("`{found}` is not a function and cannot be called"),
+                );
+            }
+            for arg in args {
+                self.expr(&arg.value, None);
+            }
+            return self.unknown(span);
+        };
+        if args.len() != ty.params.len() {
+            self.error(
+                span,
+                format!(
+                    "this function takes {} argument{}, found {}",
+                    ty.params.len(),
+                    if ty.params.len() == 1 { "" } else { "s" },
+                    args.len()
+                ),
+            );
+            for arg in args {
+                self.expr(&arg.value, None);
+            }
+            return self.unknown(span);
+        }
+        let mut out = Vec::new();
+        for (arg, (kind, param)) in args.iter().zip(&ty.params) {
+            if let Some(name) = &arg.name {
+                self.error(name.span, "a function value takes its arguments by position");
+            }
+            let expr = self.pass(arg, *kind, param, "this function");
+            out.push(Arg { kind: *kind, expr });
+        }
+        self.exclusive(&out, Some(&function));
+        self.mk_call(
+            ExprKind::CallValue {
+                callee: Box::new(function),
+                args: out,
+            },
+            ty.ret,
+            span,
+        )
+    }
+
+    /// Checks one argument against the kind and type of its parameter.
+    fn pass(&mut self, arg: &ast::Arg, kind: ParamKind, ty: &Ty, function: &str) -> Expr {
+        if kind == ParamKind::Var {
+            let value = self.expr(&arg.value, Some(ty));
+            if !arg.var {
+                self.error_help(
+                    arg.value.span,
+                    format!("{function} changes this argument, so it is passed with `var`"),
+                    "write `var` before the argument, so that the change is visible at the call (Section 5.3)",
+                );
+            } else if !value.ty.is_unknown() {
+                self.require_mutable_place(&value, "pass as `var`");
+            }
+            if value.ty != *ty && !value.ty.is_unknown() && !ty.is_unknown() {
+                let (want, found) = (self.ty_name(ty), self.ty_name(&value.ty));
+                self.error(arg.value.span, format!("expected `{want}`, found `{found}`"));
+            }
+            return value;
+        }
+        if arg.var {
+            self.error_help(
+                arg.value.span,
+                "this parameter is not `var`",
+                "remove `var`: the function does not change this argument",
+            );
+        }
+        // A function value's parameter of a function type is lent, as a lambda's is.
+        self.function_argument_context(&arg.value, kind == ParamKind::Borrow && matches!(ty, Ty::Fn(_)));
+        let value = self.expr_as(&arg.value, ty);
+        self.next_lambda_is_block = false;
+        self.lent_fn_ok = false;
+        value
+    }
+
+    /// Before an argument is checked: says whether a lambda written there is a block, and
+    /// whether a lent function may be named there. Both hold exactly when the parameter is
+    /// borrowed and its type is a function type (Section 5.7).
+    pub(super) fn function_argument_context(&mut self, value: &ast::Expr, lends: bool) {
+        // Parentheses around the argument change nothing.
+        let mut value = value;
+        while let ast::ExprKind::Paren(inner) = &value.kind {
+            value = inner;
+        }
+        self.next_lambda_is_block = lends && matches!(value.kind, ast::ExprKind::Lambda { .. });
+        self.lent_fn_ok = lends && matches!(value.kind, ast::ExprKind::Name(_));
+    }
+
+    fn type_level_call(
+        &mut self,
+        type_name: &ast::Ident,
+        name: &ast::Ident,
+        args: &[ast::Arg],
+        span: Span,
+        expected: Option<&Ty>,
+    ) -> Expr {
+        if let Some(template) = self.generic_type_fn(&type_name.name, &name.name) {
+            // The type arguments of a generic type come from the arguments and the
+            // expected type; a type that is not generic is known already.
+            let on = match self.type_names.get(&type_name.name) {
+                Some(TypeName::Struct(id)) => Some(Ty::Struct(*id)),
+                Some(TypeName::Enum(id)) => Some(Ty::Enum(*id)),
+                Some(TypeName::Error(id)) => Some(Ty::Error(*id)),
+                _ => None,
+            };
+            return self.generic_type_level_call(template, on, args, span, expected);
+        }
+        if let Some(bound) = self.type_env.get(&type_name.name).cloned() {
+            // `T.new()` in a generic function: a function of the type `T` stands for.
+            return self.call_on_type(&bound, name, args, span, expected);
+        }
+        if self.generic_types.contains_key(&type_name.name) {
+            self.error(
+                name.span,
+                format!("`{}` has no function `{}`", type_name.name, name.name),
+            );
+            for arg in args {
+                self.expr(&arg.value, None);
+            }
+            return self.unknown(span);
+        }
+        let owner = match self.type_names.get(&type_name.name) {
+            Some(TypeName::Struct(id)) => Some(Owner::Struct(*id)),
+            Some(TypeName::Enum(id)) => Some(Owner::Enum(*id)),
+            Some(TypeName::Error(id)) => Some(Owner::Error(*id)),
+            Some(TypeName::Alias(ty)) => self.owner_of(&ty.clone()),
+            Some(TypeName::ErrorSet(_)) => None,
+            None => {
+                self.error(type_name.span, format!("unknown type `{}`", type_name.name));
+                for arg in args {
+                    self.expr(&arg.value, None);
+                }
+                return self.unknown(span);
+            }
+        };
+        let function = owner.and_then(|owner| self.type_fns.get(&(owner, name.name.clone())).copied());
+        match function {
+            Some(id) => self.user_call(id, None, args, span),
+            None => {
+                let is_method = owner.is_some_and(|owner| self.methods.contains_key(&(owner, name.name.clone())));
+                let is_variant = match owner {
+                    Some(Owner::Enum(id)) => self.program.enums[id].variants.iter().any(|v| v.name == name.name),
+                    _ => false,
+                };
+                let message = format!("`{}` has no function `{}`", type_name.name, name.name);
+                if is_method {
+                    self.error_help(
+                        name.span,
+                        message,
+                        format!(
+                            "`{}` is a method: call it on a value, as `x.{}(...)`",
+                            name.name, name.name
+                        ),
+                    );
+                } else if is_variant {
+                    self.error_help(
+                        name.span,
+                        message,
+                        format!(
+                            "`{}` is a variant: write `{}.{} {{ ... }}`",
+                            name.name, type_name.name, name.name
+                        ),
+                    );
+                } else {
+                    self.error(name.span, message);
+                }
+                for arg in args {
+                    self.expr(&arg.value, None);
+                }
+                self.unknown(span)
+            }
+        }
+    }
+
+    /// A type-level call on a type that is already known, as `T.new()` is once `T` has an
+    /// argument.
+    fn call_on_type(
+        &mut self,
+        on: &Ty,
+        name: &ast::Ident,
+        args: &[ast::Arg],
+        span: Span,
+        expected: Option<&Ty>,
+    ) -> Expr {
+        if let Some(owner) = self.owner_of(on)
+            && let Some(&id) = self.type_fns.get(&(owner, name.name.clone()))
+        {
+            return self.user_call(id, None, args, span);
+        }
+        if let Some((generic, _)) = self.instance_of.get(on).cloned()
+            && let Some(template) = self.generic_type_fn(&generic, &name.name)
+        {
+            return self.generic_type_level_call(template, Some(on.clone()), args, span, expected);
+        }
+        let found = self.ty_name(on);
+        self.error(name.span, format!("`{found}` has no function `{}`", name.name));
+        for arg in args {
+            self.expr(&arg.value, None);
+        }
+        self.unknown(span)
+    }
+
+    fn generic_type_call(
+        &mut self,
+        generic: &ast::Expr,
+        type_args: &[ast::Type],
+        name: &ast::Ident,
+        args: &[ast::Arg],
+        span: Span,
+        expected: Option<&Ty>,
+    ) -> Expr {
+        let ast::ExprKind::Name(generic_name) = &generic.kind else {
+            self.unsupported(generic.span, "types from other packages are");
+            return self.unknown(span);
+        };
+        let is_list = generic_name.name == "List";
+        let builtin = is_list && matches!(name.name.as_str(), "new" | "with_size" | "with_capacity");
+        if !builtin {
+            // `Stack<int>.new()`: a type-level function of a generic type, named in full.
+            let type_args: Vec<Ty> = type_args.iter().map(|arg| self.resolve_type(arg)).collect();
+            let on = if is_list && type_args.len() == 1 {
+                Ty::list(type_args[0].clone())
+            } else if self.generic_types.contains_key(&generic_name.name) {
+                self.instantiate_type(&generic_name.name, type_args, generic.span)
+            } else {
+                self.error(generic.span, format!("`{}` is not a generic type", generic_name.name));
+                Ty::Unknown
+            };
+            return match self.generic_type_fn(&generic_name.name, &name.name) {
+                Some(template) if !on.is_unknown() => {
+                    self.generic_type_level_call(template, Some(on), args, span, expected)
+                }
+                Some(_) => self.unknown(span),
+                None => {
+                    self.error(
+                        name.span,
+                        format!("`{}` has no function `{}`", generic_name.name, name.name),
+                    );
+                    for arg in args {
+                        self.expr(&arg.value, None);
+                    }
+                    self.unknown(span)
+                }
+            };
+        }
+        if type_args.len() != 1 {
+            self.error(generic.span, "`List` takes one type argument: `List<T>`");
+            return self.unknown(span);
+        }
+        let element = self.resolve_type(&type_args[0]);
+        let ty = Ty::list(element.clone());
+        match name.name.as_str() {
+            "new" => {
+                if self.plain_args(args, 0, "`List<T>.new`", span).is_none() {
+                    return self.unknown(span);
+                }
+                self.mk_call(ExprKind::ListLit(Vec::new()), ty, span)
+            }
+            "with_capacity" => {
+                let Some(values) = self.plain_args(args, 1, "`List<T>.with_capacity`", span) else {
+                    return self.unknown(span);
+                };
+                let n = self.expr_as(values[0], &Ty::Int);
+                self.mk_call(ExprKind::Builtin(Builtin::ListWithCapacity, vec![n]), ty, span)
+            }
+            "with_size" => {
+                let Some(values) = self.plain_args(args, 1, "`List<T>.with_size`", span) else {
+                    return self.unknown(span);
+                };
+                let n = self.expr_as(values[0], &Ty::Int);
+                if !matches!(element, Ty::Int | Ty::Float | Ty::Bool | Ty::Byte | Ty::Unknown) {
+                    let found = self.ty_name(&element);
+                    self.error_help(
+                        type_args[0].span,
+                        format!("`List<{found}>.with_size` is not supported by this compiler yet"),
+                        "it fills a list with zeros, so the element type is `int`, `float`, `bool` or `byte`",
+                    );
+                    return self.unknown(span);
+                }
+                self.mk_call(ExprKind::Builtin(Builtin::ListWithSize, vec![n]), ty, span)
+            }
+            other => {
+                self.error(name.span, format!("`List` has no function `{other}`"));
+                self.unknown(span)
+            }
+        }
+    }
+
+    /// `int.parse(s)`, `float.from(x)` and the other functions of the primitive types.
+    fn primitive_call(&mut self, type_name: &str, name: &ast::Ident, args: &[ast::Arg], span: Span) -> Expr {
+        // The prelude declares more functions on the primitive types.
+        let owner = match type_name {
+            "string" => Some(Owner::Str),
+            "int" => Some(Owner::Int),
+            "float" => Some(Owner::Float),
+            "bool" => Some(Owner::Bool),
+            "byte" => Some(Owner::Byte),
+            _ => None,
+        };
+        if let Some(owner) = owner
+            && let Some(&id) = self.type_fns.get(&(owner, name.name.clone()))
+        {
+            return self.user_call(id, None, args, span);
+        }
+        let what = format!("`{type_name}.{}`", name.name);
+        let Some(values) = self.plain_args(args, 1, &what, span) else {
+            return self.unknown(span);
+        };
+        let failing = |ok: Ty, error: ErrorId| Ty::Result(Box::new(ok), ErrSet::of(vec![error]));
+        match (type_name, name.name.as_str()) {
+            ("int", "parse") => {
+                let text = self.expr_as(values[0], &Ty::Str);
+                let ty = failing(Ty::Int, self.parse_error);
+                self.mk_call(ExprKind::Builtin(Builtin::IntParse, vec![text]), ty, span)
+            }
+            ("float", "parse") => {
+                let text = self.expr_as(values[0], &Ty::Str);
+                let ty = failing(Ty::Float, self.parse_error);
+                self.mk_call(ExprKind::Builtin(Builtin::FloatParse, vec![text]), ty, span)
+            }
+            ("float", "from") => {
+                let value = self.expr(values[0], None);
+                match value.ty {
+                    Ty::Int => self.mk_call(ExprKind::Builtin(Builtin::FloatFromInt, vec![value]), Ty::Float, span),
+                    Ty::Float | Ty::Unknown => value,
+                    _ => {
+                        let found = self.ty_name(&value.ty);
+                        self.error(span, format!("`float.from` takes an `int`, found `{found}`"));
+                        self.unknown(span)
+                    }
+                }
+            }
+            ("int", "from") => {
+                let value = self.expr(values[0], None);
+                match value.ty {
+                    Ty::Byte => self.mk_call(ExprKind::Builtin(Builtin::IntFromByte, vec![value]), Ty::Int, span),
+                    Ty::Int | Ty::Unknown => value,
+                    Ty::Float => {
+                        self.error_help(
+                            span,
+                            "`int.from` does not take a `float`",
+                            "choose the rounding: `x.round()`, `x.floor()`, `x.ceil()` or `x.trunc()` (Section 4.2)",
+                        );
+                        self.unknown(span)
+                    }
+                    _ => {
+                        let found = self.ty_name(&value.ty);
+                        self.error(span, format!("`int.from` does not take `{found}`"));
+                        self.unknown(span)
+                    }
+                }
+            }
+            ("byte", "from") => {
+                let value = self.expr_as(values[0], &Ty::Int);
+                let ty = failing(Ty::Byte, self.overflow);
+                self.mk_call(ExprKind::Builtin(Builtin::ByteFromInt, vec![value]), ty, span)
+            }
+            _ => {
+                self.error(name.span, format!("`{type_name}` has no function `{}`", name.name));
+                for value in values {
+                    self.expr(value, None);
+                }
+                self.unknown(span)
+            }
+        }
+    }
+
+    fn method_call(
+        &mut self,
+        receiver: Expr,
+        name: &ast::Ident,
+        args: &[ast::Arg],
+        span: Span,
+        expected: Option<&Ty>,
+    ) -> Expr {
+        let _ = expected;
+        if receiver.ty.is_unknown() {
+            for arg in args {
+                self.expr(&arg.value, None);
+            }
+            return self.unknown(span);
+        }
+        if let Some(owner) = self.owner_of(&receiver.ty)
+            && let Some(&id) = self.methods.get(&(owner, name.name.clone()))
+        {
+            return self.user_call(id, Some(receiver), args, span);
+        }
+        // Integers that are equal are the same, so their sort need not be stable, and the
+        // support library has one made for them. Every other list is sorted by the
+        // prelude's `sort`.
+        if receiver.ty == Ty::List(Box::new(Ty::Int)) && name.name == "sort" && args.is_empty() {
+            self.require_mutable_place(&receiver, "change");
+            return Expr {
+                kind: ExprKind::Builtin(Builtin::ListSortInts, vec![receiver]),
+                ty: Ty::Unit,
+                span,
+            };
+        }
+        if let Some(template) = self.generic_method(&receiver.ty, &name.name) {
+            return self.generic_call(template, Some(receiver), HashMap::new(), args, span, expected);
+        }
+        let method = name.name.as_str();
+        let what = format!("`{method}`");
+        let overflow = Ty::Result(Box::new(Ty::Int), ErrSet::of(vec![self.overflow]));
+        let builtin = |b: Builtin, args: Vec<Expr>, ty: Ty| Expr {
+            kind: ExprKind::Builtin(b, args),
+            ty,
+            span,
+        };
+        match (receiver.ty.clone(), method) {
+            // Every value has a text form (Section 4.6).
+            (ty, "to_string") if !matches!(ty, Ty::Unit | Ty::Result(..)) => {
+                if self.plain_args(args, 0, &what, span).is_none() {
+                    return self.unknown(span);
+                }
+                Expr {
+                    kind: ExprKind::Interp(vec![InterpPart::Value(receiver, Format::default())]),
+                    ty: Ty::Str,
+                    span,
+                }
+            }
+            (Ty::List(element), "push") => {
+                let Some(values) = self.plain_args(args, 1, &what, span) else {
+                    return self.unknown(span);
+                };
+                self.require_mutable_place(&receiver, "change");
+                let value = self.expr_as(values[0], &element);
+                builtin(Builtin::ListPush, vec![receiver, value], Ty::Unit)
+            }
+            (Ty::List(element), "pop") => {
+                if self.plain_args(args, 0, &what, span).is_none() {
+                    return self.unknown(span);
+                }
+                self.require_mutable_place(&receiver, "change");
+                builtin(Builtin::ListPop, vec![receiver], Ty::Optional(element))
+            }
+            (Ty::List(element), "get") => {
+                let Some(values) = self.plain_args(args, 1, &what, span) else {
+                    return self.unknown(span);
+                };
+                let index = self.expr_as(values[0], &Ty::Int);
+                builtin(Builtin::ListGet, vec![receiver, index], Ty::Optional(element))
+            }
+            (Ty::List(_), "swap") => {
+                let Some(values) = self.plain_args(args, 2, &what, span) else {
+                    return self.unknown(span);
+                };
+                self.require_mutable_place(&receiver, "change");
+                let i = self.expr_as(values[0], &Ty::Int);
+                let j = self.expr_as(values[1], &Ty::Int);
+                builtin(Builtin::ListSwap, vec![receiver, i, j], Ty::Unit)
+            }
+            (Ty::List(_), "clear") => {
+                if self.plain_args(args, 0, &what, span).is_none() {
+                    return self.unknown(span);
+                }
+                self.require_mutable_place(&receiver, "change");
+                builtin(Builtin::ListClear, vec![receiver], Ty::Unit)
+            }
+            (Ty::Int | Ty::Float, "abs") => {
+                if self.plain_args(args, 0, &what, span).is_none() {
+                    return self.unknown(span);
+                }
+                let ty = receiver.ty.clone();
+                builtin(Builtin::Abs, vec![receiver], ty)
+            }
+            (Ty::Int | Ty::Float | Ty::Str | Ty::Byte | Ty::Bool, "compare") => {
+                let Some(values) = self.plain_args(args, 1, &what, span) else {
+                    return self.unknown(span);
+                };
+                let ty = receiver.ty.clone();
+                let other = self.expr_as(values[0], &ty);
+                builtin(Builtin::Compare, vec![receiver, other], Ty::Int)
+            }
+            (ty, "hash") if self.is_hashable(&ty) => {
+                if self.plain_args(args, 0, &what, span).is_none() {
+                    return self.unknown(span);
+                }
+                builtin(Builtin::Hash, vec![receiver], Ty::Int)
+            }
+            (Ty::Int | Ty::Float, "min" | "max") => {
+                let Some(values) = self.plain_args(args, 1, &what, span) else {
+                    return self.unknown(span);
+                };
+                let ty = receiver.ty.clone();
+                let other = self.expr_as(values[0], &ty);
+                let b = if method == "min" { Builtin::Min } else { Builtin::Max };
+                builtin(b, vec![receiver, other], ty)
+            }
+            (
+                Ty::Int,
+                "wrapping_add" | "wrapping_sub" | "wrapping_mul" | "bit_and" | "bit_or" | "bit_xor" | "shl" | "shr",
+            ) => {
+                let Some(values) = self.plain_args(args, 1, &what, span) else {
+                    return self.unknown(span);
+                };
+                let other = self.expr_as(values[0], &Ty::Int);
+                let b = match method {
+                    "wrapping_add" => Builtin::WrappingAdd,
+                    "wrapping_sub" => Builtin::WrappingSub,
+                    "wrapping_mul" => Builtin::WrappingMul,
+                    "bit_and" => Builtin::BitAnd,
+                    "bit_or" => Builtin::BitOr,
+                    "bit_xor" => Builtin::BitXor,
+                    "shl" => Builtin::Shl,
+                    _ => Builtin::Shr,
+                };
+                builtin(b, vec![receiver, other], Ty::Int)
+            }
+            (Ty::Float, "sqrt") => {
+                if self.plain_args(args, 0, &what, span).is_none() {
+                    return self.unknown(span);
+                }
+                builtin(Builtin::FloatSqrt, vec![receiver], Ty::Float)
+            }
+            (Ty::Float, "floor" | "ceil" | "round" | "trunc") => {
+                if self.plain_args(args, 0, &what, span).is_none() {
+                    return self.unknown(span);
+                }
+                let b = match method {
+                    "floor" => Builtin::FloatFloor,
+                    "ceil" => Builtin::FloatCeil,
+                    "round" => Builtin::FloatRound,
+                    _ => Builtin::FloatTrunc,
+                };
+                builtin(b, vec![receiver], overflow)
+            }
+            (ty, _) => {
+                let found = self.ty_name(&ty);
+                let help = match &ty {
+                    Ty::Optional(_) => Some("the value may be absent: unwrap it first with `?`, `else` or `match`"),
+                    Ty::Result(..) => Some("the value may be an error: handle it first with `?`, `else` or `match`"),
+                    _ => None,
+                };
+                let message = format!("`{found}` has no method `{method}`");
+                match help {
+                    Some(help) => self.error_help(name.span, message, help),
+                    None => {
+                        let (known, habit) = (self.method_names(&ty), self.method_habit(&ty, method));
+                        self.error_near(name.span, message, method, known, habit);
+                    }
+                }
+                for arg in args {
+                    self.expr(&arg.value, None);
+                }
+                self.unknown(span)
+            }
+        }
+    }
+
+    /// Pairs the arguments of a call with the parameters, by position and by name.
+    fn match_args<'e>(
+        &mut self,
+        function: &str,
+        names: &[String],
+        args: &'e [ast::Arg],
+        span: Span,
+    ) -> Vec<Option<&'e ast::Arg>> {
+        let mut slots: Vec<Option<&ast::Arg>> = vec![None; names.len()];
+        let mut positional = 0;
+        for arg in args {
+            let index = match &arg.name {
+                None => {
+                    positional += 1;
+                    positional - 1
+                }
+                Some(name) => match names.iter().position(|p| *p == name.name) {
+                    Some(index) => index,
+                    None => {
+                        self.error(name.span, format!("`{function}` has no parameter `{}`", name.name));
+                        self.expr(&arg.value, None);
+                        continue;
+                    }
+                },
+            };
+            if index >= slots.len() {
+                self.expr(&arg.value, None);
+                continue;
+            }
+            if slots[index].is_some() {
+                self.error(
+                    arg.value.span,
+                    format!("the parameter `{}` is given twice", names[index]),
+                );
+                continue;
+            }
+            slots[index] = Some(arg);
+        }
+        if positional > names.len() {
+            self.error(
+                span,
+                format!(
+                    "`{function}` takes {} argument{}, found {positional}",
+                    names.len(),
+                    if names.len() == 1 { "" } else { "s" }
+                ),
+            );
+        }
+        slots
+    }
+
+    /// A call of a function declared in the program. `receiver` is the value a method is
+    /// called on.
+    pub(super) fn user_call(&mut self, id: FnId, receiver: Option<Expr>, args: &[ast::Arg], span: Span) -> Expr {
+        let names: Vec<String> = self.sigs[id].params.iter().map(|p| p.name.clone()).collect();
+        let function = self.sigs[id].name.clone();
+        let slots = self.match_args(&function, &names, args, span);
+        let checked = vec![None; slots.len()];
+        self.finish_call(id, receiver, slots, checked, span)
+    }
+
+    /// Completes a call once its arguments are paired with parameters. An argument that
+    /// inference already checked comes in `checked`.
+    fn finish_call(
+        &mut self,
+        id: FnId,
+        receiver: Option<Expr>,
+        slots: Vec<Option<&ast::Arg>>,
+        mut checked: Vec<Option<Expr>>,
+        span: Span,
+    ) -> Expr {
+        let sig = self.sigs[id].clone();
+        let mut out: Vec<Arg> = Vec::new();
+        if let (Some(receiver), Some(param)) = (receiver, &sig.receiver) {
+            // A receiver is not marked at the call (Section 5.3).
+            if param.kind == ParamKind::Var {
+                self.require_mutable_place(&receiver, "change");
+            }
+            let receiver = if param.kind == ParamKind::Var {
+                receiver
+            } else {
+                self.coerce(receiver, &param.ty)
+            };
+            out.push(Arg {
+                kind: param.kind,
+                expr: receiver,
+            });
+        }
+        let mut missing = Vec::new();
+        for (index, (param, slot)) in sig.params.iter().zip(slots).enumerate() {
+            let Some(arg) = slot else {
+                // A function of the standard library that reports where it was called
+                // from takes that as a last parameter, which the call does not write.
+                if param.name == "location" && param.ty == Ty::Str && sig.name.contains("__") {
+                    out.push(Arg {
+                        kind: param.kind,
+                        expr: Expr {
+                            kind: ExprKind::Location,
+                            ty: Ty::Str,
+                            span,
+                        },
+                    });
+                    continue;
+                }
+                if let Some(default) = param.default {
+                    // The default is a constant, checked where nothing of the caller is
+                    // in scope, so it means the same at every call.
+                    let default = self.param_defaults[default];
+                    let scopes = std::mem::replace(&mut self.scopes, vec![HashMap::new()]);
+                    let enclosing = std::mem::take(&mut self.enclosing);
+                    let lambda = self.lambda.take();
+                    let value = self.expr(default, Some(&param.ty));
+                    let mut value = self.coerce(value, &param.ty);
+                    self.scopes = scopes;
+                    self.enclosing = enclosing;
+                    self.lambda = lambda;
+                    // An error in it is reported at the declaration; the value belongs
+                    // to the call.
+                    value.span = span;
+                    out.push(Arg {
+                        kind: param.kind,
+                        expr: value,
+                    });
+                    continue;
+                }
+                missing.push(format!("`{}`", param.name));
+                continue;
+            };
+            let done = checked[index].take();
+            let expr = if param.kind == ParamKind::Var {
+                let value = match done {
+                    Some(value) => value,
+                    None => self.expr(&arg.value, Some(&param.ty)),
+                };
+                if !arg.var {
+                    self.error_help(
+                        arg.value.span,
+                        format!("`{}` changes this argument, so it is passed with `var`", sig.name),
+                        "write `var` before the argument, so that the change is visible at the call (Section 5.3)",
+                    );
+                } else if !value.ty.is_unknown() {
+                    self.require_mutable_place(&value, "pass as `var`");
+                }
+                if value.ty != param.ty && !value.ty.is_unknown() && !param.ty.is_unknown() {
+                    let (want, found) = (self.ty_name(&param.ty), self.ty_name(&value.ty));
+                    self.error(arg.value.span, format!("expected `{want}`, found `{found}`"));
+                }
+                value
+            } else {
+                if arg.var {
+                    self.error_help(
+                        arg.value.span,
+                        format!("the parameter `{}` is not `var`", param.name),
+                        "remove `var`: the function does not change this argument",
+                    );
+                }
+                match done {
+                    Some(value) => self.coerce(value, &param.ty),
+                    None => {
+                        self.function_argument_context(&arg.value, param.lent);
+                        let value = self.expr_as(&arg.value, &param.ty);
+                        self.next_lambda_is_block = false;
+                        self.lent_fn_ok = false;
+                        value
+                    }
+                }
+            };
+            out.push(Arg { kind: param.kind, expr });
+        }
+        if !missing.is_empty() {
+            self.error(
+                span,
+                format!("this call of `{}` is missing {}", sig.name, missing.join(", ")),
+            );
+            return self.unknown(span);
+        }
+
+        self.exclusive(&out, None);
+        self.mk_call(ExprKind::Call { func: id, args: out }, sig.ret, span)
+    }
+
+    /// The law of exclusivity for one call (Section 5.4): while the call can change
+    /// something through a `var` argument, nothing else the call is given may reach the
+    /// same thing. `callee` is the function value being called, if the call is of one.
+    pub(super) fn exclusive(&mut self, args: &[Arg], callee: Option<&Expr>) {
+        // Two `var` arguments that overlap.
+        let writes: Vec<(Span, (LocalId, Vec<Step>))> = args
+            .iter()
+            .filter(|arg| arg.kind == ParamKind::Var)
+            .filter_map(|arg| place_path(&arg.expr).map(|path| (arg.expr.span, path)))
+            .collect();
+        for (i, (_, first)) in writes.iter().enumerate() {
+            for (second_span, second) in &writes[i + 1..] {
+                if overlap(first, second) {
+                    self.error_help(
+                        *second_span,
+                        "this argument overlaps another `var` argument of the same call",
+                        "one thing cannot be changed through two names at once (Section 5.4)",
+                    );
+                }
+            }
+        }
+        if writes.is_empty() {
+            return;
+        }
+        // A block works on the variables around it, so a block the call is given must not
+        // use a variable the call changes.
+        let mut lent: Option<(Span, String)> = None;
+        for arg in args {
+            match &arg.expr.kind {
+                ExprKind::Closure {
+                    captures, block: true, ..
+                } => {
+                    for (_, (root, _)) in &writes {
+                        if captures.contains(root) {
+                            let name = self.locals[*root].name.clone();
+                            self.error_help(
+                                arg.expr.span,
+                                format!("this block uses `{name}`, which the same call changes"),
+                                format!(
+                                    "`{name}` is passed as `var`, or is what the method changes, so nothing else may use it until the call returns (Section 5.4); work on a copy, or take what the block needs out of `{name}` before the call"
+                                ),
+                            );
+                        }
+                    }
+                    if let Some(&function) = captures.iter().find(|capture| self.borrowed_fns.contains(capture)) {
+                        lent = Some((arg.expr.span, self.locals[function].name.clone()));
+                    }
+                }
+                ExprKind::Local(local) if self.borrowed_fns.contains(local) => {
+                    lent = Some((arg.expr.span, self.locals[*local].name.clone()));
+                }
+                _ => {}
+            }
+        }
+        if let Some(Expr {
+            kind: ExprKind::Local(local),
+            span,
+            ..
+        }) = callee
+            && self.borrowed_fns.contains(local)
+        {
+            lent = Some((*span, self.locals[*local].name.clone()));
+        }
+        // A variable of the enclosing function can be reached by any block written there,
+        // and a lent function may be one of them.
+        if let Some((span, function)) = lent {
+            for (_, (root, _)) in &writes {
+                if matches!(self.locals[*root].kind, LocalKind::Capture { by_ref: true }) {
+                    let name = self.locals[*root].name.clone();
+                    self.error_help(
+                        span,
+                        format!("`{function}` may use `{name}`, which the same call changes"),
+                        format!(
+                            "`{name}` belongs to the enclosing function, and so may `{function}`, a function that was lent (Section 5.4); change a copy of `{name}` and assign it back after the call"
+                        ),
+                    );
+                }
+            }
+        }
+    }
+
+    /// A call of a generic function: finds its type arguments from the receiver, the
+    /// arguments and the expected type, makes the function for them, and calls it.
+    /// `env` holds type arguments that are already known.
+    pub(super) fn generic_call(
+        &mut self,
+        template: usize,
+        receiver: Option<Expr>,
+        mut env: HashMap<String, Ty>,
+        args: &[ast::Arg],
+        span: Span,
+        expected: Option<&Ty>,
+    ) -> Expr {
+        let t = &self.templates[template];
+        let decl = t.decl;
+        let names: Vec<String> = t.params.iter().map(|p| p.name.clone()).collect();
+        let implicit = t.implicit.clone();
+        let display = t.display.clone();
+        if let Some(receiver) = &receiver
+            && let ast::FnTarget::Method { ty: Some(pattern), .. } = &decl.sig.target
+        {
+            let ty = receiver.ty.clone();
+            self.bind(pattern, &ty, &names, &mut env);
+        }
+        let param_names: Vec<String> = decl.sig.params.iter().map(|p| p.name.name.clone()).collect();
+        let slots = self.match_args(&display, &param_names, args, span);
+        let mut checked: Vec<Option<Expr>> = vec![None; slots.len()];
+        for (index, param) in decl.sig.params.iter().enumerate() {
+            let Some(arg) = slots[index] else { continue };
+            if let Some(name) = implicit.get(&index) {
+                // A parameter of interface type takes the argument's own type.
+                let value = self.expr(&arg.value, None);
+                if !value.ty.is_unknown() && value.ty != Ty::Never {
+                    env.entry(name.clone()).or_insert_with(|| value.ty.clone());
+                }
+                checked[index] = Some(value);
+                continue;
+            }
+            let hint = self.resolve_bound(&param.ty, &names, &env);
+            self.argument_kind = super::param_kind(param.kind);
+            let value = self.argument(&arg.value, &param.ty, hint.as_ref(), &names, &env);
+            let ty = value.ty.clone();
+            self.bind(&param.ty, &ty, &names, &mut env);
+            checked[index] = Some(value);
+        }
+        // What the arguments leave open, the expected type may settle.
+        if let (Some(expected), Some(ret)) = (expected, &decl.sig.ret)
+            && names.iter().any(|name| !env.contains_key(name))
+        {
+            self.bind(ret, expected, &names, &mut env);
+            let inner = super::exprs::peel(expected).clone();
+            self.bind(ret, &inner, &names, &mut env);
+        }
+        let mut type_args = Vec::new();
+        for name in &names {
+            match env.get(name) {
+                Some(ty) => type_args.push(ty.clone()),
+                // The expected type failed to check, and that was reported.
+                None if expected.is_some_and(|ty| ty.is_unknown()) => return self.unknown(span),
+                None => {
+                    self.error_help(
+                        span,
+                        format!("the type parameter `{name}` of `{display}` is not known here"),
+                        "give the result a type, as in `x: Stack<int> = ...` (Section 3.9)",
+                    );
+                    return self.unknown(span);
+                }
+            }
+        }
+        let Some(id) = self.instantiate(template, type_args, span) else {
+            return self.unknown(span);
+        };
+        self.finish_call(id, receiver, slots, checked, span)
+    }
+
+    /// Checks one argument of a generic call. `pattern` is the parameter's type as
+    /// written, and `hint` is that type if its type parameters are already known.
+    fn argument(
+        &mut self,
+        value: &ast::Expr,
+        pattern: &ast::Type,
+        hint: Option<&Ty>,
+        names: &[String],
+        env: &HashMap<String, Ty>,
+    ) -> Expr {
+        let ast::TypeKind::Fn {
+            params, ret, errors, ..
+        } = &pattern.kind
+        else {
+            return self.expr(value, hint);
+        };
+        if !matches!(value.kind, ast::ExprKind::Lambda { .. } | ast::ExprKind::Name(_)) {
+            return self.expr(value, hint);
+        }
+        // The parameter is declared with a function type, so a borrowed one is lent.
+        let lends = self.argument_kind == ParamKind::Borrow;
+        // A function parameter: a lambda's parameter types come from the type arguments
+        // found so far, and its return type may be what settles another of them.
+        let mut wanted = Vec::new();
+        for (kind, ty) in params {
+            match self.resolve_bound(ty, names, env) {
+                Some(resolved) => wanted.push((super::param_kind(*kind), resolved)),
+                None => {
+                    self.function_argument_context(value, lends);
+                    let checked = self.expr(value, hint);
+                    self.next_lambda_is_block = false;
+                    self.lent_fn_ok = false;
+                    return checked;
+                }
+            }
+        }
+        let ok = match ret {
+            Some(ret) => self.resolve_bound(ret, names, env).unwrap_or(Ty::Unknown),
+            None => Ty::Unit,
+        };
+        let ret = if errors.is_empty() || ok.is_unknown() {
+            ok
+        } else {
+            Ty::Result(Box::new(ok), self.resolve_error_set(errors))
+        };
+        let expected = Ty::Fn(Box::new(FnTy { params: wanted, ret }));
+        self.function_argument_context(value, lends);
+        let checked = self.expr(value, Some(&expected));
+        self.next_lambda_is_block = false;
+        self.lent_fn_ok = false;
+        checked
+    }
+
+    /// A call of a generic type-level function. `on` is the type it is called on, when the
+    /// call names it in full (`Stack<int>.new()`).
+    pub(super) fn generic_type_level_call(
+        &mut self,
+        template: usize,
+        on: Option<Ty>,
+        args: &[ast::Arg],
+        span: Span,
+        expected: Option<&Ty>,
+    ) -> Expr {
+        let t = &self.templates[template];
+        let decl = t.decl;
+        let names: Vec<String> = t.params.iter().map(|p| p.name.clone()).collect();
+        let mut env = HashMap::new();
+        if let (Some(on), ast::FnTarget::TypeLevel(pattern)) = (&on, &decl.sig.target) {
+            self.bind(pattern, on, &names, &mut env);
+        }
+        self.generic_call(template, None, env, args, span, expected)
+    }
+}

@@ -1,0 +1,76 @@
+// Run with `koo test tests/test/stack_test.koo`. One test fails on purpose.
+import std/os
+import std/test
+
+type Stack<T> = { items: [T] }
+
+fn Stack<T>.new() -> Stack<T> { return Stack<T> { items: [] } }
+fn (self: var Stack<T>) push(item: T) { self.items.push(item) }
+fn (self: var Stack<T>) pop() -> T? { return self.items.pop() }
+
+error Empty
+
+fn top(stack: Stack<int>) -> int ! Empty {
+    if stack.items.len == 0 { fail Empty }
+    return stack.items[stack.items.len - 1]
+}
+
+fn test_push_then_pop() {
+    var stack := Stack<int>.new()
+    stack.push(1)
+    stack.push(2)
+    test.assert_eq(stack.pop(), 2)
+    test.assert_eq(stack.pop(), 1)
+    test.assert(stack.pop().is_none())
+}
+
+fn test_top_of_empty_fails() ! Empty {
+    stack := Stack<int>.new()
+    match top(stack) {
+        _ => test.fail("an empty stack has no top")
+        ! Empty => {}
+    }
+    var full := Stack<int>.new()
+    full.push(7)
+    test.assert_eq(top(full)?, 7)
+}
+
+fn test_wrong_on_purpose() {
+    print("about to fail")
+    test.assert_eq([1, 2, 3].map(x -> x * 2), [2, 4, 7])
+}
+
+fn test_error_escapes() ! Empty {
+    stack := Stack<int>.new()
+    print(top(stack)?)
+}
+
+fn test_values_are_copies() {
+    var a := Stack<string>.new()
+    a.push("x")
+    b := a
+    a.push("y")
+    test.assert_eq(b.items, ["x"])
+    test.assert_eq(a.items.len, 2)
+}
+
+// A test sees no arguments: how the runner picks a test is not its business.
+fn test_no_arguments() {
+    test.assert_eq(os.args(), [])
+}
+
+fn helper_is_not_a_test() -> int { return 1 }
+//= FAILED test_error_escapes
+//=        error: Empty
+//= ok     test_no_arguments
+//= ok     test_push_then_pop
+//= ok     test_top_of_empty_fails
+//= ok     test_values_are_copies
+//= FAILED test_wrong_on_purpose
+//=        | about to fail
+//=        panic: assertion failed at TESTFILE:40
+//=           left: [2, 4, 6]
+//=          right: [2, 4, 7]
+//= 
+//= 2 of 6 tests failed
+//! exit 1

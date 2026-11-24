@@ -1,0 +1,130 @@
+// Chains of list methods. The compiler makes one pass of a chain when nothing could tell
+// (Section 4.5); when something could, the stages run one after the other, as written.
+// Either way the program prints the same.
+
+type Item = { name: string, price: int, tags: [string] }
+
+fn double(x: int) -> int { return x * 2 }
+fn is_even(x: int) -> bool { return x % 2 == 0 }
+
+fn noisy_double(x: int) -> int {
+    print("doubling {x}")
+    return x * 2
+}
+
+fn total_of<T>(xs: [T], cost: fn(T) -> int) -> int {
+    return xs.map(cost).filter(c -> c > 0).sum()
+}
+
+fn apply_all(xs: [int], f: fn(int) -> int) -> [int] {
+    // `f` is the caller's: nothing is known of it, so this is two passes.
+    return xs.map(f).filter(x -> x > 2)
+}
+
+fn main() {
+    xs := [1, 2, 3, 4, 5, 6]
+    scale := 10
+
+    // Fused: every shape of end.
+//= [20, 40, 60]
+    print(xs.filter(x -> x % 2 == 0).map(x -> x * scale))
+//= [4, 8, 12]
+    print(xs.map(double).filter(is_even).filter(x -> x % 4 == 0))
+//= 66
+    print(xs.map(x -> x * x).filter(x -> x > 4).fold(0, (a, x) -> a + x - 5))
+//= 420
+    print(xs.map(x -> x * scale * 2).sum())
+//= 9.0
+    print(xs.filter(x -> x > 1).map(x -> float.from(x) / 2.0).filter(x -> x > 1.0).sum())
+//= true false
+    print("{xs.map(x -> x + 1).any(x -> x == 7)} {xs.map(x -> x + 1).all(x -> x < 7)}")
+//= 2
+    print(xs.map(x -> x * 3).filter(x -> x % 2 == 0).count(x -> x > 6))
+//= 9 none
+    print("{xs.map(x -> x * x).find(x -> x > 5)} {xs.filter(x -> x > 9).find(x -> x > 0)}")
+
+
+    // Values that are counted: strings, lists, structs.
+    items := [
+        Item { name: "pen", price: 3, tags: ["office"] },
+        Item { name: "ink", price: 12, tags: ["office", "liquid"] },
+        Item { name: "tea", price: 7, tags: ["liquid"] },
+    ]
+//= ["INK!", "TEA!"]
+    print(items.filter(i -> i.price > 5).map(i -> i.name.to_upper()).map(n -> n + "!"))
+//= ink+tea+
+    print(items.filter(i -> i.tags.contains("liquid")).map(i -> i.name).fold("", (a, n) -> a + n + "+"))
+//= [["office", "liquid"], ["liquid"]]
+    print(items.map(i -> i.tags).filter(t -> t.contains("liquid")))
+//= 2
+    print(items.map(i -> i.tags).filter(t -> t.len > 1).map(t -> t.len).sum())
+//= 19
+    print(total_of(items, i -> i.price - 1))
+//= 0
+    print(total_of(["a", "bb"], s -> 0 - s.len))
+
+    // A chain in a chain.
+    grid := [[1, 2, 3], [4, 5, 6], [7, 8, 9]]
+//= [8, 32]
+    print(grid.map(row -> row.filter(x -> x % 2 == 1).map(x -> x * 2).sum()).filter(s -> s != 10))
+
+    // An empty list, and a chain that keeps nothing.
+    none_of: [int] = []
+//= [] 0 [] true
+    print("{none_of.map(x -> x + 1).filter(x -> x > 0)} {none_of.map(double).sum()} {xs.filter(x -> x > 100).map(double)} {xs.filter(x -> x > 100).all(x -> x < 0)}")
+
+    // Not fused: a stage that prints. All of the first stage comes first.
+//= doubling 1
+//= doubling 2
+//= doubling 3
+//= [4, 6]
+    print([1, 2, 3].map(noisy_double).filter(x -> x > 2))
+//= mapping 2
+//= mapping 1
+//= kept 2
+    [2, 1].map(x -> {
+        print("mapping {x}")
+        return x * 2
+    }).filter(x -> x > 2).each(x -> print("kept {x / 2}"))
+
+    // Not fused: the last function prints, and all of the stage before it comes first.
+//= counting 6
+//= counting 4
+//= 1
+    print([3, 2].map(double).count(x -> {
+        print("counting {x}")
+        return x > 4
+    }))
+
+    // Not fused: the last function changes what an earlier one reads.
+    var bonus := 0
+    [1, 2, 3].map(x -> x + bonus).each(x -> { bonus += x })
+//= 6
+    print(bonus)
+
+    // Not fused: a stage that changes a variable.
+    var calls := 0
+    kept := [1, 2, 3, 4].map(x -> {
+        calls += 1
+        return x * calls
+    }).filter(x -> x > calls)
+//= [9, 16] 4
+    print("{kept} {calls}")
+
+    // Not fused: a function the compiler knows nothing of.
+//= [3, 4]
+    print(apply_all([1, 2, 3], x -> x + 1))
+    var seen: [int] = []
+    passed := apply_all([5, 6], x -> {
+        seen.push(x)
+        return x
+    })
+//= [5, 6] [5, 6]
+    print("{passed} {seen}")
+
+    // The list is read while the chain runs, and changed after.
+    var growing := [1, 2, 3]
+    growing = growing.map(x -> x * growing.len).filter(x -> x > growing[0])
+//= [3, 6, 9]
+    print(growing)
+}

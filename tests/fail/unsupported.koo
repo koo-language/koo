@@ -1,0 +1,23 @@
+import std/http
+
+pub interface Shape {
+    fn area() -> float
+}
+
+actor Counter {
+    var n: int = 0
+}
+
+type Id = distinct int
+
+fn main() {
+    d := 10d
+    scope { print("x") }
+    defer { print("y") }
+}
+//! error the package `std/http` is not part of this compiler yet
+//! error actors are not supported by this compiler yet
+//! error distinct types are not supported by this compiler yet
+//! error `Decimal` is not supported by this compiler yet
+//! error tasks are not supported by this compiler yet
+//! error `defer` is not supported by this compiler yet

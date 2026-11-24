@@ -1,0 +1,8 @@
+fn main() {
+    print("before")
+    xs := List<int>.with_size(2305843009213693952)
+    print(xs.len)
+}
+//= before
+//! exit 101
+//! stderr a list this large cannot be allocated

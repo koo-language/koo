@@ -1,0 +1,94 @@
+// A to-do list kept in a file.
+//
+//     koo run examples/todo.koo -- add "write the report"
+//     koo run examples/todo.koo -- done 1
+//     koo run examples/todo.koo -- list
+//
+// The file is `todo.txt` in the directory named by the environment variable TODO_DIR, or
+// in the temporary directory.
+
+import std/io
+import std/os
+
+type Task = { title: string, done: bool }
+
+error Usage { message: string }
+
+fn path() -> string {
+    dir := os.env("TODO_DIR") else (os.env("TMPDIR") else "/tmp")
+    return "{dir}/todo.txt"
+}
+
+fn parse(text: string) -> [Task] {
+    var tasks: [Task] = []
+    for line in text.lines() {
+        if (mark, title) := line.cut(" ") {
+            tasks.push(Task { title, done: mark == "x" })
+        }
+    }
+    return tasks
+}
+
+fn render(tasks: [Task]) -> string {
+    return tasks.map(t -> "{if t.done { "x" } else { "-" }} {t.title}\n").join("")
+}
+
+fn load() -> [Task] {
+    // No file yet means no tasks yet.
+    return parse(io.read_file(path()) else "")
+}
+
+fn show(tasks: [Task]) {
+    if tasks.is_empty() {
+        print("nothing to do")
+        return
+    }
+    for (i, task) in tasks.enumerate() {
+        mark := if task.done { "x" } else { " " }
+        print("{i + 1:3}. [{mark}] {task.title}")
+    }
+    left := tasks.count(t -> not t.done)
+    print("{left} of {tasks.len} left")
+}
+
+fn run(args: [string]) ! Usage | IoError {
+    var tasks := load()
+    command := args.first() else "list"
+    match command {
+        "list" => show(tasks)
+        "add" => {
+            title := args.skip(1).join(" ").trim()
+            if title.is_empty() { fail Usage { message: "add what?" } }
+            tasks.push(Task { title, done: false })
+            io.write_file(path(), render(tasks))?
+            show(tasks)
+        }
+        "done" => {
+            text := args.skip(1).first() else fail Usage { message: "done needs a number" }
+            n := int.parse(text) else fail Usage { message: "`{text}` is not a number" }
+            if n < 1 or n > tasks.len { fail Usage { message: "there is no task {n}" } }
+            tasks[n - 1].done = true
+            io.write_file(path(), render(tasks))?
+            show(tasks)
+        }
+        "clear" => {
+            io.write_file(path(), render(tasks.filter(t -> not t.done)))?
+            show(load())
+        }
+        _ => fail Usage { message: "unknown command `{command}`: use list, add, done or clear" }
+    }
+}
+
+fn main() {
+    match run(os.args()) {
+        _ => {}
+        ! Usage { message } => {
+            io.eprint("todo: {message}")
+            os.exit(2)
+        }
+        ! e: IoError => {
+            io.eprint("todo: {e.message}")
+            os.exit(1)
+        }
+    }
+}

@@ -1,0 +1,14 @@
+fn main() {
+    var seed := 7
+    var xs: [int] = []
+    for _ in 0..3_000_000 {
+        seed = (seed * 1103515245 + 12345) % 2147483648
+        xs.push(seed)
+    }
+    xs.sort()
+    var check := 0
+    for i in 0..xs.len {
+        if i % 1000 == 0 { check += xs[i] % 1000 }
+    }
+    print(check)
+}

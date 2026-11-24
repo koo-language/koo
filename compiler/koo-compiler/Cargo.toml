@@ -1,0 +1,10 @@
+[package]
+name = "koo-compiler"
+description = "Type checker and code generator for the Koo language"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+koo-syntax = { path = "../koo-syntax" }

@@ -1,0 +1,63 @@
+error NotFound { id: int }
+error Denied
+
+fn find(id: int) -> int ! NotFound {
+    if id < 0 { fail NotFound { id } }
+    return id
+}
+
+fn guarded(id: int) -> int ! NotFound | Denied {
+    if id == 0 { fail Denied }
+    return find(id)?
+}
+
+fn ignores() {
+    find(1)
+}
+
+fn cannot_fail() -> int {
+    return find(1)?
+}
+
+fn narrow() -> int ! Denied {
+    return guarded(1)?
+}
+
+fn wrong_error() -> int ! NotFound {
+    fail Denied
+}
+
+fn uses_result_as_value() -> int {
+    return find(1) + 1
+}
+
+fn incomplete(id: int) -> string {
+    match guarded(id) {
+        n => { return "ok" }
+        ! NotFound => { return "missing" }
+    }
+}
+
+fn optional_in_plain() -> int {
+    xs := [1]
+    return xs.get(0)?
+}
+
+fn missing_return(n: int) -> int {
+    if n > 0 { return 1 }
+}
+
+fn main() {
+    x := find(1).to_string()
+    y: int = find(2)
+}
+//! error unhandled result: NotFound
+//! error `?` in a function that cannot fail
+//! error `?` propagates `NotFound`, which is not in this function's error set
+//! error `Denied` is not in this function's error set
+//! error `+` cannot be applied to `int ! NotFound` and `int`
+//! error this `match` does not cover `! Denied`
+//! error `?` on an optional in a function that does not return an optional
+//! error `missing_return` can reach its end without returning a value
+//! error `int ! NotFound` has no method `to_string`
+//! error expected `int`, found `int ! NotFound`

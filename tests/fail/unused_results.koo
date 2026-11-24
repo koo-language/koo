@@ -1,0 +1,27 @@
+error Bad
+
+fn risky(i: int) -> int ! Bad {
+    if i == 0 { fail Bad }
+    return i
+}
+
+fn save() ! Bad { fail Bad }
+
+fn count() -> int {
+    return none
+}
+
+fn main() {
+    x := risky(0)
+    y := save()
+    var r := risky(1)
+    r = risky(0)
+    handled := risky(2)
+    print(handled else 0)
+    _ := risky(3)
+}
+//! error expected `int`, found `none`
+//! error the result in `x` is never handled
+//! error the result in `y` is never handled
+//! error the result in `r` is never handled
+//! error unhandled result: Bad

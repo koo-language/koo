@@ -1,0 +1,86 @@
+// Default values of parameters (Section 5.3) and tuples in binding conditions.
+enum Level { Debug, Info, Error }
+
+type Server = { host: string, port: int }
+
+fn connect(host: string, port: int = 5432, tls: bool = true, tags: [string] = [], level: Level = Level.Info) -> string {
+    return "{host}:{port} tls={tls} tags={tags} level={level}"
+}
+
+fn (self: Server) url(scheme: string = "https", path: string = "/") -> string {
+    return "{scheme}://{self.host}:{self.port}{path}"
+}
+
+fn Server.local(port: int = 8080) -> Server {
+    return Server { host: "localhost", port }
+}
+
+fn pad<T>(items: [T], with: T, count: int = 1) -> [T] {
+    var out := items
+    for _ in 0..count { out.push(with) }
+    return out
+}
+
+fn offset(n: int, by: int = -1, scale: float = 1.5, label: string? = none) -> string {
+    return "{n + by} {scale} {label else "-"}"
+}
+
+fn next_pair(items: var [int]) -> (int, int)? {
+    b := items.pop()?
+    a := items.pop()?
+    return (a, b)
+}
+
+fn main() {
+    print(connect("db"))
+    print(connect("db", 6000))
+    print(connect("db", tls: false))
+    print(connect("db", level: Level.Error, tags: ["a", "b"]))
+    print(connect("db", 1, false, ["x"], Level.Debug))
+
+    server := Server.local()
+    print(server.url())
+    print(server.url(path: "/health"))
+    print(Server.local(port: 9).url("http"))
+
+    print(pad([1, 2], 0))
+    print(pad(["a"], "z", count: 3))
+    print(offset(10))
+    print(offset(10, 5, label: "x"))
+
+    // A lambda's caller cannot leave arguments out, but a function with defaults can be
+    // called from inside one.
+    print([1, 2].map(n -> offset(n)))
+
+    if (key, value) := "port=8080".cut("=") {
+        print("{key} -> {value}")
+    }
+    if (key, _) := "novalue".cut("=") {
+        print("unexpected {key}")
+    } else {
+        print("no separator")
+    }
+    var items := [1, 2, 3, 4, 5]
+    while (a, b) := next_pair(var items) {
+        print("{a} and {b}")
+    }
+    print(items)
+}
+//= db:5432 tls=true tags=[] level=Info
+//= db:6000 tls=true tags=[] level=Info
+//= db:5432 tls=false tags=[] level=Info
+//= db:5432 tls=true tags=["a", "b"] level=Error
+//= db:1 tls=false tags=["x"] level=Debug
+//= https://localhost:8080/
+//= https://localhost:8080/health
+//= http://localhost:9/
+//= [1, 2, 0]
+//= ["a", "z", "z", "z"]
+//= 9 1.5 -
+//= 15 1.5 x
+//= ["0 1.5 -", "1 1.5 -"]
+//= port -> 8080
+//= no separator
+//= 4 and 5
+//= 2 and 3
+//= []

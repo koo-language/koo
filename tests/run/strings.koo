@@ -1,0 +1,54 @@
+fn greet(name: string, times: int) -> string {
+    var out := ""
+    for i in 0..times {
+        if i > 0 { out += ", " }
+        out += "hi {name}"
+    }
+    return out
+}
+
+fn main() {
+    a := "hello"
+    b := a + ", world"
+    print(b)
+    print(b.len)
+    print(a == "hello")
+    print(a != "hello")
+    print("apple" < "banana")
+    print(greet("Ann", 3))
+    pi := 3.14159
+    print("pi is {pi:.2}, twice is {pi * 2.0:.3}")
+    print("a brace \{ and a quote \" and a tab\tend")
+    text := """
+        select *
+          from orders
+        where id = {b.len}
+        """
+    print(text)
+    print(`raw {text} \n`)
+    var s := "x"
+    t := s
+    s += "y"
+    print(s)
+    print(t)
+    print(12.to_string() + true.to_string() + 1.5.to_string())
+    print("")
+    print("unicode: héllo ✓".len)
+}
+//= hello, world
+//= 12
+//= true
+//= false
+//= true
+//= hi Ann, hi Ann, hi Ann
+//= pi is 3.14, twice is 6.283
+//= a brace { and a quote " and a tab	end
+//= select *
+//=   from orders
+//= where id = 12
+//= raw {text} \n
+//= xy
+//= x
+//= 12true1.5
+//= 
+//= 19

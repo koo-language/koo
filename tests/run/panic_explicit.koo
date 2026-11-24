@@ -1,0 +1,12 @@
+fn check(n: int) -> int {
+    if n < 0 { panic("negative: {n}") }
+    return n
+}
+
+fn main() {
+    print(check(1))
+    print(check(-2))
+}
+//= 1
+//! exit 101
+//! stderr panic: negative: -2

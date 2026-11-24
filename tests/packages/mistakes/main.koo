@@ -1,0 +1,16 @@
+// A package with mistakes in more than one file: each is reported in its own file.
+import std/io
+
+fn main() {
+    print(helper())
+    print(total([1, 2]))
+}
+//! error the import `io` is not used
+//! stderr main.koo:2:1
+//! error unknown name `io`
+//! stderr other.koo:4:5
+//! stderr add `import std/io` at the top of the file
+//! error expected `int`, found `string`
+//! stderr other.koo:9:12
+//! error `helper` is already declared
+//! stderr third.koo:1:4

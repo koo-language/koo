@@ -1,0 +1,22 @@
+import std/os
+import std/io
+import ./orders
+
+fn fine__name() {}
+
+fn main() {
+    print(os.nothing())
+    print(io__read_line())
+    m: [string: int] = [:]
+    print(m._len)
+    k: [float: int] = [:]
+    x := __str_trim(" a ")
+}
+//! error imports of other packages are not supported by this compiler yet
+//! error a name with `__` in it is reserved for the standard library
+//! error the package `os` has no function `nothing`
+//! error unknown function `io__read_line`
+//! error has no field `_len`
+//! error `float` does not satisfy `Hashable`
+//! error unknown function `__str_trim`
+//! error the import `io` is not used

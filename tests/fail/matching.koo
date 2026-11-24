@@ -1,0 +1,57 @@
+enum Shape {
+    Circle { r: float }
+    Square { side: float }
+    Dot
+}
+
+fn area(shape: Shape) -> float {
+    match shape {
+        Circle { r } => { return r * r * 3.14 }
+        Square { side } => { return side * side }
+    }
+}
+
+fn name(shape: Shape) -> string {
+    return match shape {
+        Circle { .. } => "circle"
+        Square { side } => 4
+        Dot => "dot"
+    }
+}
+
+fn partial(shape: Shape) -> float {
+    match shape {
+        Circle => { return 1.0 }
+        Square { } => { return 2.0 }
+        Triangle => { return 3.0 }
+        _ => { return 0.0 }
+    }
+}
+
+fn numbers(n: int, s: string?) -> int {
+    a := match n {
+        0 => 1
+        1 => 2
+    }
+    b := match s {
+        none => 0
+    }
+    c := if n > 0 { 1 }
+    return a + b + c
+}
+
+fn main() {
+    shape := Dot
+    other := Shape.Hexagon
+    third := Shape.Circle
+}
+//! error this `match` does not cover `Dot`
+//! error the branches have different types: `string` and `int`
+//! error this pattern does not name `side`
+//! error `Shape` has no variant `Triangle`
+//! error this `match` does not cover the remaining values: add a `_` arm
+//! error this `match` does not cover a value
+//! error an `if` used for its value needs an `else`
+//! error `Dot` is not known here
+//! error `Shape` has no variant `Hexagon`
+//! error the variant `Circle` has fields

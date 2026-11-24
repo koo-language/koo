@@ -1,0 +1,57 @@
+// Operands are evaluated as written, left to right (Section 5.4).
+type Pair = { first: int, second: int }
+
+fn next(n: var int) -> int {
+    n += 1
+    return n
+}
+
+fn bump(n: var int) -> int {
+    n = 100
+    return 1
+}
+
+fn append(s: var string) -> string {
+    s = "changed"
+    return "!"
+}
+
+fn show(a: int, b: int) { print("a={a} b={b}") }
+
+fn main() {
+    var n := 0
+    show(b: next(var n), a: next(var n))
+
+    var x := 1
+    x += bump(var x)
+    print(x)
+    var y := 1
+    y = y + bump(var y)
+    print(y)
+
+    n = 0
+    var lists := [[0], [0], [0]]
+    lists[next(var n)].push(next(var n))
+    print(lists)
+
+    n = 0
+    var xs := [0, 0, 0, 0]
+    xs[next(var n)] = next(var n)
+    xs[next(var n)] += next(var n)
+    print(xs)
+
+    n = 0
+    pair := Pair { second: next(var n), first: next(var n) }
+    print(pair)
+
+    var s := "old"
+    s += append(var s)
+    print(s)
+}
+//= a=2 b=1
+//= 2
+//= 2
+//= [[0], [0, 2], [0]]
+//= [0, 2, 0, 4]
+//= Pair { first: 2, second: 1 }
+//= old!
