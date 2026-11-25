@@ -856,8 +856,14 @@ fn j__float(text: string, at: var int) -> float ! JsonError {
     }
     end := __json_number(text, at)
     if end < 0 { fail j__expected(text, at, "a number") }
+    value := __json_float()
+    // A number too large for a float would be read as one without end, which JSON
+    // has no way to write and a program no reason to expect.
+    if value - value != 0.0 {
+        fail JsonError { message: "expected a number that a float can hold, found one too large", path: "" }
+    }
     at = end
-    return __json_float()
+    return value
 }
 
 fn j__bool(text: string, at: var int) -> bool ! JsonError {
@@ -1126,7 +1132,7 @@ fn (self: Duration) nanos() -> int { return self._ns }
 fn (self: Duration) micros() -> int { return self._ns / 1000 }
 fn (self: Duration) millis() -> int { return self._ns / 1000000 }
 fn (self: Duration) seconds() -> float { return float.from(self._ns) / 1000000000.0 }
-fn (self: Duration) abs() -> Duration { return Duration { _ns: self._ns.abs() } }
+fn (self: Duration) abs(location: string) -> Duration { return Duration { _ns: self._ns.abs() } }
 fn (self: Duration) compare(other: Duration) -> int { return self._ns.compare(other._ns) }
 
 fn Duration.zero() -> Duration { return Duration { _ns: 0 } }
@@ -1170,9 +1176,10 @@ fn Duration.parse(text: string) -> Duration ! ParseError {
         var count := 0
         var digits := 0
         while t__at(b, at) >= 48 and t__at(b, at) <= 57 {
-            // No count of nanoseconds that an `int` holds has more digits than this.
-            if digits >= 18 { fail ParseError { input: text } }
-            count = count * 10 + t__at(b, at) - 48
+            // A count that an `int` does not hold is no count of anything.
+            digit := t__at(b, at) - 48
+            if count > (9223372036854775807 - digit) / 10 { fail ParseError { input: text } }
+            count = count * 10 + digit
             digits += 1
             at += 1
         }
@@ -1211,7 +1218,7 @@ fn Duration.parse(text: string) -> Duration ! ParseError {
 
 fn (self: Time) _add(by: Duration, location: string) -> Time { return Time { _ns: self._ns + by._ns } }
 fn (self: Time) _sub(by: Duration, location: string) -> Time { return Time { _ns: self._ns - by._ns } }
-fn (self: Time) _since(earlier: Time) -> Duration { return Duration { _ns: self._ns - earlier._ns } }
+fn (self: Time) _since(earlier: Time, location: string) -> Duration { return Duration { _ns: self._ns - earlier._ns } }
 fn (self: Time) compare(other: Time) -> int { return self._ns.compare(other._ns) }
 
 /// The whole seconds from the beginning of 1970 to this time.
@@ -1400,7 +1407,11 @@ fn Time.parse(text: string) -> Time ! ParseError {
     days := era * 146097 + day_of_era - 719468
     seconds := days * 86400 + hour * 3600 + minute * 60 + second - offset
     // An `int` of nanoseconds reaches from 1677 to 2262.
-    // Every time that is printed is read back, to the last second of the range.
+    // Every time that is printed is read back, to the last moment at each end of the
+    // range, which is not a whole second from the beginning of 1970.
+    if seconds == -9223372037 and nanos >= 145224192 {
+        return Time { _ns: -9223372036000000000 + (nanos - 1000000000) }
+    }
     if seconds > 9223372036 or seconds < -9223372036 { fail ParseError { input: text } }
     if seconds == 9223372036 and nanos > 854775807 { fail ParseError { input: text } }
     return Time { _ns: seconds * 1000000000 + nanos }

@@ -7,7 +7,7 @@ type Reading = { value: float }
 fn main() {
     print(Reading { value: 0.0 / 0.0 }.to_json())
     print(Reading { value: 1.0 / 0.0 }.to_json())
-    for text in ["\{\"value\":NaN}", "\{\"value\":Infinity}", "\{\"value\":-Infinity}", "\{\"value\":", "\{\"value\":1.5}"] {
+    for text in ["\{\"value\":NaN}", "\{\"value\":Infinity}", "\{\"value\":-Infinity}", "\{\"value\":", "\{\"value\":1.5}", "\{\"value\":1e999}", "\{\"value\":-1e999}", "\{\"value\":1.7976931348623157e308}"] {
         match Reading.from_json(text) {
             reading => print(reading.value)
             ! e => print("{e.path}: {e.message}")
@@ -22,3 +22,6 @@ fn main() {
 //= /value: expected a number, found a number that is not written as JSON writes one
 //= /value: expected a number, found the end of the text
 //= 1.5
+//= /value: expected a number that a float can hold, found one too large
+//= /value: expected a number that a float can hold, found one too large
+//= 1.7976931348623157e308

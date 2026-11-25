@@ -1,0 +1,30 @@
+// The first and the last moment that a `Time` can be are read back as they are
+// printed, and a duration is read to the longest there is.
+
+fn main() {
+    for text in ["1677-09-21T00:12:43.145224192Z", "1677-09-21T00:12:43.999999999Z", "1677-09-21T00:12:43.145224191Z", "1677-09-21T00:12:43Z", "2262-04-11T23:47:16.854775807Z", "2262-04-11T23:47:16.854775808Z"] {
+        match Time.parse(text) {
+            t => print("{text} = {t} {t.unix_nanos()}")
+            ! e => print("{text} is not a time")
+        }
+    }
+    for text in ["9223372036854775807ns", "9223372036854775808ns", "9223372036854775ms", "9223372036854776ms", "2562047h47min16s854ms775us807ns", "99999999999999999999s"] {
+        match Duration.parse(text) {
+            d => print("{text} = {d}")
+            ! e => print("{text} is not a duration")
+        }
+    }
+}
+
+//= 1677-09-21T00:12:43.145224192Z = 1677-09-21T00:12:43.145224192Z -9223372036854775808
+//= 1677-09-21T00:12:43.999999999Z = 1677-09-21T00:12:43.999999999Z -9223372036000000001
+//= 1677-09-21T00:12:43.145224191Z is not a time
+//= 1677-09-21T00:12:43Z is not a time
+//= 2262-04-11T23:47:16.854775807Z = 2262-04-11T23:47:16.854775807Z 9223372036854775807
+//= 2262-04-11T23:47:16.854775808Z is not a time
+//= 9223372036854775807ns = 2562047h47min16s854ms775us807ns
+//= 9223372036854775808ns is not a duration
+//= 9223372036854775ms is not a duration
+//= 9223372036854776ms is not a duration
+//= 2562047h47min16s854ms775us807ns = 2562047h47min16s854ms775us807ns
+//= 99999999999999999999s is not a duration

@@ -161,9 +161,10 @@ impl<'a> Checker<'a> {
                     if !set.contains(id) {
                         // A warning in the specification, so that a library may stop
                         // returning an error; reported as an error until warnings exist.
+                        let shown = checker.ty_name(&Ty::Error(id));
                         checker.error_help(
                             name.span,
-                            format!("`{}` is not one of the errors of this result", name.name),
+                            format!("`{shown}` is not one of the errors of this result"),
                             "remove the arm",
                         );
                     }
@@ -467,7 +468,10 @@ impl<'a> Checker<'a> {
             self.error(span, format!("this `match` does not cover {}", missing.join(", ")));
             self.label(format!("this is {}", super::a(&found)));
             self.note("a `match` covers every case (Section 6.6)");
-            if missing.iter().all(|case| case.starts_with("`! ")) {
+            if missing.iter().any(|case| case.starts_with("`! e` for")) {
+                // Any error at all may come, so only an arm for any error covers them.
+                self.help("add a last arm `! e => ...`, which takes every error that the arms above it do not");
+            } else if missing.iter().all(|case| case.starts_with("`! ")) {
                 // Only errors are missing, and an error is matched by an arm that
                 // begins with `!`.
                 let first = missing[0].trim_matches('`').trim_end_matches(" { .. }");

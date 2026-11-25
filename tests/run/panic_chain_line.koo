@@ -1,0 +1,14 @@
+// A panic in a call that is one of a chain over several lines is reported at the line
+// the call is written on, and not at the line the chain begins on.
+
+fn main() {
+    xs := [1, 2, 3]
+    ys := xs
+        .map(x -> x * 2)
+        .slice(0, 9)
+    print(ys)
+}
+
+//! exit 101
+//! stderr panic: slice out of range
+//! stderr panic_chain_line.koo:8

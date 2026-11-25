@@ -725,7 +725,28 @@ impl<'a> Checker<'a> {
         }
     }
 
+    /// A call of a method. Where the method is one of the library's that is told the
+    /// place of its call, the place is that of the method's name, which in a chain
+    /// over several lines is the line the call is written on and not the chain's first.
     pub(super) fn method_call(
+        &mut self,
+        receiver: Expr,
+        name: &ast::Ident,
+        args: &[ast::Arg],
+        span: Span,
+        expected: Option<&Ty>,
+    ) -> Expr {
+        let mut call = self.method_call_at(receiver, name, args, span, expected);
+        if let ExprKind::Call { args, .. } = &mut call.kind
+            && let Some(last) = args.last_mut()
+            && matches!(last.expr.kind, ExprKind::Location)
+        {
+            last.expr.span = name.span;
+        }
+        call
+    }
+
+    fn method_call_at(
         &mut self,
         receiver: Expr,
         name: &ast::Ident,
