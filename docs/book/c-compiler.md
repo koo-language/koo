@@ -141,7 +141,7 @@ The [specification](../../SPEC.md) describes more than the compiler builds. For 
 
 *Statements.* Loops cannot be labeled, so `break` and `continue` apply to the innermost loop. There is no `defer`.
 
-*Constants.* A constant at the top level is a number, a string, or `true` or `false`; it cannot be a list, a structure or a computed value.
+*Constants.* A constant at the top level is a number, a string, or `true` or `false`; it cannot be a list, a structure or a computed value. A default, of a field or of a parameter, is one of those, a duration, `none`, an empty list or map, or a variant of an enumeration that has no fields, as `priority: Priority = Priority.Normal`.
 
 *Concurrency.* Of the concurrency that the specification describes, actors are built, as Chapter 9 describes them, with the limits listed in Section 9.11. Tasks, `spawn`, `scope`, channels and `select` are not.
 

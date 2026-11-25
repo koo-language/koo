@@ -1,0 +1,34 @@
+// A default may be a variant of an enumeration that has no fields: of a field of a
+// structure or an actor, and of a parameter. JSON without the key takes the default.
+
+enum Priority { Low, Normal, High }
+enum Shape { Dot, Circle { r: int } }
+
+type Task = { title: string, priority: Priority = Priority.Normal, tags: [string] = [], due: Duration = 24h, note: string? = none }
+
+actor Queue {
+    var mode: Priority = Priority.High
+
+    fn mode() -> Priority {
+        return mode
+    }
+}
+
+fn label(text: string, priority: Priority = Priority.Low) -> string {
+    return "{text}: {priority}"
+}
+
+fn main() ! JsonError {
+    t := Task { title: "write" }
+    print(t)
+    print(Task.from_json("\{\"title\":\"read\"}")?)
+    print(Task.from_json("\{\"title\":\"read\",\"priority\":\"high\"}")?.to_json())
+    print(Queue.start().mode())
+    print(label("x"))
+}
+
+//= Task { title: "write", priority: Normal, tags: [], due: 24h, note: none }
+//= Task { title: "read", priority: Normal, tags: [], due: 24h, note: none }
+//= {"title":"read","priority":"high","tags":[],"due":"24h"}
+//= High
+//= x: Low

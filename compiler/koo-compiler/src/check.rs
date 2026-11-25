@@ -1329,7 +1329,8 @@ impl<'a> Checker<'a> {
         ErrSet::of(ids)
     }
 
-    /// A compile-time constant: a literal, possibly negated, or an empty list.
+    /// A compile-time constant: a literal, possibly negated, an empty list, or a variant
+    /// of an enumeration that has no fields.
     fn const_expr(&mut self, expr: &ast::Expr, expected: Option<&Ty>) -> Option<Expr> {
         let literal = match &expr.kind {
             ast::ExprKind::Int(_)
@@ -1347,13 +1348,27 @@ impl<'a> Checker<'a> {
             } => {
                 matches!(inner.kind, ast::ExprKind::Int(_) | ast::ExprKind::Float(_))
             }
+            // A variant of an enumeration, where one is expected: `Priority.Normal`.
+            // What is wrong with it, if anything, is said as for any other value.
+            ast::ExprKind::Field { base: on, .. } => {
+                matches!((&on.kind, expected), (ast::ExprKind::Name(_), Some(Ty::Enum(_))))
+            }
             _ => false,
         };
         if !literal {
             self.unsupported(expr.span, "constant expressions other than literals are");
             return None;
         }
-        Some(self.expr(expr, expected))
+        let value = self.expr(expr, expected);
+        // Of an enumeration, only a variant without fields is a constant.
+        if matches!(expr.kind, ast::ExprKind::Field { .. })
+            && !value.ty.is_unknown()
+            && !matches!(&value.kind, ExprKind::EnumLit(_, _, values) if values.is_empty())
+        {
+            self.unsupported(expr.span, "constant expressions other than literals are");
+            return None;
+        }
+        Some(value)
     }
 
     fn constant(&mut self, decl: &ast::ConstDecl) {

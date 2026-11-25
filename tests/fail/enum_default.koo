@@ -1,0 +1,15 @@
+// What is wrong with a default that is a variant is said as for any other value.
+
+enum Priority { Low, Normal, High }
+enum Shape { Dot, Circle { r: int } }
+
+type A = { shape: Shape = Shape.Circle }
+type B = { p: Priority = Shape.Dot }
+type C = { p: Priority = Priority.Urgent }
+
+fn main() {
+}
+
+//! error the variant `Circle` has fields
+//! error expected `Priority`, found `Shape`
+//! error `Priority` has no variant `Urgent`
