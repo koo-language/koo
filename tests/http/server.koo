@@ -68,6 +68,9 @@ fn main() ! http.Error {
         return http.text("{counts.len} named, {known} counted")
     })
     app.get("/self/:name", req -> http.text("{req}"))
+    // A type that a client had a hand in is still one line of the response.
+    app.get("/as", req -> http.send("hello", req.query("type") else "text/plain").header("", "nameless"))
+    app.get("/names", req -> http.text("{req.query("a+b") else "none"}, {req.query("a b") else "none"}, {req.query("") else "none"}"))
     // A body that is not text, in and out: its bytes as they are.
     app.post("/hex", req -> http.text("{req.bytes().len} {encoding.hex(req.bytes())} {req.body().len}"))
     app.post("/mirror", req -> http.bytes(req.bytes(), content_type: "image/png", status: 201))

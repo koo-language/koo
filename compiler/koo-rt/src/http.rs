@@ -1084,7 +1084,11 @@ mod imp {
             out.extend(b"\r\n");
             if !content_type.is_empty() && !bodiless {
                 out.extend(b"Content-Type: ");
-                out.extend(content_type);
+                // A type is one line, whatever it was made of: an end of line in it
+                // would begin a header that the handler never meant to send.
+                for piece in content_type.split(|byte| *byte == b'\r' || *byte == b'\n') {
+                    out.extend(piece);
+                }
                 out.extend(b"\r\n");
             }
             out.extend(extra);
@@ -2583,9 +2587,6 @@ mod imp {
     /// `filter[name]` as `filter%5Bname%5D`, and a space as `+`. The escapes are read as
     /// `decoded` reads those of a value.
     fn is_name(raw: &[u8], name: &[u8]) -> bool {
-        if raw == name {
-            return true;
-        }
         let hex = |b: u8| (b as char).to_digit(16).map(|d| d as u8);
         let (mut at, mut matched) = (0, 0);
         while at < raw.len() {
@@ -2611,6 +2612,10 @@ mod imp {
     /// The value of a name among `name=value` pairs joined by `&`, as it is written.
     fn pair<'a>(pairs: &'a [u8], name: &[u8]) -> Option<&'a [u8]> {
         for pair in pairs.split(|b| *b == b'&') {
+            // Nothing between two `&`, or in a query that is empty, names nothing.
+            if pair.is_empty() {
+                continue;
+            }
             let equals = pair.iter().position(|b| *b == b'=').unwrap_or(pair.len());
             if is_name(&pair[..equals], name) {
                 return Some(pair.get(equals + 1..).unwrap_or(&[]));

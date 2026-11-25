@@ -1856,6 +1856,20 @@ fn a_server_answers_requests() {
         &["201 Created", "Content-Type: image/png\r\n", "Content-Length: 7\r\n"],
     );
     assert!(mirrored.ends_with(&blob), "{mirrored:?}");
+    // An end of line in a type does not begin another header, and a header has a name.
+    let injected = get(port, "/as?type=text/plain%0d%0aSet-Cookie:%20session=attacker");
+    has(&injected, &["Content-Type: text/plainSet-Cookie: session=attacker\r\n"]);
+    assert!(
+        !injected.contains("\r\nSet-Cookie") && !injected.contains("\r\n: nameless"),
+        "{injected}"
+    );
+    // A name is what it is once read: `a%2Bb` is `a+b`, and `a+b` is `a b`.
+    has(
+        &get(port, "/names?a%2Bb=plus&a+b=space"),
+        &["\r\n\r\nplus, space, none"],
+    );
+    has(&get(port, "/names"), &["\r\n\r\nnone, none, none"]);
+    has(&get(port, "/names?&&a+b=1"), &["\r\n\r\nnone, 1, none"]);
     // A request as text is its method and its path.
     has(&get(port, "/self/ada?x=1"), &["\r\n\r\nGET /self/ada"]);
     // A header that a handler sets and the server writes too is there once.
