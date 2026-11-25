@@ -1,0 +1,21 @@
+// A parameter of a database's address that is misspelled, or is none, is refused, and
+// not passed over. Run against a PostgreSQL server whose address is in
+// KOO_TEST_POSTGRES (see `a_database_answers_queries` in compiler/koo/tests/programs.rs).
+
+import std/os
+import std/sql/postgres
+
+fn main() {
+    address := os.env("KOO_TEST_POSTGRES") else ""
+    joint := if address.contains("?") { "&" } else { "?" }
+    for extra in ["sslmod=verify-full", "pgbouncer=true", "connect_timeout=5&application_name=koo"] {
+        match postgres.connect(address + joint + extra) {
+            db => print("{extra}: connected")
+            ! e => print("{extra}: {e.kind}: {e.message}")
+        }
+    }
+}
+
+//= sslmod=verify-full: Connection: `sslmod` is not a parameter of a database's address; did you mean `sslmode`?
+//= pgbouncer=true: Connection: `pgbouncer` is not a parameter of a database's address
+//= connect_timeout=5&application_name=koo: connected

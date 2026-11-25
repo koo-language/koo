@@ -1227,6 +1227,88 @@ unsafe fn unescaped(part: &[u8], out: &mut Buf) {
     }
 }
 
+/// The parameters of an address that PostgreSQL's own client knows (its documentation,
+/// "Parameter Key Words"). Of these the client here acts on `sslmode`, `sslrootcert`
+/// and `options`; the others are let pass, as addresses handed out by those who host
+/// databases carry them, and any other name is refused.
+const PARAMETERS: [&[u8]; 52] = [
+    b"application_name",
+    b"channel_binding",
+    b"client_encoding",
+    b"connect_timeout",
+    b"dbname",
+    b"fallback_application_name",
+    b"gssdelegation",
+    b"gssencmode",
+    b"gsslib",
+    b"host",
+    b"hostaddr",
+    b"keepalives",
+    b"keepalives_count",
+    b"keepalives_idle",
+    b"keepalives_interval",
+    b"krbsrvname",
+    b"load_balance_hosts",
+    b"max_protocol_version",
+    b"min_protocol_version",
+    b"oauth_ca_file",
+    b"oauth_client_id",
+    b"oauth_client_secret",
+    b"oauth_issuer",
+    b"oauth_scope",
+    b"options",
+    b"passfile",
+    b"password",
+    b"port",
+    b"replication",
+    b"require_auth",
+    b"requirepeer",
+    b"requiressl",
+    b"scram_client_key",
+    b"scram_server_key",
+    b"service",
+    b"ssl_max_protocol_version",
+    b"ssl_min_protocol_version",
+    b"sslcert",
+    b"sslcertmode",
+    b"sslcompression",
+    b"sslcrl",
+    b"sslcrldir",
+    b"sslkey",
+    b"sslkeylogfile",
+    b"sslmode",
+    b"sslnegotiation",
+    b"sslpassword",
+    b"sslrootcert",
+    b"sslsni",
+    b"target_session_attrs",
+    b"tcp_user_timeout",
+    b"user",
+];
+
+/// How many letters must be changed, put in or taken out to make one name of another:
+/// enough to tell a misspelling from a name that is nothing like any other.
+fn distance(a: &[u8], b: &[u8]) -> usize {
+    const MOST: usize = 40;
+    if a.len() > MOST || b.len() > MOST {
+        return MOST;
+    }
+    let mut row = [0usize; MOST + 1];
+    for (at, cell) in row.iter_mut().enumerate().take(b.len() + 1) {
+        *cell = at;
+    }
+    for (i, x) in a.iter().enumerate() {
+        let mut before = row[0];
+        row[0] = i + 1;
+        for (j, y) in b.iter().enumerate() {
+            let kept = row[j + 1];
+            row[j + 1] = (before + usize::from(x != y)).min(row[j] + 1).min(kept + 1);
+            before = kept;
+        }
+    }
+    row[b.len()]
+}
+
 /// Opens a database: `postgres://user:password@host:port/database`. Returns its number,
 /// or -1 if the address is not understood or the database cannot be reached; a thread
 /// then finds why in `koo_sql_error`.
@@ -1249,6 +1331,36 @@ pub unsafe extern "C" fn koo_sql_open(url: *const Header, limit: i64, patience: 
             Some(at) => (&rest[..at], &rest[at + 1..]),
             None => (rest, &b""[..]),
         };
+        // A parameter that PostgreSQL's own client does not know is a mistake in the
+        // address, and most often a misspelling: `sslmod=verify-full` would otherwise
+        // ask for nothing, and the connection be made as if it were not there.
+        for option in options.split(|byte| *byte == b'&').filter(|option| !option.is_empty()) {
+            let name = option.split(|byte| *byte == b'=').next().unwrap_or(option);
+            if !PARAMETERS.contains(&name) {
+                let nearest = PARAMETERS
+                    .iter()
+                    .map(|known| (distance(name, known), *known))
+                    .min_by_key(|(far, _)| *far)
+                    .filter(|(far, _)| *far <= 3);
+                match nearest {
+                    Some((_, known)) => failed(
+                        CONNECTION,
+                        &[
+                            b"`",
+                            name,
+                            b"` is not a parameter of a database's address; did you mean `",
+                            known,
+                            b"`?",
+                        ],
+                    ),
+                    None => failed(
+                        CONNECTION,
+                        &[b"`", name, b"` is not a parameter of a database's address"],
+                    ),
+                };
+                return -1;
+            }
+        }
         // Whether connections are encrypted, by the names PostgreSQL gives the ways.
         let setting = |name: &[u8]| {
             options
