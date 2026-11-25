@@ -87,17 +87,41 @@ impl Parser {
                 break;
             }
             if self.at(&Tok::Eof) {
-                self.report(start, "this `{` is never closed");
+                self.never_closed(start);
+                return Err(());
+            }
+            // A declaration at the left margin is the next one of the file: this block,
+            // and the function it is in, were meant to end before it.
+            if self.unclosed_before.is_some() || self.declaration_at_margin() {
+                self.unclosed_before = Some(self.span());
                 return Err(());
             }
             let before = self.pos;
             match self.stmt() {
                 Ok(stmt) => {
-                    stmts.push(stmt);
-                    if !self.at_stmt_end() {
-                        let _ = self.expected::<()>("the end of the line");
+                    let lone = match &stmt.kind {
+                        StmtKind::Expr(Expr {
+                            kind: ExprKind::Name(name),
+                            ..
+                        }) if self.at_stmt_end() => self.lone_word(name),
+                        _ => false,
+                    };
+                    if lone {
+                        // Reported, and not a statement.
+                    } else if self.at_stmt_end() {
+                        stmts.push(stmt);
+                    } else {
+                        if self.line_goes_on(&stmt) {
+                            stmts.push(stmt);
+                        }
                         self.recover(depth, true);
                     }
+                }
+                // An inner block met the next declaration: there is nothing to skip.
+                Err(()) if self.unclosed_before.is_some() => {
+                    self.nl_sig.truncate(depth);
+                    self.openers.truncate(depth);
+                    return Err(());
                 }
                 Err(()) => self.recover(depth, true),
             }
@@ -108,12 +132,83 @@ impl Parser {
                 self.bump();
             }
         }
+        // A `}` on a line of its own stands under the line its `{` is on. One that does
+        // not is where a `}` may be missing.
+        let (open, close) = (self.pos_of(start), self.pos);
+        if self.toks[close].nl_before
+            && self.column(self.toks[close].span.start) != self.column(self.toks[self.line_first(open)].span.start)
+        {
+            self.misaligned.push((start, self.toks[close].span));
+        }
         self.bump();
         self.leave(saved);
         Ok(Block {
             stmts,
             span: start.to(self.prev_span()),
         })
+    }
+
+    /// The index of the token that begins at `span`.
+    fn pos_of(&self, span: Span) -> usize {
+        self.toks[..self.pos]
+            .iter()
+            .rposition(|token| token.span.start == span.start)
+            .unwrap_or(0)
+    }
+
+    /// Whether the current token begins a declaration at the left margin of the file.
+    fn declaration_at_margin(&self) -> bool {
+        let token = &self.toks[self.pos];
+        let declares = match &token.kind {
+            Tok::Kw(Kw::Fn | Kw::Enum | Kw::Interface | Kw::Actor | Kw::Import | Kw::Pub) => true,
+            Tok::Kw(Kw::Type | Kw::Error | Kw::Resource) => matches!(self.raw(1), Tok::UpperIdent(_)),
+            _ => false,
+        };
+        declares && !self.fragment && token.nl_before && self.column(token.span.start) == 0
+    }
+
+    /// Reports a `{` that is not closed where the next declaration of the file begins.
+    pub(super) fn never_closed_before(&mut self, start: Span, next: Span) {
+        let mut diagnostic = Diagnostic::new(start, "this `{` is never closed")
+            .with_related(next, "the next declaration begins here, so a `}` is missing before it");
+        let suspect = self
+            .misaligned
+            .iter()
+            .rev()
+            .find(|(open, _)| open.start > start.start && open.start < next.start)
+            .copied();
+        if let Some((open, close)) = suspect {
+            let line = self.index.line(close.start);
+            diagnostic = diagnostic.with_related(
+                open,
+                format!("it may be this `{{` that lacks one: the `}}` on line {line} is not indented like it"),
+            );
+        }
+        self.diag(diagnostic);
+    }
+
+    /// Reports a `{` that the file ends without closing. The brace that lacks its `}` is
+    /// often an inner one, which shows in the indentation: a block inside this one
+    /// whose `}` stands further left than its own first line.
+    fn never_closed(&mut self, start: Span) {
+        let mut diagnostic = Diagnostic::new(start, "this `{` is never closed");
+        let suspect = self
+            .misaligned
+            .iter()
+            .rev()
+            .find(|(open, _)| open.start > start.start)
+            .copied();
+        match suspect {
+            Some((open, close)) => {
+                let line = self.index.line(close.start);
+                diagnostic = diagnostic.with_label("the file ends before its `}`").with_related(
+                    open,
+                    format!("a `}}` may be missing for this `{{`: the `}}` on line {line} is not indented like it"),
+                );
+            }
+            None => diagnostic = diagnostic.with_label("the file ends before its `}`"),
+        }
+        self.diag(diagnostic);
     }
 
     /// An expression used as a statement must be a call, or end in `?` or in an `else`
@@ -126,10 +221,15 @@ impl Parser {
             expr.kind,
             ExprKind::Call { .. } | ExprKind::Try(_) | ExprKind::Else { .. } | ExprKind::If(_) | ExprKind::Match { .. }
         ) {
-            self.report_help(
-                expr.span,
-                "this expression is not a statement",
-                "a statement is a call, or ends in `?` or `else`; to use the value, bind it with `:=` or `return` it",
+            if let ExprKind::Name(name) = &expr.kind
+                && self.lone_word(name)
+            {
+                return;
+            }
+            self.diag(
+                Diagnostic::new(expr.span, "this expression is not a statement")
+                    .with_label("its value is not used")
+                    .with_help("to keep the value, bind it with `:=` or `return` it; a statement is a call, or ends in `?` or `else`"),
             );
         }
     }
@@ -181,6 +281,18 @@ impl Parser {
                 | Kw::Pub,
             ) => {
                 let span = self.span();
+                if matches!(self.raw(1), Tok::ColonEq | Tok::Eq | Tok::Colon | Tok::Dot | Tok::Comma) {
+                    // `type := 3`: a word of the language used as a name.
+                    let word = self.peek().describe();
+                    self.diag(
+                        Diagnostic::new(
+                            span,
+                            format!("{word} is a word of the language, so it cannot be used as a name"),
+                        )
+                        .with_help("choose another name, such as `kind` for `type` or `failure` for `error`"),
+                    );
+                    return Err(());
+                }
                 self.report_help(
                     span,
                     "a declaration cannot appear inside a block",
@@ -266,9 +378,48 @@ impl Parser {
         if !matches!(pattern, BindPattern::Name(_)) {
             return self.expected("`:=`");
         }
+        if self.at(&Tok::Eq) {
+            // `var a = 0`.
+            let span = self.span();
+            self.diag(
+                Diagnostic::new(span, "a variable is declared with `:=`")
+                    .with_label("`=` changes a variable that already exists")
+                    .with_fix("write `:=`", span, ":="),
+            );
+            self.bump();
+            let value = self.expr()?;
+            return Ok(StmtKind::Let {
+                mutable,
+                pattern,
+                ty: None,
+                value,
+            });
+        }
         self.expect(&Tok::Colon, "`:=`, or `:` and a type")?;
         let ty = self.ty()?;
-        if !self.at(&Tok::Eq) {
+        if self.at(&Tok::ColonEq) {
+            // `x: int := 5`.
+            let span = self.span();
+            self.diag(
+                Diagnostic::new(span, "after a type, the value follows `=`")
+                    .with_note("`:=` declares a variable and takes its type from the value; `name: Type = value` states the type")
+                    .with_fix("write `=`", span, "="),
+            );
+        } else if self.at(&Tok::LBracket) && self.span().start == ty.span.end {
+            // `xs: List[int] = []`.
+            let span = self.span();
+            let name = match &self.toks[self.pos - 1].kind {
+                Tok::UpperIdent(name) => name.clone(),
+                _ => "Name".to_string(),
+            };
+            let help = match name.as_str() {
+                "List" | "Array" | "Vec" => "a list of `int` is written `[int]`".to_string(),
+                "Map" | "Dict" | "HashMap" => "a map from `string` to `int` is written `[string: int]`".to_string(),
+                _ => format!("write `{name}<int>`"),
+            };
+            self.diag(Diagnostic::new(span, "type arguments are written in angle brackets").with_help(help));
+            return Err(());
+        } else if !self.at(&Tok::Eq) {
             return self.expected("`=` and a value: a binding is always given a value");
         }
         self.bump();
@@ -321,11 +472,17 @@ impl Parser {
         if !allow_assign {
             return self.fail(op_span, "an assignment cannot appear here");
         }
-        if !is_place(&expr) {
-            self.report_help(
-                expr.span,
-                "this cannot be assigned to",
-                "the left of an assignment is a variable, a field of one, or an element of one",
+        if matches!(expr.kind, ExprKind::Tuple(_)) {
+            self.diag(
+                Diagnostic::new(expr.span, "this cannot be assigned to")
+                    .with_label("a tuple is not a variable")
+                    .with_note("`(a, b) := pair` declares two new names; `=` changes one variable at a time")
+                    .with_help("assign to each variable in turn; to swap two, keep one in a new name first: `t := a`, `a = b`, `b = t`"),
+            );
+        } else if !is_place(&expr) {
+            self.diag(
+                Diagnostic::new(expr.span, "this cannot be assigned to")
+                    .with_note("the left of an assignment is a variable, a field of one, or an element of one"),
             );
         }
         self.bump();
@@ -399,6 +556,9 @@ impl Parser {
 
     fn for_stmt(&mut self, label: Option<Ident>) -> PResult<StmtKind> {
         self.expect_kw(Kw::For)?;
+        if self.foreign_for() {
+            return Err(());
+        }
         let pattern = self.bind_pattern()?;
         self.expect_kw(Kw::In)?;
         let take = self.eat_kw(Kw::Take);

@@ -4,6 +4,7 @@ use koo_syntax::Span;
 
 use super::{Gen, Glue, ScopeKind, is_aggregate};
 use crate::hir::*;
+use crate::intrinsics::I;
 
 /// Whether `f` holds for the expression or anything inside it.
 fn any(expr: &Expr, f: &mut dyn FnMut(&Expr) -> bool) -> bool {
@@ -480,9 +481,50 @@ impl Gen<'_> {
                 let text = format!("{file}:{line}");
                 self.string(&text)
             }
+            // Marks the place a panic comes back to (`koo-rt/src/actor.rs`). The mark is
+            // of this very function, so it is the C library's `_setjmp` that is called,
+            // here and not from the support library: it is true now, and false when a
+            // panic has come back.
+            ExprKind::Intrinsic { name: "guard", .. } => {
+                let mark = self.value("call ptr @koo_guard_enter()");
+                let came_back = self.value(format!("call i32 @_setjmp(ptr {mark})"));
+                self.value(format!("icmp eq i32 {came_back}, 0"))
+            }
+            // Names what a letter holds first, and does nothing (`derive.rs`).
+            ExprKind::Intrinsic {
+                name: "actor_letter", ..
+            } => "zeroinitializer".to_string(),
+            // What crosses from one actor to another is frozen first, where it is.
+            ExprKind::Intrinsic { name: "freeze", args } => {
+                let place = if is_place(&args[0]) {
+                    self.addr(&args[0])
+                } else {
+                    self.eval_temp(&args[0])
+                };
+                self.freeze_at(&args[0].ty, &place);
+                "zeroinitializer".to_string()
+            }
             ExprKind::Intrinsic { name, args } => {
                 let mut operands = Vec::new();
+                // What the support library keeps is moved to it: the place it was in is
+                // left empty, so that nothing here frees it.
+                let given = crate::intrinsics::INTRINSICS
+                    .iter()
+                    .find(|intrinsic| intrinsic.name == *name)
+                    .and_then(|intrinsic| intrinsic.params.iter().position(|param| *param == I::Given));
+                let mut emptied = None;
                 for (index, arg) in args.iter().enumerate() {
+                    if given == Some(index) {
+                        let place = if is_place(arg) {
+                            self.addr(arg)
+                        } else {
+                            self.eval_temp(arg)
+                        };
+                        let value = self.load(&arg.ty, &place);
+                        operands.push(format!("ptr {value}"));
+                        emptied = Some((arg.ty.clone(), place));
+                        continue;
+                    }
                     // An argument that a later one may change is held, not just read.
                     let value = if is_place(arg) && args[index + 1..].iter().any(may_write) {
                         self.own_operand(arg)
@@ -496,6 +538,11 @@ impl Gen<'_> {
                     operands.push(format!("{llty} {value}"));
                 }
                 let operands = operands.join(", ");
+                if let Some((ty, place)) = emptied {
+                    self.emit(format!("call void @koo_{name}({operands})"));
+                    self.zero(&ty, &place);
+                    return "zeroinitializer".to_string();
+                }
                 match &expr.ty {
                     Ty::Unit => {
                         self.emit(format!("call void @koo_{name}({operands})"));

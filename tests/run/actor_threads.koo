@@ -1,0 +1,161 @@
+// Actors that run side by side: what they are told runs on other threads, and what
+// crosses from one to another (strings, lists, structs, handles) is shared between
+// those threads without being copied.
+
+type Line = {
+    words: [string],
+    from: string,
+}
+
+actor Reader {
+    var words: int = 0
+    var longest: string = ""
+
+    fn read(line: Line) {
+        for word in line.words {
+            words += 1
+            if word.len > longest.len { longest = word }
+        }
+    }
+
+    fn count() -> int {
+        return words
+    }
+
+    fn longest_word() -> string {
+        return longest
+    }
+}
+
+actor Adder {
+    var sum: int = 0
+
+    fn add(n: int) {
+        sum += n
+    }
+
+    fn total() -> int {
+        return sum
+    }
+}
+
+actor Tally {
+    var seen: [string: int] = [:]
+
+    fn note(name: string) {
+        seen[name] = (seen[name] else 0) + 1
+    }
+
+    fn report() -> [string: int] {
+        return seen
+    }
+}
+
+actor Clerk {
+    name: string
+    tally: Tally
+
+    fn work(times: int) {
+        for i in 0..times {
+            tally.send.note(name)
+        }
+    }
+
+    fn done() -> bool {
+        return true
+    }
+}
+
+actor Shelf {
+    var items: [string] = []
+
+    fn put(item: string) {
+        items.push(item)
+    }
+
+    fn all() -> [string] {
+        return items
+    }
+}
+
+actor Builder {
+    fn build(count: int) -> [Shelf] {
+        var shelves: [Shelf] = []
+        for i in 0..count {
+            shelf := Shelf.start()
+            shelf.send.put("item {i}")
+            shelves.push(shelf)
+        }
+        return shelves
+    }
+}
+
+fn main() {
+    // Many told at once, each answered by a worker.
+    var adders: [Adder] = []
+    for i in 0..10 { adders.push(Adder.start()) }
+    for n in 0..100 {
+        adders[n % 10].send.add(n)
+    }
+    var sum := 0
+    for adder in adders { sum += adder.total() }
+    print("sum {sum}")
+
+    // One value told to many: every reader holds the same words.
+    readers := [Reader.start(), Reader.start(), Reader.start(), Reader.start()]
+    var words: [string] = []
+    for i in 0..100 { words.push("word{i}") }
+    words.push("extraordinary")
+    words.push("x")
+    line := Line { words: words, from: "main" }
+    for reader in readers {
+        reader.send.read(line)
+        reader.send.read(line)
+    }
+    var read := 0
+    for reader in readers { read += reader.count() }
+    print("words {read - 16}")
+    print("longest {readers[3].longest_word().len}")
+
+    // Actors that tell another, all at once.
+    tally := Tally.start()
+    var clerks: [Clerk] = []
+    for i in 0..8 { clerks.push(Clerk.start(name: "clerk {i}", tally: tally)) }
+    for clerk in clerks { clerk.send.work(1000) }
+    for clerk in clerks { clerk.done() }
+    report := tally.report()
+    var notes := 0
+    for name in report.keys() { notes += report[name] else 0 }
+    print("tally {report.len} {notes}")
+
+    // What an actor answers with is the asker's to change, and the actor's stays as it was.
+    shelf := Shelf.start()
+    shelf.put("a")
+    shelf.put("b")
+    var mine := shelf.all()
+    mine.push("mine")
+    print("mine {mine} theirs {shelf.all()}")
+
+    // Actors started by an actor on another thread, and their handles sent back.
+    builder := Builder.start()
+    shelves := builder.build(40)
+    var items := 0
+    for made in shelves { items += made.all().len }
+    print("shelves {items}")
+
+    // A chain of tells across many actors ends before the program does.
+    var chain: [Adder] = []
+    for i in 0..1000 { chain.push(Adder.start()) }
+    for adder in chain { adder.send.add(1) }
+    var total := 0
+    for adder in chain { total += adder.total() }
+    print("total {total}")
+}
+
+//= sum 4950
+//= words 800
+//= longest 13
+//= tally 8 8000
+//= mine ["a", "b", "mine"] theirs ["a", "b"]
+//= shelves 40
+//= total 1000

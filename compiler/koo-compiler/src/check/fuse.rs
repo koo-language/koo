@@ -500,9 +500,8 @@ impl<'a> Checker<'a> {
     fn effects(&mut self) -> Vec<Effects> {
         let count = self.program.functions.len();
         let mut effects = Vec::with_capacity(count);
-        for id in 0..count {
-            let mut body = std::mem::take(&mut self.program.functions[id].body);
-            let function = &self.program.functions[id];
+        for function in &mut self.program.functions {
+            let mut body = std::mem::take(&mut function.body);
             let mut gather = Gather {
                 locals: &function.locals,
                 captures: &function.captures,
@@ -510,7 +509,7 @@ impl<'a> Checker<'a> {
             };
             walk_block(&mut gather, &mut body);
             effects.push(gather.found);
-            self.program.functions[id].body = body;
+            function.body = body;
         }
         let to_strings: Vec<FnId> = self.program.to_string.values().copied().collect();
         for found in &mut effects {

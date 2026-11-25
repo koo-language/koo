@@ -1,0 +1,40 @@
+// A JSON API. The types are the whole of the wire format: nothing is annotated, and
+// a request that does not fit them is answered with 400 and the path to the mistake.
+//
+//     koo run examples/http/orders.koo
+//     curl localhost:8080/orders/7
+//     curl localhost:8080/orders -d '{"customer": "Bob", "items": [{"sku": "a-1"}]}'
+//     curl localhost:8080/orders -d '{"customer": "Bob", "items": [{"sku": "a-1", "qty": "two"}]}'
+
+import std/http
+
+type Item = { sku: string, qty: int = 1, note: string? }
+type NewOrder = { customer: string, items: [Item] }
+type Order = { id: int, customer: string, items: [Item], status: Status }
+
+enum Status { Open, Shipped, Cancelled }
+
+error NotFound { id: int }
+
+fn find(id: int) -> Order ! NotFound {
+    if id != 7 { fail NotFound { id } }
+    return Order { id, customer: "Ada", items: [Item { sku: "a-1", qty: 2, note: none }], status: Status.Shipped }
+}
+
+fn get_order(req: http.Request) -> http.Response {
+    id := int.parse(req.param("id")) else return http.status(400, "an order's id is a number")
+    order := find(id) else return http.status(404, "there is no order {id}")
+    return http.json(order)
+}
+
+fn main() ! http.Error {
+    var app := http.App.new()
+    app.get("/orders/:id", get_order)
+    app.post("/orders", req -> {
+        input: NewOrder = req.json()?
+        order := Order { id: 8, customer: input.customer, items: input.items, status: Status.Open }
+        return http.json(order, status: 201)
+    })
+    print("listening on http://localhost:8080")
+    app.serve(port: 8080)?
+}

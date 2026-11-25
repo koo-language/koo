@@ -1,0 +1,14 @@
+// The smallest server.
+//
+//     koo run examples/http/hello.koo
+//     curl localhost:8080/hello/Ada
+
+import std/http
+
+fn main() ! http.Error {
+    var app := http.App.new()
+    app.get("/", req -> http.text("Hello, world!"))
+    app.get("/hello/:name", req -> http.text("Hello, {req.param("name")}!"))
+    print("listening on http://localhost:8080")
+    app.serve(port: 8080)?
+}

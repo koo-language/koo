@@ -35,7 +35,7 @@ fn main() {
 //! stderr the number of elements is a field: `x.len`
 //! error `[string]` has no field `length`
 //! error `[string]` has no method `len`
-//! stderr `len` is a field: write it without the parentheses, `.len`
+//! stderr the number of elements is a field, not a method
 //! error `[string]` has no method `forEach`
 //! stderr in Koo that is `.each`
 //! error the type of this parameter is not known here

@@ -2,7 +2,7 @@
 
 This tour covers the part of Koo that the compiler builds today. Every program on this page is run by the test suite, and the output shown under each one is checked, so what you read here works.
 
-The whole language, including the parts that are not built yet, is described in the [specification](../SPEC.md).
+This is the short way in. [The Koo Programming Language](book/README.md) is the long one: a book that covers the same language in full, with a reference manual and a summary of the library. The whole language, including the parts that are not built yet, is described in the [specification](../SPEC.md).
 
 ## Running a program
 
@@ -612,6 +612,210 @@ cannot read /no/such/file: No such file or directory
 - `io.read_line()` reads a line of standard input and gives `none` at the end. `io.read_lines()` reads all of them.
 - `koo run file.koo -- one two` passes `one` and `two` as arguments.
 
+## JSON
+
+A struct or an enum is JSON as it stands. There is nothing to import, annotate or derive: `value.to_json()` writes it and `Type.from_json(text)` reads it.
+
+```koo
+enum Status { Open, Shipped }
+
+type Item = { sku: string, qty: int = 1, note: string? }
+type Order = { id: int, items: [Item], status: Status }
+
+fn main() {
+    order := Order { id: 7, items: [Item { sku: "a-1", qty: 2, note: none }], status: Status.Open }
+    print(order.to_json())
+
+    text := "\{\"id\": 8, \"items\": [\{\"sku\": \"b-2\"}], \"status\": \"shipped\"}"
+    match Order.from_json(text) {
+        back => print("order {back.id}: {back.items[0].qty} of {back.items[0].sku}")
+        ! e => print("{e.path}: {e.message}")
+    }
+
+    bad := "\{\"id\": 9, \"items\": [\{\"sku\": \"c-3\", \"qty\": \"two\"}], \"status\": \"open\"}"
+    match Order.from_json(bad) {
+        back => print("order {back.id}")
+        ! e => print("{e.path}: {e.message}")
+    }
+}
+```
+
+```text
+{"id":7,"items":[{"sku":"a-1","qty":2}],"status":"open"}
+order 8: 1 of b-2
+/items/0/qty: expected a whole number, found a string
+```
+
+- A struct is an object, a list is an array, and a map with string keys is an object.
+- An optional field that is `none` is left out, and a missing key or `null` reads as `none`. A field with a default takes it when its key is missing. Any other missing key is an error.
+- An enum without fields is its name in snake_case, as a string. An enum with fields is an object with the name under `"type"`.
+- Keys the type does not have are passed over.
+- A text that does not fit is refused with a `JsonError`, whose `path` leads to the mistake.
+- Numbers, strings, booleans, lists and maps have `to_json` too: `[1, 2, 3].to_json()`.
+
+## A web server
+
+`std/http` is a server in a few lines. A handler is a function from a request to a response.
+
+```koo
+import std/http
+
+type Item = { sku: string, qty: int = 1 }
+type NewOrder = { customer: string, items: [Item] }
+type Order = { id: int, customer: string, items: [Item] }
+
+fn main() ! http.Error {
+    var app := http.App.new()
+    app.get("/", req -> http.text("Hello, world!"))
+    app.get("/hello/:name", req -> http.text("Hello, {req.param("name")}!"))
+    app.post("/orders", req -> {
+        input: NewOrder = req.json()?
+        return http.json(Order { id: 1, customer: input.customer, items: input.items }, status: 201)
+    })
+    app.serve(port: 8080)?
+}
+```
+
+```sh
+$ curl localhost:8080/hello/Ada
+Hello, Ada!
+$ curl localhost:8080/orders -d '{"customer": "Bob", "items": [{"sku": "a-1"}]}'
+{"id":1,"customer":"Bob","items":[{"sku":"a-1","qty":1}]}
+$ curl localhost:8080/orders -d '{"customer": "Bob", "items": [{"sku": "a-1", "qty": "two"}]}'
+{"error":"expected a whole number, found a string","path":"/items/0/qty"}
+```
+
+- `app.get`, `post`, `put`, `patch`, `delete` and `any` each take a path and a handler. `:name` in a path matches one segment, read with `req.param("name")`, and `*` at the end matches the rest. The first route that matches answers.
+- A request has `req.method`, `req.path`, `req.param(name)`, `req.query(name)` and `req.header(name)`, which are optional where the client may have left them out, `req.body()`, and `req.json()`, which reads the body into the type that is expected.
+- A response is made by `http.text`, `http.html`, `http.json`, `http.status(404, "no such order")`, `http.redirect(to)` or `http.send(body, content_type)`. Each takes `status:`, and `.header(name, value)` adds a header.
+- A handler may be a lambda or a named function, and it may fail. A body that does not fit its type is answered with 400 and the path to the mistake. Any other error is answered with 500 and written to standard error, not sent to the client.
+- `app.files("/static", "public")` serves the files of a directory, with the type each name implies and `index.html` for the directory itself. A path cannot climb out of it. `http.file(path)` answers with one file.
+- `req.form(name)` reads a field of a form a page sent, and `req.cookie(name)` a cookie; `response.cookie(name, value, max_age: 3600)` sets one.
+- A path with no route is answered with 404, and one with a route for another method with 405.
+- `serve` runs until the program is told to stop, with Ctrl-C or a request to terminate, and then returns. It takes `port:`, `workers:`, `max_body:` (the most a request's body may be, 1 MB unless you say) and `log: true`, which writes a line for each request.
+
+The server answers requests on every core: `serve` starts a process for each, all listening on the one port, and stays behind to replace one that dies. A handler cannot tell, because nothing in memory is shared between requests in the first place. So a handler that panics costs the requests its worker was holding, and the server goes on. `workers: 1` keeps to one process, which is the plainest thing to debug, and which a panic ends. On one core it serves a "Hello, world!" as fast as a Rust server built on axum and tokio, and more than twice as fast as Node; the numbers and how they were taken are in the [README](../README.md).
+
+It runs on macOS and Linux alike. On Linux, `koo build --release --static` makes a program with nothing left to install, and [`examples/http/Dockerfile`](../examples/http/Dockerfile) puts one in an empty container.
+
+What it does not do yet: HTTPS and HTTP/2 (put it behind a proxy or a platform that speaks them), streaming a body in either direction, and waiting on something slow without holding up the other requests of the same worker. Working servers are in [`examples/http`](../examples/http).
+
+## Actors
+
+An actor is state with an owner. It answers one message at a time, so its methods need no locks and cannot race, and everything that holds its handle talks to the same one.
+
+```koo
+error Empty
+
+actor Account {
+    var balance: int = 0
+    owner: string
+
+    fn deposit(amount: int) -> int {
+        balance += amount
+        return balance
+    }
+
+    fn withdraw(amount: int) -> int ! Empty {
+        if amount > balance { fail Empty }
+        balance -= amount
+        return balance
+    }
+
+    fn close() {
+        print("{owner} closes with {balance}")
+        balance = 0
+    }
+}
+
+fn main() {
+    account := Account.start(owner: "Ada")
+    print("{account.deposit(100)}")
+    left := account.withdraw(30) else -1
+    print("{left}")
+    broke := account.withdraw(500) else -1
+    print("{broke}")
+    account.send.close()
+    print("{account.deposit(1)}")
+}
+```
+
+```text
+100
+70
+-1
+Ada closes with 70
+1
+```
+
+- `Account.start(...)` takes every field that has no default, by name, and returns a handle. A handle is a value like any other: it can be copied, kept in a struct, and sent to another actor.
+- `account.deposit(100)` asks: it sends the message and waits for the answer, errors included.
+- `account.send.close()` tells: it sends and goes on. Only a method that returns nothing and cannot fail can be told, so nothing is thrown away. What an actor is told, it does in the order told, and before it next answers an ask: that is why `Ada closes with 70` comes before the `1`.
+- Inside the actor a field is used by its bare name, and only a `var` field can be changed. A method calls another of the same actor by bare name. `self` is the actor's own handle.
+- A message is not copied. It is frozen: the sender and the actor read the same value, and whichever changes it gets a copy of its own first, as with any value that two variables hold. What goes to an actor and comes back is numbers, strings, booleans, lists, optionals, maps with string keys, your structs, enums and errors made of those, and handles.
+- If a method panics, the one who asked panics too, and the actor starts again with the state it started with. More than five such restarts in a minute and it stays stopped.
+- An ask to an actor that is waiting for the asker's own answer would wait for ever, so it panics and says so, whether the two are on one thread or two. Use `send` on one side.
+- An actor stops when `handle.stop()` is called, or at the end of the program. The program ends when `main` has returned and everything that was told has been done.
+
+An actor is how a server keeps anything between requests. In [`examples/http/counter.koo`](../examples/http/counter.koo) every worker of the server asks one `Counter`, and the count is exact.
+
+### Side by side
+
+What actors are told runs on other threads, one for each processor. Eight actors that are each told to count primes count at the same time:
+
+```koo
+actor Counter {
+    var found: int = 0
+
+    fn count(from: int, to: int) {
+        for n in from..to {
+            if is_prime(n) { found += 1 }
+        }
+    }
+
+    fn result() -> int {
+        return found
+    }
+}
+
+fn is_prime(n: int) -> bool {
+    if n < 2 { return false }
+    var d := 2
+    while d * d <= n {
+        if n % d == 0 { return false }
+        d += 1
+    }
+    return true
+}
+
+fn main() {
+    var counters: [Counter] = []
+    for i in 0..8 {
+        counters.push(Counter.start())
+    }
+    for i in 0..8 {
+        counters[i].send.count(i * 100000, (i + 1) * 100000)
+    }
+    var total := 0
+    for counter in counters {
+        total += counter.result()
+    }
+    print("{total} primes below 800000")
+}
+```
+
+```text
+63951 primes below 800000
+```
+
+- Nothing here is locked or shared by hand. Each `count` has its own actor to itself, and `result()` waits until its actor has done what it was told.
+- An ask runs on the asker's own thread, with the actor held for as long as the method runs. Another thread that wants the same actor waits its turn.
+- It is cheap enough to use freely: an ask costs about 8 nanoseconds, a message told to another actor about 45, and a million actors take about 170 MB. [The README](../README.md#actors) has the same programs in Erlang.
+
+The workers of a server are processes, not threads, and reach an actor through the process that has it, with the arguments sent as text.
+
+What is not there yet: a method that loops for ever keeps its thread, and when every thread is kept nothing else that was told runs; nothing slows down a sender that tells faster than its actor can listen, so the letters pile up in memory; a panic in a message that was told leaks what the message was holding; and generic actors, `try_send`, mailbox sizes, `spawn` inside an actor, and functions or tuples in messages are not built.
+
 ## Tests
 
 A test is a function whose name starts with `test_`. `koo test file.koo` runs each one in a process of its own and reports the ones that fail.
@@ -672,25 +876,76 @@ An `import` belongs to the file it is written in, so each file imports the stand
 
 ## The compiler tries to help
 
-An error names the place and says what to do about it. A name that is nearly right gets a suggestion, and so does a habit from another language:
+An error says what is wrong, shows where, and points at the other place that explains it: the declaration that set the type, the first of two declarations, the bracket that was never closed. Where there is one thing you must have meant, it shows the corrected line.
 
 ```text
-error: `[string]` has no method `frist`
-  --> main.koo:4:17
+error: `add_all` changes this argument, so it is passed with `var`
+  --> main.koo:13:13
    |
- 4 |     print(names.frist())
+ 5 | fn add_all(names: var [string], more: [string]) {
+   |            ------------------- the parameter `names` is `var`
+...
+13 |     add_all(names, ["cy"])
+   |             ^^^^^
+   |
+   = note: `var` at the call shows the reader that the argument may change (Section 5.3)
+help: write `var` before the argument
+   |
+13 |     add_all(var names, ["cy"])
+   |             ++++
+
+error: `[string]` has no method `frist`
+  --> main.koo:14:17
+   |
+14 |     print(names.frist() else "nobody")
    |                 ^^^^^
    |
-   = help: did you mean `first`?
+help: did you mean `first`?
+   |
+14 -     print(names.frist() else "nobody")
+14 +     print(names.first() else "nobody")
 
-error: unknown name `nil`
-  --> main.koo:7:10
+error: expected `float`, found `string`
+  --> main.koo:15:32
    |
- 7 |     x := nil
-   |          ^^^
-   |
-   = help: Koo has no null: a value that may be absent has the type `T?`, and its absence is `none`
+ 1 | fn total(prices: [float], tax: float) -> float {
+   |                           ---------- the parameter `tax` is declared here
+...
+15 |     print("{total([9.5, 20.0], "8%")}")
+   |                                ^^^^ this is a `string`
 ```
+
+`^` marks the mistake and `-` a place that explains it. A line with `+` under it shows what to add; a pair of lines marked `-` and `+` shows a line as it is and as it should be.
+
+The compiler also knows the habits of other languages, and answers each with the Koo that was meant:
+
+```text
+error: `let` is not Koo: a variable is declared with `:=`
+ --> main.koo:2:5
+  |
+2 |     let count = 3
+  |     ^^^
+  |
+  = note: `x := 5` declares a variable that does not change, and `var x := 5` one that does
+help: declare `count` the Koo way
+  |
+2 -     let count = 3
+2 +     count := 3
+
+error: this is the `for` of another language
+ --> main.koo:3:9
+  |
+3 |     for (i = 0; i < count; i++) {
+  |         ^^^^^^^^^^^^^^^^^^^^^^^
+  |
+  = note: a `for` loop goes over a range or a list: `for i in 0..n { ... }`, `for item in items { ... }`
+help: count with a range
+  |
+3 -     for (i = 0; i < count; i++) {
+3 +     for i in 0..count {
+```
+
+The same goes for `function` and `def`, `class` and `struct`, `elif`, `&&` and `||`, `!x`, `x++`, `'single quotes'`, `null`, `try` and `throw`, `new`, `# comments`, `: int` for a return type, `int x = 5`, and `.length`, `.append` and their relatives. In a terminal the messages are in color; set `NO_COLOR` to turn that off.
 
 ## Blocks and exclusivity
 
@@ -718,4 +973,4 @@ None of them can corrupt memory. Errors you expect, such as a missing file or ba
 
 ## What is not here yet
 
-The compiler does not build these parts of the specification yet, and says so if you use them: importing one package of your own from another, most of the standard library (HTTP, JSON, SQL, time), tasks and actors, interface values (a list of different shapes), `Decimal`, resources and `defer`, and the WebAssembly targets. The [README](../README.md) keeps the current list.
+The compiler does not build these parts of the specification yet, and says so if you use them: importing one package of your own from another, most of the standard library (SQL, time, an HTTP client), tasks, channels and `select`, interface values (a list of different shapes), `Decimal`, resources and `defer`, and the WebAssembly targets. The [README](../README.md) keeps the current list.

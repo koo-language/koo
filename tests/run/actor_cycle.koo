@@ -1,0 +1,40 @@
+// An ask to an actor that is waiting on the asker would wait for ever, and panics (Section 7.3).
+actor Ping {
+    var other: Pong? = none
+
+    fn meet(pong: Pong) {
+        other = pong
+    }
+
+    fn ping(n: int) -> int {
+        if pong := other { return pong.pong(n) }
+        return -1
+    }
+
+    fn echo(n: int) -> int {
+        return n
+    }
+}
+
+actor Pong {
+    ping: Ping
+
+    fn pong(n: int) -> int {
+        if n > 0 { return ping.echo(n) }
+        return 0
+    }
+}
+
+fn main() {
+    ping := Ping.start()
+    pong := Pong.start(ping: ping)
+    print("{ping.ping(5)}")
+    ping.meet(pong)
+    print("{ping.ping(0)}")
+    print("{ping.ping(1)}")
+}
+
+//= -1
+//= 0
+//! exit 101
+//! stderr `Ping` is asked `echo` while it waits for the answer to this very message

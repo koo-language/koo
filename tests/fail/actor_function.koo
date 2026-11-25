@@ -1,0 +1,19 @@
+// What a function has captured cannot be frozen, so a function cannot be handed to an
+// actor: the two would share it, each on its own thread.
+type Handler = { name: string, run: fn(int) -> int }
+
+actor Caller {
+    handler: Handler
+
+    fn call(n: int) -> int {
+        return handler.run(n)
+    }
+}
+
+fn main() {
+    caller := Caller.start(handler: Handler { name: "inc", run: n -> n + 1 })
+    print(caller.call(1))
+}
+
+//! error a function cannot be given to an actor when it is started
+//! stderr the actor makes the function itself

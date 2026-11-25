@@ -43,7 +43,19 @@ impl Parser {
         } else {
             None
         };
-        self.expect(&Tok::FatArrow, "`=>`")?;
+        if self.at(&Tok::Arrow) || self.at(&Tok::Colon) {
+            // `1 -> ...`, `1: ...`: the arm of another language.
+            let span = self.span();
+            let found = self.peek().describe();
+            self.diag(
+                Diagnostic::new(span, format!("expected `=>`, found {found}"))
+                    .with_note("an arm of a `match` is `pattern => result`; `->` writes a lambda and a return type")
+                    .with_fix("write `=>`", span, "=>"),
+            );
+            self.bump();
+        } else {
+            self.expect(&Tok::FatArrow, "`=>`")?;
+        }
         let body = self.body(true)?;
         Ok(MatchArm {
             error,

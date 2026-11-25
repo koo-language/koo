@@ -1,0 +1,79 @@
+// Two actors that each ask the other in the middle of a message would wait for ever,
+// each on its own thread. The one that would close the circle panics instead, which
+// ends its message and lets the other go on (Section 7.3).
+
+actor Left {
+    var other: Right? = none
+    var done: int = 0
+
+    fn meet(right: Right) {
+        other = right
+    }
+
+    fn begin() {
+        spin()
+        if right := other {
+            right.poke()
+        }
+        done += 1
+    }
+
+    fn poke() {
+        done += 1
+    }
+
+    fn count() -> int {
+        return done
+    }
+}
+
+actor Right {
+    var other: Left? = none
+    var done: int = 0
+
+    fn meet(left: Left) {
+        other = left
+    }
+
+    fn begin() {
+        spin()
+        if left := other {
+            left.poke()
+        }
+        done += 1
+    }
+
+    fn poke() {
+        done += 1
+    }
+
+    fn count() -> int {
+        return done
+    }
+}
+
+// Long enough that both messages are under way before either asks.
+fn spin() {
+    var n := 0
+    for i in 0..3000000 {
+        n = (n + i) % 1000003
+    }
+    if n < 0 { print("never") }
+}
+
+fn main() {
+    left := Left.start()
+    right := Right.start()
+    left.meet(right)
+    right.meet(left)
+    left.send.begin()
+    right.send.begin()
+    // One of the two messages panicked, and its actor started again; the other ran to
+    // its end. Either way both actors answer, and the program ends.
+    total := left.count() + right.count()
+    print("answered {total >= 0}")
+}
+
+//= answered true
+//! stderr while it waits for the answer to this very message
+//! stderr panicked, and starts again

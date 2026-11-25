@@ -63,7 +63,7 @@ impl<'a> Checker<'a> {
             checked.push(Arm { patterns, guard, body });
         }
         if !ty.is_unknown() {
-            self.check_exhaustive(&ty, &checked, span);
+            self.check_exhaustive(&ty, &checked, scrutinee.span);
         }
         let result = if value {
             let mut bodies: Vec<&mut Block> = checked.iter_mut().map(|arm| &mut arm.body).collect();
@@ -104,6 +104,10 @@ impl<'a> Checker<'a> {
                         "`!` begins an arm for an error, and only a result has errors (Section 6.4)",
                     );
                 }
+                // What the arm names is still a name, so that its uses are not reported.
+                if let ast::PatternKind::Bind { name, .. } = &pattern.kind {
+                    self.declare(name, Ty::Unknown, false, LocalKind::Owned);
+                }
                 Pattern::Wildcard
             }
             Ty::Optional(inner) => match &pattern.kind {
@@ -116,6 +120,21 @@ impl<'a> Checker<'a> {
     }
 
     fn error_pattern(&mut self, pattern: &ast::Pattern, set: &ErrSet) -> Pattern {
+        // `http.Error`, the error of a standard package, by the prelude's name for it.
+        let in_package = |checker: &mut Checker<'_>, path: &[ast::Ident]| {
+            checker.package_type(path).map(|name| ast::Ident {
+                name,
+                span: path[1].span,
+            })
+        };
+        let qualified = match &pattern.kind {
+            ast::PatternKind::Ctor { path, .. } if path.len() == 2 => in_package(self, path),
+            ast::PatternKind::Bind { ty: Some(ty), .. } => match &ty.kind {
+                ast::TypeKind::Named { path, args } if path.len() == 2 && args.is_empty() => in_package(self, path),
+                _ => None,
+            },
+            _ => None,
+        };
         let any_binding_ty = match set {
             ErrSet::Of(ids) if ids.len() == 1 => Ty::Error(ids[0]),
             _ => Ty::Failure,
@@ -157,6 +176,7 @@ impl<'a> Checker<'a> {
             }
             ast::PatternKind::Bind { name, ty: Some(ty) } => {
                 let error = match &ty.kind {
+                    _ if qualified.is_some() => lookup(self, qualified.as_ref().unwrap()),
                     ast::TypeKind::Named { path, args } if path.len() == 1 && args.is_empty() => lookup(self, &path[0]),
                     _ => {
                         self.error(ty.span, "expected an error type");
@@ -171,13 +191,14 @@ impl<'a> Checker<'a> {
                     fields: Vec::new(),
                 }
             }
-            ast::PatternKind::Ctor { path, fields, rest } if path.len() == 1 => {
-                let Some(id) = lookup(self, &path[0]) else {
+            ast::PatternKind::Ctor { path, fields, rest } if path.len() == 1 || qualified.is_some() => {
+                let name = qualified.as_ref().unwrap_or(&path[0]);
+                let Some(id) = lookup(self, name) else {
                     return Pattern::Wildcard;
                 };
                 let defs = self.program.errors[id].fields.clone();
                 let fields = match fields {
-                    Some(fields) => self.field_patterns(fields, *rest, &defs, &path[0]),
+                    Some(fields) => self.field_patterns(fields, *rest, &defs, name),
                     None => Vec::new(),
                 };
                 Pattern::Err {
@@ -445,11 +466,13 @@ impl<'a> Checker<'a> {
             _ => missing.push("the remaining values: add a `_` arm".to_string()),
         }
         if !missing.is_empty() {
-            self.error_help(
-                span,
-                format!("this `match` does not cover {}", missing.join(", ")),
-                "a `match` covers every case (Section 6.6)",
-            );
+            let found = self.ty_name(ty);
+            self.error(span, format!("this `match` does not cover {}", missing.join(", ")));
+            self.label(format!("this is {}", super::a(&found)));
+            self.note("a `match` covers every case (Section 6.6)");
+            if !missing.iter().any(|case| case.contains("`_`")) {
+                self.help("add an arm for each, or a last arm `_ => ...` for every case not named");
+            }
         }
     }
 }

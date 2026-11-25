@@ -18,10 +18,46 @@ impl<'a> Checker<'a> {
         candidates: Vec<String>,
         habit: Option<String>,
     ) {
-        let help = habit.or_else(|| closest(wanted, &candidates).map(|name| format!("did you mean `{name}`?")));
-        match help {
-            Some(help) => self.error_help(span, message, help),
-            None => self.error(span, message),
+        let whole = (span.end - span.start) as usize == wanted.len();
+        if let Some(habit) = habit {
+            // "in Koo that is `string`": a name for a name, shown in place.
+            let koo = habit
+                .strip_prefix("in Koo that is `")
+                .and_then(|rest| rest.strip_suffix('`'))
+                .filter(|name| name.chars().all(|c| c.is_alphanumeric() || c == '_'));
+            match koo {
+                Some(koo) if whole => {
+                    self.error(span, message);
+                    self.fix(habit.clone(), span, koo);
+                }
+                _ => self.error_help(span, message, habit),
+            }
+            return;
+        }
+        let unknown_name = message.starts_with("unknown name");
+        // What a type or a call has is worth listing when it is not much.
+        let lists = message.contains(" has no ");
+        self.error(span, message);
+        if unknown_name {
+            self.label("nothing of this name is in scope");
+        }
+        let mut listed: Vec<&String> = candidates
+            .iter()
+            .filter(|name| !name.starts_with('_') && !name.contains("__"))
+            .collect();
+        listed.sort();
+        listed.dedup();
+        if closest(wanted, &candidates).is_none() && lists && (1..=12).contains(&listed.len()) {
+            let names: Vec<String> = listed.iter().map(|name| format!("`{name}`")).collect();
+            self.help(format!("it has {}", names.join(", ")));
+        }
+        if let Some(name) = closest(wanted, &candidates) {
+            // The correction is shown in place when the span is the name alone.
+            if (span.end - span.start) as usize == wanted.len() {
+                self.fix(format!("did you mean `{name}`?"), span, name);
+            } else {
+                self.help(format!("did you mean `{name}`?"));
+            }
         }
     }
 
@@ -116,6 +152,29 @@ impl<'a> Checker<'a> {
         None
     }
 
+    /// The Koo name of a method that `wanted` names in another language.
+    pub(super) fn method_rename(&self, ty: &Ty, wanted: &str) -> Option<&'static str> {
+        let koo = match wanted {
+            "append" | "add" | "push_back" | "addLast" => "push",
+            "toUpperCase" | "upper" | "to_uppercase" | "toUpper" | "ToUpper" => "to_upper",
+            "toLowerCase" | "lower" | "to_lowercase" | "toLower" | "ToLower" => "to_lower",
+            "strip" | "trimSpace" | "Trim" => "trim",
+            "includes" | "has" | "include" | "Contains" | "contains_key" | "containsKey" => "contains",
+            "forEach" | "for_each" | "foreach" => "each",
+            "reduce" | "inject" | "aggregate" => "fold",
+            "indexOf" | "index" => "index_of",
+            "substring" | "substr" | "sub" => "slice",
+            "startsWith" | "startswith" | "has_prefix" | "hasPrefix" => "starts_with",
+            "endsWith" | "endswith" | "has_suffix" | "hasSuffix" => "ends_with",
+            "select" | "where" => "filter",
+            "delete" | "erase" | "discard" => "remove",
+            "put" | "set" => "insert",
+            "str" | "toString" | "String" | "to_str" => "to_string",
+            _ => return None,
+        };
+        self.method_names(ty).iter().any(|name| name == koo).then_some(koo)
+    }
+
     /// Help for `x.name()` where `x` has no such method.
     pub(super) fn method_habit(&self, ty: &Ty, wanted: &str) -> Option<String> {
         if self.field_names(ty).iter().any(|name| name == wanted) {
@@ -166,7 +225,7 @@ pub(super) fn name_habit(wanted: &str) -> Option<String> {
         "True" | "TRUE" => Some("write `true`".to_string()),
         "False" | "FALSE" => Some("write `false`".to_string()),
         "this" => Some("a method names its receiver `self`".to_string()),
-        "io" | "os" | "test" => Some(format!(
+        "io" | "os" | "test" | "http" => Some(format!(
             "this file does not import the package: add `import std/{wanted}` at the top of the file"
         )),
         _ => None,
@@ -214,6 +273,11 @@ pub(super) fn type_habit(wanted: &str) -> Option<String> {
         _ => return None,
     };
     Some(format!("in Koo that is {koo}"))
+}
+
+/// Whether some candidate is near enough to `wanted` to be what was meant.
+pub(super) fn has_near(wanted: &str, candidates: &[String]) -> bool {
+    closest(wanted, candidates).is_some()
 }
 
 /// The candidate nearest to `wanted`, if one is near enough to be what was meant.

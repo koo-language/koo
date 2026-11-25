@@ -1,0 +1,72 @@
+// JSON for the program's own types: written, read back, and refused with the path to the mistake.
+enum Status { Open, InProgress, Done }
+
+enum Payment {
+    Cash
+    Card { last4: string, brand: string? }
+}
+
+type Line = { sku: string, qty: int = 1, note: string? }
+
+type Order = {
+    id: int,
+    customer: string,
+    lines: [Line],
+    status: Status,
+    paid: Payment?,
+    totals: [string: float],
+    parts: [Order],
+}
+
+fn show(text: string) {
+    match Order.from_json(text) {
+        order => print("ok: {order.to_json()}")
+        ! e => print("error at `{e.path}`: {e.message}")
+    }
+}
+
+fn main() {
+    order := Order {
+        id: 7,
+        customer: "Ada \"the first\"",
+        lines: [Line { sku: "a-1", qty: 2, note: none }, Line { sku: "b-2", qty: 1, note: "gift" }],
+        status: Status.InProgress,
+        paid: Payment.Card { last4: "4242", brand: none },
+        totals: ["net": 19.5, "tax": 1.95],
+        parts: [],
+    }
+    text := order.to_json()
+    print(text)
+    back := Order.from_json(text) else e => panic("{e.message} at {e.path}")
+    print("{back.to_json() == text}")
+    print([order.lines[0], order.lines[1]].to_json())
+    print(Status.Done.to_json())
+    print(Payment.Cash.to_json())
+
+    show("\{\"id\": 1, \"customer\": \"x\", \"lines\": [\{\"sku\": \"s\"}], \"status\": \"open\", \"totals\": \{}, \"parts\": [], \"extra\": [1, \{\"a\": null}]}")
+    show("\{\"id\": 1, \"customer\": \"x\", \"lines\": [\{\"sku\": \"s\"}, \{\"sku\": \"t\", \"qty\": \"two\"}], \"status\": \"open\", \"totals\": \{}}")
+    show("\{\"id\": 1, \"lines\": [], \"status\": \"open\", \"totals\": \{}}")
+    show("\{\"id\": 1, \"customer\": \"x\", \"lines\": [], \"status\": \"closed\", \"totals\": \{}}")
+    show("\{\"id\": 1, \"customer\": \"x\", \"lines\": [], \"status\": \"done\", \"totals\": \{\"a\": true}}")
+    show("\{\"id\": 1, \"customer\": \"x\", \"lines\": [], \"status\": \"done\", \"totals\": \{}, \"paid\": \{\"type\": \"card\", \"last4\": \"1\"}, \"parts\": [\{\"id\": 2}]}")
+    show("[1, 2]")
+    show("\{\"id\": 1.5}")
+    show("\{\"id\": 1} trailing")
+    show("")
+}
+
+//= {"id":7,"customer":"Ada \"the first\"","lines":[{"sku":"a-1","qty":2},{"sku":"b-2","qty":1,"note":"gift"}],"status":"in_progress","paid":{"type":"card","last4":"4242"},"totals":{"net":19.5,"tax":1.95},"parts":[]}
+//= true
+//= [{"sku":"a-1","qty":2},{"sku":"b-2","qty":1,"note":"gift"}]
+//= "done"
+//= {"type":"cash"}
+//= ok: {"id":1,"customer":"x","lines":[{"sku":"s","qty":1}],"status":"open","totals":{},"parts":[]}
+//= error at `/lines/1/qty`: expected a whole number, found a string
+//= error at `/customer`: `customer` is missing
+//= error at `/status`: expected one of "open", "in_progress", "done", found "closed"
+//= error at `/totals/a`: expected a number, found a boolean
+//= error at `/parts/0/customer`: `customer` is missing
+//= error at ``: expected an object, found an array
+//= error at `/id`: expected a whole number, found a number
+//= error at `/customer`: `customer` is missing
+//= error at ``: expected an object, found the end of the text

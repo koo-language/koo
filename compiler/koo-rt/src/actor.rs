@@ -1,0 +1,1836 @@
+//! Actors (Section 7.3).
+//!
+//! An actor owns its state and answers one message at a time. Its state lives in the
+//! process that started it, in a slot of the table below, and whichever thread has a
+//! message for it holds the slot while the message runs: nothing else can reach the
+//! state meanwhile, so nothing of it is copied or counted atomically.
+//!
+//! * To ask (`handle.method(...)`) is to take the slot, call the method on the state,
+//!   and let go: on the asker's own thread, at about the cost of a call when nobody else
+//!   wants the actor. An asker that finds the actor busy waits for it. If the wait can
+//!   never end, because the thread that has the actor is itself waiting for one this
+//!   thread has, that is the cycle of Section 7.3, and it panics.
+//! * To tell (`handle.send.method(...)`) is to leave a letter in the actor's mail and go
+//!   on. The worker threads, one for each processor, take the actors that have mail and
+//!   run it, so that actors that were told run side by side. Letters are run in the
+//!   order they were left, and before the actor is next asked.
+//!
+//! What crosses from one actor to another (arguments, answers) is frozen first
+//! (`lib.rs`): it is never changed again, and so it is safe that two threads read it.
+//!
+//! Another process, such as a worker of a server (`http.rs`), reaches an actor through
+//! the socket of the process that owns it. Its message is the arguments as text; the
+//! owner reads it, asks the actor as it would itself, and sends the answer back.
+//!
+//! A panic in a message that nobody waits for on the same thread (one that was told, or
+//! one from another process) ends the message and not the program: the place to come
+//! back to was marked, the actors the message was in the middle of start again from the
+//! state they started with (Section 7.4), and what the abandoned calls held is not freed.
+
+use super::thread::{Gate, Guard, Held, Lock, Thread, me};
+use super::*;
+use core::sync::atomic::Ordering::{AcqRel, Acquire, Relaxed, Release, SeqCst};
+use core::sync::atomic::{AtomicBool, AtomicPtr, AtomicU32, AtomicUsize};
+
+unsafe extern "C" {
+    fn _longjmp(buffer: *mut u64, value: i32) -> !;
+    fn nanosleep(wanted: *const [i64; 2], left: *mut [i64; 2]) -> i32;
+}
+
+/// Restarts allowed in a minute before an actor stays stopped (Section 7.4).
+const RESTARTS: usize = 5;
+/// How many letters a worker runs for one actor before it lets an actor that waits
+/// have a turn.
+const BATCH: usize = 256;
+/// How many times a thread looks again before it sleeps.
+const LOOKS: u32 = 2000;
+
+// What a slot's `word` says.
+/// A thread is in the middle of a message of the actor, or is running its mail.
+const LOCKED: u32 = 1;
+/// There may be letters.
+const MAIL: u32 = 2;
+/// The actor is in the queue of the workers.
+const QUEUED: u32 = 4;
+/// A thread sleeps until the actor is let go of.
+const WAITERS: u32 = 8;
+const ALIVE: u32 = 16;
+
+/// An actor. Everything after `holder` is touched only by the thread that has the slot
+/// locked, but for `mail`, which anyone adds to.
+#[repr(C)]
+struct Slot {
+    word: AtomicU32,
+    /// Counts the actors the slot has held, so that the handle of one that stopped is
+    /// not taken for the handle of the next.
+    generation: AtomicU32,
+    /// The thread that has the slot locked, or 0.
+    holder: AtomicU32,
+    /// Which of `KINDS` is the name of the actor's type.
+    kind: u32,
+    /// The state while no message is using it, and the state the actor starts with.
+    /// Each is a list of one element, of the program's own type, which only the program
+    /// can free.
+    state: *mut Header,
+    initial: *mut Header,
+    /// Letters as they were left, the newest first.
+    mail: AtomicPtr<Job>,
+    /// Letters taken from `mail`, the oldest first.
+    inbox: *mut Job,
+}
+
+/// A letter: what was told to an actor. It is a function value of the program's, as
+/// `koo-compiler/src/llvm/closures.rs` lays it out, that takes the actor's state, calls
+/// the method, and puts the state back. The first two things it captured are a word for
+/// the chain of letters it waits in, and the number of the actor it is for
+/// (`koo-compiler/src/derive.rs` sees to that).
+#[repr(C)]
+pub struct Job {
+    rc: i64,
+    code: usize,
+    free: Option<unsafe extern "C" fn(*mut Job)>,
+    next: *mut Job,
+    id: i64,
+}
+
+const CHUNK_BITS: usize = 12;
+const CHUNKS: usize = 1 << 14;
+const MOST_KINDS: usize = 1024;
+
+/// The slots, in chunks that never move, so that a slot can be read while another
+/// thread adds one.
+static TABLE: [AtomicPtr<Slot>; CHUNKS] = [const { AtomicPtr::new(core::ptr::null_mut()) }; CHUNKS];
+static SLOT_COUNT: AtomicUsize = AtomicUsize::new(0);
+/// Held to add a slot, a kind, or a note that an actor failed.
+static MAKING: Lock = Lock::new();
+static mut FREE: Table<u32> = Table::new();
+/// The names of the actor types, each as the program's string.
+static KINDS: [AtomicPtr<Header>; MOST_KINDS] = [const { AtomicPtr::new(core::ptr::null_mut()) }; MOST_KINDS];
+static KIND_COUNT: AtomicUsize = AtomicUsize::new(0);
+/// The actors that have panicked, and when: `(number, times)`.
+static mut FAILED_ACTORS: Table<(i64, [i64; RESTARTS])> = Table::new();
+/// Whether a panic has been come back from: what it abandoned was not freed.
+static LEAKED: AtomicBool = AtomicBool::new(false);
+static mut SCAN: usize = 0;
+
+// The workers.
+/// 0 until the first letter, 1 while the workers are being started, then 2.
+static POOL: AtomicU32 = AtomicU32::new(0);
+/// What runs a letter: a function of the program's, which marks the place a panic comes
+/// back to and calls the function value.
+static RUNNER: AtomicUsize = AtomicUsize::new(0);
+static WORKERS: AtomicUsize = AtomicUsize::new(0);
+/// The actors that wait for a worker, and what is held to add or take one.
+static mut RUN: Ring = Ring::new();
+static RUNNING: Lock = Lock::new();
+static QUEUE_LEN: AtomicUsize = AtomicUsize::new(0);
+/// How many actors the workers have taken from the queue, ever.
+static TAKEN: AtomicUsize = AtomicUsize::new(0);
+/// Where workers sleep when there is nothing to run, and how many do.
+static QUEUE: Gate = Gate::new();
+static SLEEPERS: AtomicUsize = AtomicUsize::new(0);
+/// Workers that are awake with nothing to do, looking for something.
+static LOOKING: AtomicUsize = AtomicUsize::new(0);
+/// Whether one of the sleeping workers wakes now and then to see that nothing is stuck.
+static WATCHED: AtomicBool = AtomicBool::new(false);
+
+// Waiting for a busy actor.
+static GATES: AtomicU32 = AtomicU32::new(0);
+static BENCHES: [Gate; 64] = [const { Gate::new() }; 64];
+/// Held to say which actor a thread waits for, and to look for a cycle of waits.
+static WAITS: Lock = Lock::new();
+
+/// What a program built to be checked for races gives the support library, to say
+/// where one thread hands something to another: the support library is not itself
+/// watched by the checker, which would otherwise take every hand-over for a race.
+static HANDING: AtomicUsize = AtomicUsize::new(0);
+static HANDED: AtomicUsize = AtomicUsize::new(0);
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn koo_sync_hooks(acquired: usize, releasing: usize) {
+    HANDED.store(acquired, Release);
+    HANDING.store(releasing, Release);
+}
+
+/// Says that what is at an address is about to be let go of, for another thread.
+#[inline]
+unsafe fn handing<T>(what: *mut T) {
+    let hook = HANDING.load(Relaxed);
+    if hook != 0 {
+        let hook: extern "C" fn(*mut u8) = unsafe { core::mem::transmute(hook) };
+        hook(what as *mut u8);
+    }
+}
+
+/// Says that what is at an address is this thread's now.
+#[inline]
+unsafe fn handed<T>(what: *mut T) {
+    let hook = HANDED.load(Relaxed);
+    if hook != 0 {
+        let hook: extern "C" fn(*mut u8) = unsafe { core::mem::transmute(hook) };
+        hook(what as *mut u8);
+    }
+}
+
+struct Table<T> {
+    ptr: *mut T,
+    len: usize,
+    cap: usize,
+}
+
+impl<T: Copy> Table<T> {
+    const fn new() -> Table<T> {
+        Table {
+            ptr: core::ptr::null_mut(),
+            len: 0,
+            cap: 0,
+        }
+    }
+
+    unsafe fn push(&mut self, value: T) {
+        unsafe {
+            if self.len == self.cap {
+                let cap = (self.cap * 2).max(64);
+                self.ptr = realloc(self.ptr as *mut u8, cap * core::mem::size_of::<T>()) as *mut T;
+                if self.ptr.is_null() {
+                    fatal(b"koo: out of memory\n");
+                }
+                self.cap = cap;
+            }
+            self.ptr.add(self.len).write(value);
+        }
+        self.len += 1;
+    }
+
+    fn at(&mut self, index: usize) -> &mut T {
+        unsafe { &mut *self.ptr.add(index) }
+    }
+}
+
+/// The actors that wait for a worker, first in first out.
+struct Ring {
+    ptr: *mut u32,
+    cap: usize,
+    head: usize,
+    len: usize,
+}
+
+impl Ring {
+    const fn new() -> Ring {
+        Ring {
+            ptr: core::ptr::null_mut(),
+            cap: 0,
+            head: 0,
+            len: 0,
+        }
+    }
+
+    unsafe fn push(&mut self, value: u32) {
+        unsafe {
+            if self.len == self.cap {
+                let cap = (self.cap * 2).max(1024);
+                let grown = malloc(cap * 4) as *mut u32;
+                if grown.is_null() {
+                    fatal(b"koo: out of memory\n");
+                }
+                for at in 0..self.len {
+                    grown.add(at).write(*self.ptr.add((self.head + at) % self.cap));
+                }
+                free(self.ptr as *mut u8);
+                (self.ptr, self.cap, self.head) = (grown, cap, 0);
+            }
+            self.ptr.add((self.head + self.len) % self.cap).write(value);
+        }
+        self.len += 1;
+    }
+
+    unsafe fn pop(&mut self) -> u32 {
+        unsafe {
+            let value = *self.ptr.add(self.head);
+            self.head = (self.head + 1) % self.cap;
+            self.len -= 1;
+            value
+        }
+    }
+}
+
+unsafe fn kind_name<'a>(kind: usize) -> &'a [u8] {
+    unsafe {
+        if kind < KIND_COUNT.load(Acquire) {
+            bytes(KINDS[kind].load(Acquire))
+        } else {
+            b"?"
+        }
+    }
+}
+
+unsafe fn slot_at(index: u32) -> *mut Slot {
+    unsafe {
+        TABLE[index as usize >> CHUNK_BITS]
+            .load(Acquire)
+            .add(index as usize & ((1 << CHUNK_BITS) - 1))
+    }
+}
+
+fn index_of(id: i64) -> u32 {
+    (id & 0xffff_ffff) as u32
+}
+
+fn generation_of(id: i64) -> u32 {
+    (id >> 32) as u32
+}
+
+/// The slot of a handle, if the actor it names is still the one there.
+unsafe fn slot_of(id: i64) -> Option<*mut Slot> {
+    unsafe {
+        if id < 0 || index_of(id) as usize >= SLOT_COUNT.load(Acquire) {
+            return None;
+        }
+        let slot = slot_at(index_of(id));
+        ((*slot).word.load(Acquire) & ALIVE != 0 && (*slot).generation.load(Acquire) == generation_of(id))
+            .then_some(slot)
+    }
+}
+
+/// Ends the program as a panic does (Section 5.9), or the message, if it is guarded.
+pub unsafe fn die(parts: &[&[u8]]) -> ! {
+    unsafe { koo_flush() };
+    let mut out = Buffer::new();
+    out.push(b"panic: ");
+    for part in parts {
+        out.push(part);
+    }
+    out.push(b"\n");
+    out.flush(2);
+    unsafe { leave() }
+}
+
+/// What a panic does once it has said what it has to say.
+pub unsafe fn leave() -> ! {
+    unsafe {
+        let guard = me().guard;
+        if !guard.is_null() {
+            _longjmp((*guard).buffer.as_mut_ptr(), 1);
+        }
+        exit(101)
+    }
+}
+
+/// Whether the leak check at the end of `main` can still be trusted.
+pub unsafe fn leaked() -> bool {
+    LEAKED.load(Relaxed)
+}
+
+/// Makes the gates usable, once.
+unsafe fn gates() {
+    unsafe {
+        loop {
+            match GATES.compare_exchange(0, 1, AcqRel, Acquire) {
+                Ok(_) => {
+                    QUEUE.open();
+                    for bench in &BENCHES {
+                        bench.open();
+                    }
+                    #[cfg(any(target_os = "macos", target_os = "linux"))]
+                    remote::open();
+                    GATES.store(2, Release);
+                    return;
+                }
+                Err(2) => return,
+                Err(_) => core::hint::spin_loop(),
+            }
+        }
+    }
+}
+
+// ---- holding an actor -------------------------------------------------------------------
+
+unsafe fn hold(me: &mut Thread, held: Held) {
+    unsafe {
+        if me.held_len == me.held_cap {
+            let cap = (me.held_cap * 2).max(16);
+            me.held = realloc(me.held as *mut u8, cap * core::mem::size_of::<Held>()) as *mut Held;
+            if me.held.is_null() {
+                fatal(b"koo: out of memory\n");
+            }
+            me.held_cap = cap;
+        }
+        me.held.add(me.held_len).write(held);
+        me.held_len += 1;
+    }
+}
+
+unsafe fn top<'a>(me: &mut Thread) -> Option<&'a mut Held> {
+    unsafe {
+        if me.held_len == 0 {
+            None
+        } else {
+            Some(&mut *me.held.add(me.held_len - 1))
+        }
+    }
+}
+
+/// Whether waiting for `slot` would be waiting for ever: the thread that has it waits
+/// for an actor, whose thread waits for another, and so round to this thread.
+unsafe fn waits_for_itself(mine: u32, mut slot: *mut Slot) -> bool {
+    unsafe {
+        for _ in 0..=thread::MOST_THREADS {
+            let holder = (*slot).holder.load(Acquire);
+            if holder == mine {
+                return true;
+            }
+            let Some(other) = thread::thread(holder) else {
+                return false;
+            };
+            let wanted = other.waiting_for.load(Acquire);
+            if wanted == 0 {
+                return false;
+            }
+            slot = slot_at(wanted - 1);
+        }
+        false
+    }
+}
+
+/// Locks an actor for this thread, waiting for whoever has it. `what` says why, for the
+/// panic if the actor is gone or the wait could not end.
+unsafe fn lock(slot: *mut Slot, id: i64, what: &[u8], me: &mut Thread) {
+    unsafe {
+        let word = (*slot).word.load(Relaxed);
+        if word & LOCKED == 0
+            && (*slot)
+                .word
+                .compare_exchange(word, word | LOCKED, Acquire, Relaxed)
+                .is_ok()
+        {
+            (*slot).holder.store(me.index, Release);
+            handed(slot);
+            return;
+        }
+        let mut looks = 0;
+        loop {
+            let word = (*slot).word.load(Acquire);
+            if word & ALIVE == 0 || (*slot).generation.load(Acquire) != generation_of(id) {
+                me.waiting_for.store(0, Release);
+                stopped(what);
+            }
+            if word & LOCKED == 0 {
+                if (*slot)
+                    .word
+                    .compare_exchange(word, word | LOCKED, Acquire, Relaxed)
+                    .is_ok()
+                {
+                    me.waiting_for.store(0, Release);
+                    (*slot).holder.store(me.index, Release);
+                    handed(slot);
+                    return;
+                }
+                continue;
+            }
+            if (*slot).holder.load(Acquire) == me.index {
+                cycle(slot, what);
+            }
+            looks += 1;
+            if looks < LOOKS {
+                core::hint::spin_loop();
+                continue;
+            }
+            // Before it sleeps, the thread says what it waits for, so that the thread
+            // that would close a cycle of waits finds it. That thread may be this one.
+            gates();
+            WAITS.lock();
+            me.waiting_for.store(index_of(id) + 1, Release);
+            let for_ever = waits_for_itself(me.index, slot);
+            if for_ever {
+                me.waiting_for.store(0, Release);
+            }
+            WAITS.unlock();
+            if for_ever {
+                cycle(slot, what);
+            }
+            if (*slot)
+                .word
+                .compare_exchange(word, word | WAITERS, AcqRel, Relaxed)
+                .is_err()
+            {
+                continue;
+            }
+            let bench = &BENCHES[index_of(id) as usize % BENCHES.len()];
+            bench.lock();
+            while (*slot).word.load(Acquire) & (LOCKED | WAITERS) == LOCKED | WAITERS {
+                bench.wait();
+            }
+            bench.unlock();
+        }
+    }
+}
+
+unsafe fn stopped(what: &[u8]) -> ! {
+    unsafe { die(&[b"`", what, b"` was asked of an actor that is stopped (ActorStopped)"]) }
+}
+
+unsafe fn cycle(slot: *mut Slot, what: &[u8]) -> ! {
+    unsafe {
+        die(&[
+            b"`",
+            kind_name((*slot).kind as usize),
+            b"` is asked `",
+            what,
+            b"` while it waits for the answer to this very message: it would wait for ever. \
+              Use `send` on one side.",
+        ])
+    }
+}
+
+/// Lets go of an actor. If it has mail, a worker is told.
+unsafe fn unlock(slot: *mut Slot, index: u32) {
+    unsafe {
+        handing(slot);
+        (*slot).holder.store(0, Release);
+        let mut word = (*slot).word.load(Relaxed);
+        let again = loop {
+            let again = word & MAIL != 0 && word & QUEUED == 0;
+            let mut new = word & !(LOCKED | WAITERS);
+            if again {
+                new |= QUEUED;
+            }
+            match (*slot).word.compare_exchange_weak(word, new, AcqRel, Relaxed) {
+                Ok(_) => break again,
+                Err(now) => word = now,
+            }
+        };
+        if word & WAITERS != 0 {
+            let bench = &BENCHES[index as usize % BENCHES.len()];
+            bench.lock();
+            bench.wake_all();
+            bench.unlock();
+        }
+        if again {
+            enqueue(index);
+        }
+    }
+}
+
+// ---- mail -------------------------------------------------------------------------------
+
+/// The letters that were left for an actor this thread has locked, the oldest first, or
+/// null if there are none.
+unsafe fn fresh_mail(slot: *mut Slot) -> *mut Job {
+    unsafe {
+        let mut newest = (*slot).mail.swap(core::ptr::null_mut(), Acquire);
+        if newest.is_null() {
+            // None: say so, and look once more, for a letter left in between.
+            (*slot).word.fetch_and(!MAIL, AcqRel);
+            newest = (*slot).mail.swap(core::ptr::null_mut(), Acquire);
+            if newest.is_null() {
+                return newest;
+            }
+            (*slot).word.fetch_or(MAIL, AcqRel);
+        }
+        let mut oldest = core::ptr::null_mut();
+        while !newest.is_null() {
+            let next = (*newest).next;
+            (*newest).next = oldest;
+            oldest = newest;
+            newest = next;
+        }
+        oldest
+    }
+}
+
+/// Gives up a function value of the program's.
+unsafe fn drop_job(job: *mut Job) {
+    unsafe {
+        if release(job as *mut Header)
+            && let Some(free) = (*job).free
+        {
+            free(job);
+        }
+    }
+}
+
+/// Runs the letters of an actor this thread has locked, and holds last. The state is
+/// kept with the thread meanwhile, where each letter takes it from and puts it back, so
+/// that the slot, which other threads write their letters to, is left alone. Stops when
+/// there are no more, or after `most` if there is other work. A letter for an actor that
+/// is gone is thrown away.
+unsafe fn run_mail(slot: *mut Slot, me: &mut Thread, most: usize) {
+    unsafe {
+        let at = me.held_len - 1;
+        (*me.held.add(at)).state = core::mem::replace(&mut (*slot).state, core::ptr::null_mut());
+        (*me.held.add(at)).told = true;
+        let generation = (*slot).generation.load(Acquire);
+        let alive = (*slot).word.load(Acquire) & ALIVE != 0;
+        let runner = RUNNER.load(Acquire);
+        let mut inbox = core::mem::replace(&mut (*slot).inbox, core::ptr::null_mut());
+        let mut ran = 0;
+        loop {
+            if inbox.is_null() {
+                inbox = fresh_mail(slot);
+                if inbox.is_null() {
+                    break;
+                }
+            }
+            let job = inbox;
+            inbox = (*job).next;
+            handed(job);
+            // An actor that panicked once too often in a letter has no state to go on with.
+            let wanted =
+                alive && runner != 0 && generation_of((*job).id) == generation && !(*me.held.add(at)).state.is_null();
+            if wanted {
+                // The program's function owns the letter from here, and lets go of it.
+                let run: extern "C" fn(*mut Job) = core::mem::transmute(runner);
+                run(job);
+            } else {
+                drop_job(job);
+            }
+            ran += 1;
+            if ran >= most && QUEUE_LEN.load(Relaxed) > 0 {
+                break;
+            }
+        }
+        (*slot).inbox = inbox;
+        (*slot).state = (*me.held.add(at)).state;
+        (*me.held.add(at)).state = core::ptr::null_mut();
+    }
+}
+
+/// Says which function of the program runs a letter. Called as the program starts.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn koo_actor_runner(runner: usize) {
+    RUNNER.store(runner, Release);
+}
+
+/// Tells an actor: leaves it a letter, which becomes the support library's. A letter
+/// for an actor that is stopped is thrown away.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn koo_actor_tell(id: i64, job: *mut Job) {
+    unsafe {
+        let Some(slot) = slot_of(id) else {
+            drop_job(job);
+            return;
+        };
+        (*job).id = id;
+        handing(job);
+        let mut newest = (*slot).mail.load(Relaxed);
+        loop {
+            (*job).next = newest;
+            match (*slot).mail.compare_exchange_weak(newest, job, Release, Relaxed) {
+                Ok(_) => break,
+                Err(now) => newest = now,
+            }
+        }
+        // Whoever has the actor sees the mail when it lets go. If nobody has it, and it
+        // is not waiting for a worker already, it goes to the workers now.
+        let mut word = (*slot).word.load(Relaxed);
+        loop {
+            let queue = word & (LOCKED | QUEUED) == 0;
+            let new = word | MAIL | if queue { QUEUED } else { 0 };
+            if new == word {
+                return;
+            }
+            match (*slot).word.compare_exchange_weak(word, new, AcqRel, Relaxed) {
+                Ok(_) => {
+                    if queue {
+                        enqueue(index_of(id));
+                    }
+                    return;
+                }
+                Err(now) => word = now,
+            }
+        }
+    }
+}
+
+// ---- the workers ------------------------------------------------------------------------
+
+/// Starts the workers, the first time there is something for them to do.
+#[cold]
+unsafe fn start_workers() {
+    unsafe {
+        gates();
+        if POOL.compare_exchange(0, 1, AcqRel, Acquire).is_err() {
+            return;
+        }
+        let wanted = getenv(c"KOO_THREADS".as_ptr() as *const u8);
+        let wanted = if wanted.is_null() {
+            None
+        } else {
+            core::str::from_utf8(c_text(wanted))
+                .ok()
+                .and_then(|text| text.parse::<usize>().ok())
+        };
+        let count = wanted
+            .unwrap_or_else(thread::processors)
+            .clamp(1, thread::MOST_THREADS - 8);
+        let mut started = 0;
+        for _ in 0..count {
+            if thread::start(work) {
+                started += 1;
+            }
+        }
+        if started == 0 {
+            fatal(b"koo: the threads that run actors could not be started\n");
+        }
+        WORKERS.store(started, SeqCst);
+        POOL.store(2, Release);
+    }
+}
+
+/// Wakes a worker that sleeps.
+unsafe fn wake() {
+    unsafe {
+        QUEUE.lock();
+        QUEUE.wake_one();
+        QUEUE.unlock();
+    }
+}
+
+#[allow(static_mut_refs)]
+unsafe fn enqueue(index: u32) {
+    unsafe {
+        if POOL.load(Acquire) != 2 {
+            start_workers();
+        }
+        RUNNING.lock();
+        RUN.push(index);
+        let len = RUN.len;
+        QUEUE_LEN.store(len, SeqCst);
+        RUNNING.unlock();
+        if SLEEPERS.load(SeqCst) == 0 || LOOKING.load(SeqCst) > 0 {
+            // Nobody sleeps, or a worker that is looking will find it.
+            return;
+        }
+        // Waking a worker costs more than most letters do. One letter left by a worker
+        // is most often run by that worker, as soon as it is done with the one it is
+        // running: nobody is woken for it, so long as a sleeper is watching in case the
+        // worker is not done soon.
+        if len == 1 && me().worker && WATCHED.load(SeqCst) {
+            return;
+        }
+        wake();
+    }
+}
+
+/// The next actor with mail. A worker looks a while before it sleeps: a letter is often
+/// answered by another, and waking a thread costs more than the letter does.
+#[allow(static_mut_refs)]
+unsafe fn dequeue() -> u32 {
+    unsafe {
+        let mut looks = 0;
+        // Whether this worker has just stopped being the one that watches: another is
+        // woken to watch in its place.
+        let mut watched = false;
+        LOOKING.fetch_add(1, SeqCst);
+        loop {
+            if QUEUE_LEN.load(Relaxed) > 0 {
+                RUNNING.lock();
+                if RUN.len > 0 {
+                    let index = RUN.pop();
+                    let more = RUN.len;
+                    QUEUE_LEN.store(more, SeqCst);
+                    RUNNING.unlock();
+                    TAKEN.fetch_add(1, Relaxed);
+                    let looking = LOOKING.fetch_sub(1, SeqCst) - 1;
+                    if SLEEPERS.load(SeqCst) > 0 && ((more > 0 && looking == 0) || watched) {
+                        wake();
+                    }
+                    return index;
+                }
+                RUNNING.unlock();
+            }
+            looks += 1;
+            if looks < LOOKS {
+                core::hint::spin_loop();
+                continue;
+            }
+            // Nothing: sleep. One sleeper watches while any worker is awake: it wakes
+            // every millisecond to see whether an actor has waited in the queue all that
+            // time, as happens when the worker that would have run it is busy for long.
+            LOOKING.fetch_sub(1, SeqCst);
+            QUEUE.lock();
+            SLEEPERS.fetch_add(1, SeqCst);
+            let mut watching = false;
+            loop {
+                let waiting = QUEUE_LEN.load(SeqCst);
+                if waiting > 0 && !watching {
+                    break;
+                }
+                let idle = waiting == 0 && SLEEPERS.load(SeqCst) == WORKERS.load(SeqCst);
+                if idle && watching {
+                    WATCHED.store(false, SeqCst);
+                    watching = false;
+                }
+                if !idle && !watching {
+                    watching = WATCHED.compare_exchange(false, true, SeqCst, SeqCst).is_ok();
+                }
+                if !watching {
+                    QUEUE.wait();
+                    continue;
+                }
+                let seen = TAKEN.load(Relaxed);
+                let woken = !QUEUE.wait_for(1);
+                if QUEUE_LEN.load(SeqCst) > 0 && (woken || TAKEN.load(Relaxed) == seen) {
+                    break;
+                }
+            }
+            if watching {
+                WATCHED.store(false, SeqCst);
+                watched = true;
+            }
+            SLEEPERS.fetch_sub(1, SeqCst);
+            QUEUE.unlock();
+            LOOKING.fetch_add(1, SeqCst);
+            looks = 0;
+        }
+    }
+}
+
+/// A worker: takes an actor with mail, runs it, and lets go.
+extern "C" fn work(_: *mut u8) -> *mut u8 {
+    unsafe {
+        let me = me();
+        me.worker = true;
+        loop {
+            let index = dequeue();
+            let slot = slot_at(index);
+            let mut word = (*slot).word.fetch_and(!QUEUED, AcqRel) & !QUEUED;
+            // Whoever has the actor runs its mail, or sends it back here when it lets go.
+            let mine = loop {
+                if word & LOCKED != 0 {
+                    break false;
+                }
+                match (*slot)
+                    .word
+                    .compare_exchange_weak(word, word | LOCKED, Acquire, Relaxed)
+                {
+                    Ok(_) => break true,
+                    Err(now) => word = now,
+                }
+            };
+            if !mine {
+                continue;
+            }
+            (*slot).holder.store(me.index, Release);
+            handed(slot);
+            hold(
+                me,
+                Held {
+                    slot: index,
+                    taken: false,
+                    told: true,
+                    state: core::ptr::null_mut(),
+                },
+            );
+            run_mail(slot, me, BATCH);
+            me.held_len -= 1;
+            unlock(slot, index);
+        }
+    }
+}
+
+/// Waits until every letter has been run: nothing waits for a worker, and every worker
+/// sleeps. `main` has returned, so nothing new is told but by the letters themselves.
+unsafe fn settle() {
+    unsafe {
+        if POOL.load(Acquire) == 0 {
+            return;
+        }
+        loop {
+            QUEUE.lock();
+            let still = QUEUE_LEN.load(SeqCst) == 0 && SLEEPERS.load(SeqCst) == WORKERS.load(SeqCst);
+            QUEUE.unlock();
+            if still {
+                return;
+            }
+            let (wanted, mut left) = ([0i64, 50_000], [0i64; 2]);
+            nanosleep(&wanted, &mut left);
+        }
+    }
+}
+
+// ---- what the program asks for ----------------------------------------------------------
+
+/// Makes an actor of a kind from the state it starts with, and returns its number.
+#[unsafe(no_mangle)]
+#[allow(static_mut_refs)]
+pub unsafe extern "C" fn koo_actor_new(kind: *const Header, initial: *mut Header) -> i64 {
+    unsafe {
+        let name = bytes(kind);
+        MAKING.lock();
+        let kinds = KIND_COUNT.load(Relaxed);
+        let mut known = (0..kinds).find(|index| bytes(KINDS[*index].load(Relaxed)) == name);
+        if known.is_none() {
+            if kinds == MOST_KINDS {
+                fatal(b"koo: too many kinds of actor\n");
+            }
+            let kept = new_str(name);
+            // The name is the support library's own from here on.
+            uncounted();
+            (*kept).rc = IMMORTAL;
+            KINDS[kinds].store(kept, Release);
+            KIND_COUNT.store(kinds + 1, Release);
+            known = Some(kinds);
+        }
+        let index = if FREE.len > 0 {
+            FREE.len -= 1;
+            *FREE.at(FREE.len)
+        } else {
+            let index = SLOT_COUNT.load(Relaxed);
+            let chunk = index >> CHUNK_BITS;
+            if chunk == CHUNKS {
+                fatal(b"koo: too many actors\n");
+            }
+            if TABLE[chunk].load(Relaxed).is_null() {
+                let slots = calloc(1 << CHUNK_BITS, core::mem::size_of::<Slot>()) as *mut Slot;
+                if slots.is_null() {
+                    fatal(b"koo: out of memory\n");
+                }
+                TABLE[chunk].store(slots, Release);
+            }
+            SLOT_COUNT.store(index + 1, Release);
+            index as u32
+        };
+        MAKING.unlock();
+        let slot = slot_at(index);
+        // A slot that held another actor may be in a worker's hands still, which is
+        // throwing away what was told to that one.
+        loop {
+            let word = (*slot).word.load(Relaxed);
+            if word & LOCKED == 0
+                && (*slot)
+                    .word
+                    .compare_exchange_weak(word, word | LOCKED, Acquire, Relaxed)
+                    .is_ok()
+            {
+                break;
+            }
+            core::hint::spin_loop();
+        }
+        handed(slot);
+        // Once as the state, once as what to start again from.
+        retain(initial);
+        retain(initial);
+        (*slot).state = initial;
+        (*slot).initial = initial;
+        (*slot).kind = known.unwrap_or(0) as u32;
+        (*slot).word.fetch_or(ALIVE, AcqRel);
+        unlock(slot, index);
+        (((*slot).generation.load(Relaxed) as i64) << 32) | index as i64
+    }
+}
+
+/// Takes an actor's state out, to answer a message with: the actor is this thread's
+/// until the state is put back. What was told to it before runs first.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn koo_actor_take(id: i64, method: *const Header) -> *mut Header {
+    unsafe {
+        let me = me();
+        let index = index_of(id);
+        // A letter being run: its actor is this thread's already, and its state is here.
+        if let Some(top) = top(me)
+            && top.slot == index
+            && top.told
+            && !top.taken
+        {
+            top.taken = true;
+            return core::mem::replace(&mut top.state, core::ptr::null_mut());
+        }
+        let Some(slot) = slot_of(id) else {
+            stopped(bytes(method))
+        };
+        lock(slot, id, bytes(method), me);
+        hold(
+            me,
+            Held {
+                slot: index,
+                taken: false,
+                told: false,
+                state: core::ptr::null_mut(),
+            },
+        );
+        if (*slot).word.load(Acquire) & MAIL != 0 {
+            run_mail(slot, me, usize::MAX);
+        }
+        // The actor may have stopped while this thread waited for it, or have panicked
+        // once too often in what it was told.
+        if (*slot).word.load(Acquire) & ALIVE == 0 || (*slot).generation.load(Acquire) != generation_of(id) {
+            me.held_len -= 1;
+            unlock(slot, index);
+            stopped(bytes(method));
+        }
+        if let Some(top) = top(me) {
+            (top.taken, top.told) = (true, false);
+        }
+        core::mem::replace(&mut (*slot).state, core::ptr::null_mut())
+    }
+}
+
+/// Puts an actor's state back, the message answered. The state becomes the slot's.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn koo_actor_put(id: i64, state: *mut Header) {
+    unsafe {
+        let me = me();
+        let index = index_of(id);
+        let Some(top) = top(me) else {
+            fatal(b"koo runtime: a state was put back that was not out\n")
+        };
+        if top.slot != index || !top.taken {
+            fatal(b"koo runtime: a state was put back that was not out\n");
+        }
+        top.taken = false;
+        if top.told {
+            top.state = state;
+            return;
+        }
+        let slot = slot_at(index);
+        (*slot).state = state;
+        me.held_len -= 1;
+        // Nobody waits and nothing was told, most often: one exchange lets go.
+        handing(slot);
+        (*slot).holder.store(0, Release);
+        let word = (*slot).word.load(Relaxed);
+        if word & (MAIL | WAITERS) == 0
+            && (*slot)
+                .word
+                .compare_exchange(word, word & !LOCKED, Release, Relaxed)
+                .is_ok()
+        {
+            return;
+        }
+        unlock(slot, index);
+    }
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn koo_actor_alive(id: i64) -> bool {
+    unsafe { slot_of(id).is_some() }
+}
+
+/// Stops an actor, in two steps: its state is handed over (`which` 0), then the state
+/// it would have started again from (`which` 1), each for the program to free. What was
+/// told to it and has not run is forgotten.
+#[unsafe(no_mangle)]
+#[allow(static_mut_refs)]
+pub unsafe extern "C" fn koo_actor_end(id: i64, which: i64) -> *mut Header {
+    unsafe {
+        let me = me();
+        let index = index_of(id);
+        if which == 0 {
+            let Some(slot) = slot_of(id) else {
+                die(&[b"an actor was stopped twice"]);
+            };
+            if (*slot).holder.load(Acquire) == me.index {
+                die(&[
+                    b"`",
+                    kind_name((*slot).kind as usize),
+                    b"` was stopped from inside one of its own messages",
+                ]);
+            }
+            lock(slot, id, b"stop", me);
+            if (*slot).word.load(Acquire) & ALIVE == 0 || (*slot).generation.load(Acquire) != generation_of(id) {
+                unlock(slot, index);
+                die(&[b"an actor was stopped twice"]);
+            }
+            hold(
+                me,
+                Held {
+                    slot: index,
+                    taken: false,
+                    told: false,
+                    state: core::ptr::null_mut(),
+                },
+            );
+            let mut inbox = core::mem::replace(&mut (*slot).inbox, core::ptr::null_mut());
+            loop {
+                if inbox.is_null() {
+                    inbox = fresh_mail(slot);
+                    if inbox.is_null() {
+                        break;
+                    }
+                }
+                let job = inbox;
+                inbox = (*job).next;
+                drop_job(job);
+            }
+            return core::mem::replace(&mut (*slot).state, core::ptr::null_mut());
+        }
+        let slot = slot_at(index);
+        let initial = core::mem::replace(&mut (*slot).initial, core::ptr::null_mut());
+        (*slot).generation.fetch_add(1, AcqRel);
+        (*slot).word.fetch_and(!ALIVE, AcqRel);
+        MAKING.lock();
+        FREE.push(index);
+        MAKING.unlock();
+        me.held_len -= 1;
+        unlock(slot, index);
+        initial
+    }
+}
+
+/// Begins a walk over the actors, the last started first. `main` has returned, and the
+/// walk is to stop them: first, what was told is run.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn koo_actor_scan() {
+    unsafe {
+        settle();
+        SCAN = SLOT_COUNT.load(Acquire);
+    }
+}
+
+/// The next actor of a kind in the walk, or -1 when there is no more.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn koo_actor_any(kind: *const Header) -> i64 {
+    unsafe {
+        let name = bytes(kind);
+        while SCAN > 0 {
+            SCAN -= 1;
+            let slot = slot_at(SCAN as u32);
+            let word = (*slot).word.load(Acquire);
+            if word & ALIVE != 0 && word & LOCKED == 0 && kind_name((*slot).kind as usize) == name {
+                return (((*slot).generation.load(Acquire) as i64) << 32) | SCAN as i64;
+            }
+        }
+        -1
+    }
+}
+
+// ---- panics that end a message, not the program -------------------------------------
+
+/// Marks a place a panic comes back to, and returns where the mark is kept: the program
+/// calls `_setjmp` on it, since what it marks is a place in the program's own code.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn koo_guard_enter() -> *mut u64 {
+    unsafe {
+        let me = me();
+        let guard = if me.spare_guard.is_null() {
+            let guard = malloc(core::mem::size_of::<Guard>()) as *mut Guard;
+            if guard.is_null() {
+                fatal(b"koo: out of memory\n");
+            }
+            guard
+        } else {
+            let guard = me.spare_guard;
+            me.spare_guard = (*guard).below;
+            guard
+        };
+        (*guard).mark = me.held_len;
+        (*guard).below = me.guard;
+        me.guard = guard;
+        (*guard).buffer.as_mut_ptr()
+    }
+}
+
+/// Forgets the last mark: what it guarded ended without a panic.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn koo_guard_done() {
+    unsafe {
+        let me = me();
+        let guard = me.guard;
+        if guard.is_null() {
+            return;
+        }
+        me.guard = (*guard).below;
+        (*guard).below = me.spare_guard;
+        me.spare_guard = guard;
+    }
+}
+
+/// An actor that panicked starts again from the state it started with, which is
+/// returned. One that has done so too often stays stopped, and there is none.
+#[allow(static_mut_refs)]
+unsafe fn restart(slot: *mut Slot, index: u32) -> *mut Header {
+    unsafe {
+        let id = (((*slot).generation.load(Acquire) as i64) << 32) | index as i64;
+        let mut time = [0i64; 2];
+        clock_gettime(0, &mut time);
+        MAKING.lock();
+        let mut known = (0..FAILED_ACTORS.len).find(|entry| FAILED_ACTORS.at(*entry).0 == id);
+        if known.is_none() {
+            FAILED_ACTORS.push((id, [0; RESTARTS]));
+            known = Some(FAILED_ACTORS.len - 1);
+        }
+        let times = &mut FAILED_ACTORS.at(known.unwrap_or(0)).1;
+        let often = times.iter().all(|at| time[0] - at < 60);
+        times.rotate_left(1);
+        times[RESTARTS - 1] = time[0];
+        MAKING.unlock();
+        let mut out = Buffer::new();
+        out.push(b"koo: the actor `");
+        out.push(kind_name((*slot).kind as usize));
+        let state = if often {
+            // What it started with stays where it is, for the end of the program to forget.
+            (*slot).generation.fetch_add(1, AcqRel);
+            (*slot).word.fetch_and(!ALIVE, AcqRel);
+            out.push(b"` panicked too often, and stays stopped\n");
+            core::ptr::null_mut()
+        } else {
+            retain((*slot).initial);
+            out.push(b"` panicked, and starts again\n");
+            (*slot).initial
+        };
+        out.flush(2);
+        state
+    }
+}
+
+/// After a panic has come back to the last mark: the actors that the thread took since
+/// the mark start again, and are let go of.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn koo_actor_recover() {
+    unsafe {
+        LEAKED.store(true, Relaxed);
+        let me = me();
+        me.waiting_for.store(0, Release);
+        let mark = if me.guard.is_null() { 0 } else { (*me.guard).mark };
+        koo_guard_done();
+        while me.held_len > mark {
+            me.held_len -= 1;
+            let held = *me.held.add(me.held_len);
+            let slot = slot_at(held.slot);
+            if held.taken {
+                (*slot).state = restart(slot, held.slot);
+            } else if held.told {
+                (*slot).state = held.state;
+            }
+            unlock(slot, held.slot);
+        }
+        // The letter that panicked was of the actor below the mark, which whoever runs
+        // its mail goes on holding.
+        if let Some(top) = top(me)
+            && top.told
+            && top.taken
+        {
+            top.state = restart(slot_at(top.slot), top.slot);
+            top.taken = false;
+        }
+    }
+}
+
+/// In a process just forked: the threads of its parent are not there, and what they
+/// held is nobody's.
+#[allow(static_mut_refs)]
+unsafe fn alone_after_fork() {
+    unsafe {
+        MAKING.unlock();
+        WAITS.unlock();
+        GATES.store(0, Release);
+        RUNNING.unlock();
+        POOL.store(0, Release);
+        WORKERS.store(0, SeqCst);
+        LOOKING.store(0, SeqCst);
+        SLEEPERS.store(0, SeqCst);
+        WATCHED.store(false, SeqCst);
+        RUN.len = 0;
+        RUN.head = 0;
+        QUEUE_LEN.store(0, Release);
+        threads_after_fork();
+    }
+}
+
+// ---- other processes ----------------------------------------------------------------
+
+#[cfg(not(any(target_os = "macos", target_os = "linux")))]
+pub use alone::*;
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+pub use remote::*;
+
+/// On a system where processes do not talk yet, every actor is in the one process.
+#[cfg(not(any(target_os = "macos", target_os = "linux")))]
+mod alone {
+    use super::*;
+
+    pub unsafe fn after_fork() {}
+    pub unsafe fn pending(_: i32) -> bool {
+        false
+    }
+    pub unsafe fn at_exit() {}
+    #[unsafe(no_mangle)]
+    pub unsafe extern "C" fn koo_actor_home() -> *mut Header {
+        unsafe { new_str(b"here") }
+    }
+    #[unsafe(no_mangle)]
+    pub unsafe extern "C" fn koo_actor_local(_: *const Header) -> bool {
+        true
+    }
+    #[unsafe(no_mangle)]
+    pub unsafe extern "C" fn koo_actor_message() -> *mut Header {
+        unsafe { new_str(b"") }
+    }
+    #[unsafe(no_mangle)]
+    pub unsafe extern "C" fn koo_actor_body() -> *mut Header {
+        unsafe { new_str(b"") }
+    }
+    #[unsafe(no_mangle)]
+    pub unsafe extern "C" fn koo_actor_reply(_: *const Header, _: *const Header) {}
+    #[unsafe(no_mangle)]
+    pub unsafe extern "C" fn koo_actor_hang_up() {}
+    #[unsafe(no_mangle)]
+    pub unsafe extern "C" fn koo_actor_ask(_: *const Header, _: *const Header, _: *const Header) -> *mut Header {
+        unsafe { die(&[b"an actor of another process was asked, on a system where processes do not talk yet"]) }
+    }
+    #[unsafe(no_mangle)]
+    pub unsafe extern "C" fn koo_actor_kind() -> *mut Header {
+        unsafe { new_str(b"") }
+    }
+    #[unsafe(no_mangle)]
+    pub unsafe extern "C" fn koo_actor_send(_: *const Header, _: *const Header, _: *const Header) {}
+}
+
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+mod remote {
+    use super::*;
+    use core::fmt::Write;
+
+    unsafe extern "C" {
+        fn socket(domain: i32, kind: i32, protocol: i32) -> i32;
+        fn bind(fd: i32, address: *const u8, len: u32) -> i32;
+        fn listen(fd: i32, backlog: i32) -> i32;
+        fn accept(fd: i32, address: *mut u8, len: *mut u32) -> i32;
+        fn connect(fd: i32, address: *const u8, len: u32) -> i32;
+        fn close(fd: i32) -> i32;
+        fn getpid() -> i32;
+        fn poll(fds: *mut PollFd, count: usize, milliseconds: i32) -> i32;
+        fn unlink(path: *const u8) -> i32;
+        fn signal(number: i32, handler: usize) -> usize;
+    }
+
+    const AF_UNIX: i32 = 1;
+    const SOCK_STREAM: i32 = 1;
+    const POLLIN: i16 = 0x1;
+    const EINTR: i32 = 4;
+    const SIGPIPE: i32 = 13;
+    const ASK: u8 = 0;
+    const SEND: u8 = 1;
+    /// The most processes that may talk to this one at a time, and the most this one
+    /// may talk to.
+    const MOST_CLIENTS: usize = 1024;
+    const MOST_HOMES: usize = 64;
+    const NAME: usize = 104;
+
+    #[repr(C)]
+    struct PollFd {
+        fd: i32,
+        events: i16,
+        revents: i16,
+    }
+
+    #[cfg(target_os = "macos")]
+    #[repr(C)]
+    struct Address {
+        len: u8,
+        family: u8,
+        path: [u8; 104],
+    }
+
+    #[cfg(target_os = "linux")]
+    #[repr(C)]
+    struct Address {
+        family: u16,
+        path: [u8; 108],
+    }
+
+    /// The address of a process's socket for the system. On Linux the name is one that
+    /// exists in no directory, so that nothing needs a place to write; on macOS it is a
+    /// file where temporary files go.
+    #[cfg(target_os = "macos")]
+    fn address(name: &[u8]) -> (Address, u32) {
+        let mut address = Address {
+            len: 106,
+            family: AF_UNIX as u8,
+            path: [0; 104],
+        };
+        let len = name.len().min(103);
+        address.path[..len].copy_from_slice(&name[..len]);
+        (address, 106)
+    }
+
+    #[cfg(target_os = "linux")]
+    fn address(name: &[u8]) -> (Address, u32) {
+        let mut address = Address {
+            family: AF_UNIX as u16,
+            path: [0; 108],
+        };
+        let len = name.len().min(106);
+        address.path[1..1 + len].copy_from_slice(&name[..len]);
+        (address, 3 + len as u32)
+    }
+
+    #[derive(Clone, Copy)]
+    struct Name {
+        bytes: [u8; NAME],
+        len: usize,
+    }
+
+    const NO_NAME: Name = Name {
+        bytes: [0; NAME],
+        len: 0,
+    };
+
+    impl Name {
+        fn of(text: &[u8]) -> Name {
+            let mut name = NO_NAME;
+            name.len = text.len().min(NAME);
+            name.bytes[..name.len].copy_from_slice(&text[..name.len]);
+            name
+        }
+
+        fn text(&self) -> &[u8] {
+            &self.bytes[..self.len]
+        }
+    }
+
+    // What this process is to others: where it is reached, and who is talking to it.
+    // Only the thread the program started on listens.
+    static HOME: AtomicPtr<Header> = AtomicPtr::new(core::ptr::null_mut());
+    static mut LISTENER: i32 = -1;
+    static mut CONNS: [i32; MOST_CLIENTS] = [-1; MOST_CLIENTS];
+    static mut CONN_COUNT: usize = 0;
+    static mut TURN: usize = 0;
+    static mut CURRENT: i32 = -1;
+    static mut CURRENT_KIND: u8 = ASK;
+    static mut MESSAGE: *mut u8 = core::ptr::null_mut();
+    static mut MESSAGE_CAP: usize = 0;
+    static mut METHOD: (usize, usize) = (0, 0);
+    static mut BODY: (usize, usize) = (0, 0);
+
+    // What this process knows of others: its connection to each it has talked to. One
+    // thread talks at a time, and holds `TALKING` from its message to the answer.
+    static TALKING: Gate = Gate::new();
+    static mut HOMES: [(Name, i32); MOST_HOMES] = [(NO_NAME, -1); MOST_HOMES];
+    static mut HOME_COUNT: usize = 0;
+    static mut HOMES_OF: i32 = 0;
+    static mut ANSWER: *mut u8 = core::ptr::null_mut();
+    static mut ANSWER_CAP: usize = 0;
+
+    pub unsafe fn open() {
+        unsafe { TALKING.open() };
+    }
+
+    unsafe fn error() -> i32 {
+        unsafe { *errno_location() }
+    }
+
+    unsafe fn write_full(fd: i32, mut data: &[u8]) -> bool {
+        while !data.is_empty() {
+            let n = unsafe { write(fd, data.as_ptr(), data.len()) };
+            if n > 0 {
+                data = &data[n as usize..];
+            } else if unsafe { error() } != EINTR {
+                return false;
+            }
+        }
+        true
+    }
+
+    unsafe fn read_full(fd: i32, data: &mut [u8]) -> bool {
+        let mut got = 0;
+        while got < data.len() {
+            let n = unsafe { read(fd, data.as_mut_ptr().add(got), data.len() - got) };
+            if n > 0 {
+                got += n as usize;
+            } else if n == 0 || unsafe { error() } != EINTR {
+                return false;
+            }
+        }
+        true
+    }
+
+    /// Room for `len` bytes in a buffer that is kept.
+    unsafe fn room<'a>(buffer: *mut *mut u8, cap: *mut usize, len: usize) -> &'a mut [u8] {
+        unsafe {
+            if len > *cap {
+                *buffer = realloc(*buffer, len.max(4096));
+                if (*buffer).is_null() {
+                    fatal(b"koo: out of memory\n");
+                }
+                *cap = len.max(4096);
+            }
+            core::slice::from_raw_parts_mut(*buffer, len)
+        }
+    }
+
+    /// Where other processes reach the actors of this one. The socket is made the first
+    /// time it is asked for.
+    #[unsafe(no_mangle)]
+    #[allow(static_mut_refs)]
+    pub unsafe extern "C" fn koo_actor_home() -> *mut Header {
+        unsafe {
+            let home = HOME.load(Acquire);
+            if !home.is_null() {
+                return home;
+            }
+            MAKING.lock();
+            if HOME.load(Acquire).is_null() {
+                let mut name = Buffer::new();
+                if cfg!(target_os = "macos") {
+                    let directory = getenv(c"TMPDIR".as_ptr() as *const u8);
+                    let directory = if directory.is_null() {
+                        b"/tmp" as &[u8]
+                    } else {
+                        c_text(directory)
+                    };
+                    // A socket's path is short: one that would not fit goes where it does.
+                    let directory = if directory.len() > 60 { b"/tmp" } else { directory };
+                    name.push(directory);
+                    if !directory.ends_with(b"/") {
+                        name.push(b"/");
+                    }
+                }
+                let mut time = [0i64; 2];
+                clock_gettime(0, &mut time);
+                let _ = write!(name, "koo-{}-{}", getpid(), time[1]);
+                if cfg!(target_os = "macos") {
+                    name.push(b".sock");
+                }
+                let text = &name.data[..name.len];
+                let (address, len) = address(text);
+                let fd = socket(AF_UNIX, SOCK_STREAM, 0);
+                if fd < 0 || bind(fd, &address as *const Address as *const u8, len) != 0 || listen(fd, 128) != 0 {
+                    MAKING.unlock();
+                    die(&[b"actors could not be started: ", c_text(strerror(error()))]);
+                }
+                LISTENER = fd;
+                // The address is the support library's own, and every handle of an actor
+                // of this process has it: a constant, which no thread counts.
+                let home = new_str(text);
+                uncounted();
+                (*home).rc = IMMORTAL;
+                HOME.store(home, Release);
+            }
+            MAKING.unlock();
+            HOME.load(Acquire)
+        }
+    }
+
+    /// Whether a handle's actor lives in this process.
+    #[unsafe(no_mangle)]
+    pub unsafe extern "C" fn koo_actor_local(home: *const Header) -> bool {
+        unsafe {
+            let mine = HOME.load(Relaxed);
+            core::ptr::eq(home, mine) || (!mine.is_null() && bytes(home) == bytes(mine))
+        }
+    }
+
+    /// In a process just forked: the actors are its parent's, and so is their socket.
+    #[allow(static_mut_refs)]
+    pub unsafe fn after_fork() {
+        unsafe {
+            if LISTENER >= 0 {
+                close(LISTENER);
+                LISTENER = -1;
+            }
+            for conn in &CONNS[..CONN_COUNT] {
+                close(*conn);
+            }
+            CONN_COUNT = 0;
+            CURRENT = -1;
+            // The address is kept, and no longer matched: a handle that names it is
+            // reached through the socket, like any other.
+            HOME.store(core::ptr::null_mut(), Release);
+            alone_after_fork();
+        }
+    }
+
+    #[allow(static_mut_refs)]
+    unsafe fn drop_conn(index: usize) {
+        unsafe {
+            close(CONNS[index]);
+            CONN_COUNT -= 1;
+            CONNS[index] = CONNS[CONN_COUNT];
+        }
+    }
+
+    /// Waits up to some milliseconds for a message from another process. Returns whether
+    /// one is here: it is kept for `koo_actor_message` and `koo_actor_body`.
+    #[allow(static_mut_refs)]
+    pub unsafe fn pending(milliseconds: i32) -> bool {
+        unsafe {
+            if LISTENER < 0 {
+                if milliseconds > 0 {
+                    let (wanted, mut left) = ([0i64, milliseconds as i64 * 1_000_000], [0i64; 2]);
+                    nanosleep(&wanted, &mut left);
+                }
+                return false;
+            }
+            let mut fds: [PollFd; MOST_CLIENTS + 1] = core::array::from_fn(|_| PollFd {
+                fd: -1,
+                events: POLLIN,
+                revents: 0,
+            });
+            fds[0].fd = LISTENER;
+            for (slot, conn) in fds[1..].iter_mut().zip(&CONNS[..CONN_COUNT]) {
+                slot.fd = *conn;
+            }
+            if poll(fds.as_mut_ptr(), CONN_COUNT + 1, milliseconds) <= 0 {
+                return false;
+            }
+            if fds[0].revents != 0 {
+                let fd = accept(LISTENER, core::ptr::null_mut(), core::ptr::null_mut());
+                if fd >= 0 {
+                    if CONN_COUNT < MOST_CLIENTS {
+                        CONNS[CONN_COUNT] = fd;
+                        CONN_COUNT += 1;
+                    } else {
+                        close(fd);
+                    }
+                }
+            }
+            // Each connection in its turn, so that no sender waits behind a busy one.
+            let count = CONN_COUNT;
+            for step in 0..count {
+                let index = (TURN + step) % count;
+                if index >= CONN_COUNT || fds[index + 1].revents == 0 || fds[index + 1].fd != CONNS[index] {
+                    continue;
+                }
+                let fd = CONNS[index];
+                let mut size = [0u8; 4];
+                if !read_full(fd, &mut size) {
+                    drop_conn(index);
+                    return false;
+                }
+                let size = u32::from_le_bytes(size) as usize;
+                let message = room(&raw mut MESSAGE, &raw mut MESSAGE_CAP, size);
+                if size < 3 || !read_full(fd, message) {
+                    drop_conn(index);
+                    return false;
+                }
+                let method_len = u16::from_le_bytes([message[1], message[2]]) as usize;
+                if 3 + method_len > size {
+                    drop_conn(index);
+                    return false;
+                }
+                METHOD = (3, 3 + method_len);
+                BODY = (3 + method_len, size);
+                CURRENT = fd;
+                CURRENT_KIND = message[0];
+                TURN = index + 1;
+                // The asker is told that its message is the one being answered.
+                if CURRENT_KIND == ASK && !write_full(fd, b"A") {
+                    drop_conn(index);
+                    return false;
+                }
+                return true;
+            }
+            false
+        }
+    }
+
+    /// What the message from another process asks: `Kind id method`.
+    #[unsafe(no_mangle)]
+    #[allow(static_mut_refs)]
+    pub unsafe extern "C" fn koo_actor_message() -> *mut Header {
+        unsafe { new_str(core::slice::from_raw_parts(MESSAGE.add(METHOD.0), METHOD.1 - METHOD.0)) }
+    }
+
+    /// What the message was sent with.
+    #[unsafe(no_mangle)]
+    #[allow(static_mut_refs)]
+    pub unsafe extern "C" fn koo_actor_body() -> *mut Header {
+        unsafe { new_str(core::slice::from_raw_parts(MESSAGE.add(BODY.0), BODY.1 - BODY.0)) }
+    }
+
+    /// Answers the message: `kind` is empty for a value, and names the error for one.
+    #[unsafe(no_mangle)]
+    pub unsafe extern "C" fn koo_actor_reply(kind: *const Header, body: *const Header) {
+        unsafe {
+            koo_flush();
+            if CURRENT < 0 || CURRENT_KIND != ASK {
+                return;
+            }
+            let (kind, body) = (bytes(kind), bytes(body));
+            let size = (2 + kind.len() + body.len()) as u32;
+            let mut head = [0u8; 6];
+            head[..4].copy_from_slice(&size.to_le_bytes());
+            head[4..].copy_from_slice(&(kind.len() as u16).to_le_bytes());
+            // An asker that is gone is not answered, and nothing else is the matter.
+            let _ = write_full(CURRENT, &head) && write_full(CURRENT, kind) && write_full(CURRENT, body);
+            CURRENT = -1;
+        }
+    }
+
+    /// Ends the connection of the message being answered without an answer: its asker
+    /// learns that the message panicked.
+    #[unsafe(no_mangle)]
+    #[allow(static_mut_refs)]
+    pub unsafe extern "C" fn koo_actor_hang_up() {
+        unsafe {
+            if let Some(index) = CONNS[..CONN_COUNT].iter().position(|conn| *conn == CURRENT) {
+                drop_conn(index);
+            }
+            CURRENT = -1;
+        }
+    }
+
+    /// This process's connection to another, made if there is none, or made again.
+    #[allow(static_mut_refs)]
+    unsafe fn connection(name: &[u8], again: bool) -> i32 {
+        unsafe {
+            // A connection is one process's: what a fork inherited is its parent's.
+            if HOMES_OF != getpid() {
+                for (_, fd) in &HOMES[..HOME_COUNT] {
+                    close(*fd);
+                }
+                HOME_COUNT = 0;
+                HOMES_OF = getpid();
+                signal(SIGPIPE, 1);
+            }
+            let known = HOMES[..HOME_COUNT].iter().position(|(known, _)| known.text() == name);
+            if let Some(index) = known {
+                if !again {
+                    return HOMES[index].1;
+                }
+                close(HOMES[index].1);
+                HOME_COUNT -= 1;
+                HOMES[index] = HOMES[HOME_COUNT];
+            }
+            let (address, len) = address(name);
+            let fd = socket(AF_UNIX, SOCK_STREAM, 0);
+            if fd < 0 || connect(fd, &address as *const Address as *const u8, len) != 0 {
+                if fd >= 0 {
+                    close(fd);
+                }
+                return -1;
+            }
+            if HOME_COUNT == MOST_HOMES {
+                close(HOMES[0].1);
+                HOME_COUNT -= 1;
+                HOMES[0] = HOMES[HOME_COUNT];
+            }
+            HOMES[HOME_COUNT] = (Name::of(name), fd);
+            HOME_COUNT += 1;
+            fd
+        }
+    }
+
+    /// Sends a message to another process. Returns the connection it went out on, or -1.
+    unsafe fn deliver(name: &[u8], kind: u8, method: &[u8], body: &[u8], again: bool) -> i32 {
+        unsafe {
+            let fd = connection(name, again);
+            if fd < 0 {
+                return -1;
+            }
+            let size = 1 + 2 + method.len() + body.len();
+            let mut head = [0u8; 7];
+            head[..4].copy_from_slice(&(size as u32).to_le_bytes());
+            head[4] = kind;
+            head[5..].copy_from_slice(&(method.len() as u16).to_le_bytes());
+            let sent = write_full(fd, &head) && write_full(fd, method) && write_full(fd, body);
+            if sent { fd } else { -1 }
+        }
+    }
+
+    /// Asks an actor of another process, and waits for the answer, which is returned;
+    /// its kind is kept for `koo_actor_kind`.
+    #[unsafe(no_mangle)]
+    #[allow(static_mut_refs)]
+    pub unsafe extern "C" fn koo_actor_ask(
+        home: *const Header,
+        method: *const Header,
+        body: *const Header,
+    ) -> *mut Header {
+        unsafe {
+            let (name, method, body) = (bytes(home), bytes(method), bytes(body));
+            let asked = method.rsplit(|b| *b == b' ').next().unwrap_or(method);
+            koo_flush();
+            gates();
+            TALKING.lock();
+            for attempt in 0..3 {
+                let fd = deliver(name, ASK, method, body, attempt > 0);
+                let mut taken = [0u8; 1];
+                // No word that the message was taken up: the process that has the actor
+                // is not there to take it.
+                if fd < 0 || !read_full(fd, &mut taken) {
+                    if attempt > 0 {
+                        let (wanted, mut left) = ([0i64, 20_000_000], [0i64; 2]);
+                        nanosleep(&wanted, &mut left);
+                    }
+                    continue;
+                }
+                let mut size = [0u8; 4];
+                let size_read = read_full(fd, &mut size);
+                let size = u32::from_le_bytes(size) as usize;
+                let answer = room(&raw mut ANSWER, &raw mut ANSWER_CAP, size);
+                if !size_read || size < 2 || !read_full(fd, answer) {
+                    TALKING.unlock();
+                    die(&[b"an actor panicked while it answered `", asked, b"`"]);
+                }
+                let kind_len = u16::from_le_bytes([answer[0], answer[1]]) as usize;
+                let kind = &answer[2..2 + kind_len.min(size - 2)];
+                let me = me();
+                me.answer_kind_len = kind.len().min(me.answer_kind.len());
+                me.answer_kind[..me.answer_kind_len].copy_from_slice(&kind[..me.answer_kind_len]);
+                let text = new_str(&answer[(2 + kind_len).min(size)..]);
+                TALKING.unlock();
+                return text;
+            }
+            TALKING.unlock();
+            die(&[
+                b"`",
+                asked,
+                b"` was asked of an actor whose process is gone (ActorStopped)",
+            ]);
+        }
+    }
+
+    /// The kind of the last answer: empty for a value, or the name of an error.
+    #[unsafe(no_mangle)]
+    #[allow(static_mut_refs)]
+    pub unsafe extern "C" fn koo_actor_kind() -> *mut Header {
+        unsafe {
+            let me = me();
+            new_str(&me.answer_kind[..me.answer_kind_len])
+        }
+    }
+
+    /// Tells an actor of another process, and goes on. A message for a process that is
+    /// gone is dropped.
+    #[unsafe(no_mangle)]
+    pub unsafe extern "C" fn koo_actor_send(home: *const Header, method: *const Header, body: *const Header) {
+        unsafe {
+            let (name, method, body) = (bytes(home), bytes(method), bytes(body));
+            koo_flush();
+            gates();
+            TALKING.lock();
+            let gone = deliver(name, SEND, method, body, false) < 0 && deliver(name, SEND, method, body, true) < 0;
+            TALKING.unlock();
+            if gone {
+                let mut out = Buffer::new();
+                out.push(b"koo: a message for an actor whose process is gone was dropped\n");
+                out.flush(2);
+            }
+        }
+    }
+
+    /// When `main` returns: the socket is closed, and what the runtime kept is given back.
+    #[allow(static_mut_refs)]
+    pub unsafe fn at_exit() {
+        unsafe {
+            if LISTENER >= 0 {
+                close(LISTENER);
+                LISTENER = -1;
+                if cfg!(target_os = "macos") && !HOME.load(Acquire).is_null() {
+                    let path = c_string(HOME.load(Acquire));
+                    unlink(path);
+                    free(path);
+                }
+            }
+            for conn in &CONNS[..CONN_COUNT] {
+                close(*conn);
+            }
+            CONN_COUNT = 0;
+            for (_, fd) in &HOMES[..HOME_COUNT] {
+                close(*fd);
+            }
+            HOME_COUNT = 0;
+            for (buffer, cap) in [
+                (&raw mut MESSAGE, &raw mut MESSAGE_CAP),
+                (&raw mut ANSWER, &raw mut ANSWER_CAP),
+            ] {
+                free(*buffer);
+                *buffer = core::ptr::null_mut();
+                *cap = 0;
+            }
+        }
+    }
+}

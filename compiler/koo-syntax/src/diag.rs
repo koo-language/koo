@@ -1,5 +1,8 @@
 //! Source positions and diagnostics.
 
+#[path = "render.rs"]
+mod render;
+
 /// A half-open range of byte offsets into one source file.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct Span {
@@ -33,12 +36,33 @@ impl Span {
     }
 }
 
-/// One error found while lexing or parsing.
+/// A change to the source that corrects a mistake, shown with the line as it would
+/// read afterwards.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Fix {
+    pub message: String,
+    /// Each edit replaces the text of a span with new text. An empty span inserts and
+    /// an empty text removes.
+    pub edits: Vec<(Span, String)>,
+}
+
+/// One error found while compiling.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Diagnostic {
+    /// Where the mistake is.
     pub span: Span,
+    /// What is wrong, in one line.
     pub message: String,
-    pub help: Option<String>,
+    /// What the marks under `span` say.
+    pub label: Option<String>,
+    /// Other places that explain the mistake, and what each one has to do with it.
+    pub related: Vec<(Span, String)>,
+    /// Facts that explain the mistake.
+    pub notes: Vec<String>,
+    /// Advice on correcting it.
+    pub help: Vec<String>,
+    /// The correction itself, when the compiler can write it.
+    pub fix: Option<Fix>,
 }
 
 impl Diagnostic {
@@ -46,45 +70,76 @@ impl Diagnostic {
         Diagnostic {
             span,
             message: message.into(),
-            help: None,
+            label: None,
+            related: Vec::new(),
+            notes: Vec::new(),
+            help: Vec::new(),
+            fix: None,
         }
     }
 
-    pub fn with_help(mut self, help: impl Into<String>) -> Diagnostic {
-        self.help = Some(help.into());
+    pub fn with_label(mut self, label: impl Into<String>) -> Diagnostic {
+        self.label = Some(label.into());
         self
     }
 
-    /// Renders the diagnostic in the format of Section 12.7 of the specification.
-    pub fn render(&self, path: &str, src: &str, index: &LineIndex) -> String {
-        // A span is always inside its source; one that is not must still not crash.
-        let start = self.span.start.min(src.len() as u32);
-        let (line, col) = index.line_col(src, start);
-        let text = index.line_text(src, line);
-        let gutter = line.to_string().len();
-        let pad = " ".repeat(gutter);
-        let before: String = text
-            .chars()
-            .take(col as usize - 1)
-            .map(|c| if c == '\t' { '\t' } else { ' ' })
-            .collect();
-        let line_end = index.line_start(line) + text.len() as u32;
-        let start = start.min(line_end);
-        let end = self.span.end.clamp(start, line_end);
-        let width = src
-            .get(start as usize..end as usize)
-            .map(|s| s.chars().count())
-            .unwrap_or(0)
-            .max(1);
-        let mut out = format!("error: {}\n", self.message);
-        out.push_str(&format!("{pad}--> {path}:{line}:{col}\n"));
-        out.push_str(&format!("{pad} |\n"));
-        out.push_str(&format!("{line} | {text}\n"));
-        out.push_str(&format!("{pad} | {before}{}\n", "^".repeat(width)));
-        if let Some(help) = &self.help {
-            out.push_str(&format!("{pad} |\n{pad} = help: {help}\n"));
+    pub fn with_related(mut self, span: Span, text: impl Into<String>) -> Diagnostic {
+        self.related.push((span, text.into()));
+        self
+    }
+
+    pub fn with_note(mut self, note: impl Into<String>) -> Diagnostic {
+        self.notes.push(note.into());
+        self
+    }
+
+    pub fn with_help(mut self, help: impl Into<String>) -> Diagnostic {
+        self.help.push(help.into());
+        self
+    }
+
+    /// A correction that replaces the text of `span` with `text`.
+    pub fn with_fix(mut self, message: impl Into<String>, span: Span, text: impl Into<String>) -> Diagnostic {
+        self.fix = Some(Fix {
+            message: message.into(),
+            edits: vec![(span, text.into())],
+        });
+        self
+    }
+
+    /// A correction made of several edits.
+    pub fn with_edits(mut self, message: impl Into<String>, edits: Vec<(Span, String)>) -> Diagnostic {
+        self.fix = Some(Fix {
+            message: message.into(),
+            edits,
+        });
+        self
+    }
+
+    /// The same diagnostic `base` bytes further on: every place it names moves.
+    pub fn shifted(mut self, base: u32) -> Diagnostic {
+        self.span = self.span.shifted(base);
+        for (span, _) in &mut self.related {
+            *span = span.shifted(base);
         }
-        out
+        if let Some(fix) = &mut self.fix {
+            for (span, _) in &mut fix.edits {
+                *span = span.shifted(base);
+            }
+        }
+        self
+    }
+
+    /// Renders the diagnostic in the format of Section 12.7 of the specification, for a
+    /// program of one file.
+    pub fn render(&self, path: &str, src: &str, index: &LineIndex) -> String {
+        let view = render::View {
+            name: path,
+            src,
+            index,
+            base: 0,
+        };
+        render::render(&[view], self, false)
     }
 }
 
@@ -203,12 +258,21 @@ impl SourceMap {
     }
 
     pub fn render(&self, diagnostic: &Diagnostic) -> String {
-        let file = &self.files[self.file_index(diagnostic.span.start)];
-        let mut local = diagnostic.clone();
-        local.span = Span {
-            start: diagnostic.span.start.saturating_sub(file.base),
-            end: diagnostic.span.end.saturating_sub(file.base),
-        };
-        local.render(&file.name, &file.src, &file.index)
+        self.render_with(diagnostic, false)
+    }
+
+    /// Renders a diagnostic, with the colors of a terminal if `color` is set.
+    pub fn render_with(&self, diagnostic: &Diagnostic, color: bool) -> String {
+        let views: Vec<render::View> = self
+            .files
+            .iter()
+            .map(|file| render::View {
+                name: &file.name,
+                src: &file.src,
+                index: &file.index,
+                base: file.base,
+            })
+            .collect();
+        render::render(&views, diagnostic, color)
     }
 }

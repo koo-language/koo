@@ -1,0 +1,7 @@
+// The smallest Koo program.
+//
+//     koo run examples/helloworld.koo
+
+fn main() {
+    print("Hello, world!")
+}

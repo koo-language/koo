@@ -1,0 +1,371 @@
+# Appendix B: The Standard Library
+
+This appendix is a summary of the library: the functions and methods that are available in every program, and those of the standard packages. Each is given with its types, in the notation of a function's first line, where `T` and `U` stand for any type. After each table is a program that calls everything in it.
+
+A method that is marked `var` changes the value it is called on, and can be called only on a variable.
+
+## B.1 Everywhere
+
+| | |
+| --- | --- |
+| `print(value: T)` | writes the text form of the value, and a newline, on the standard output |
+| `panic(message: string)` | writes the message on the standard error output and ends the program with status 101 |
+| `value.to_string() -> string` | the text form of a value of any type |
+
+## B.2 Numbers
+
+| `int` | |
+| --- | --- |
+| `int.parse(s: string) -> int ! ParseError` | the integer that the text is, in decimal, with an optional sign |
+| `int.from(b: byte) -> int` | the value of a byte |
+| `n.abs() -> int` | the absolute value |
+| `n.pow(exponent: int) -> int` | `n` raised to a power that is not negative |
+| `n.min(other: int) -> int`, `n.max(other: int) -> int` | the smaller, the larger |
+| `n.clamp(low: int, high: int) -> int` | `n`, or the bound it is beyond |
+| `n.compare(other: int) -> int` | negative, zero or positive, as `n` is less than, equal to or greater than the other |
+| `n.wrapping_add(m: int) -> int`, `wrapping_sub`, `wrapping_mul` | arithmetic that wraps around where the operators would panic |
+| `n.bit_and(m: int) -> int`, `bit_or`, `bit_xor` | bitwise operations |
+| `n.shl(count: int) -> int`, `n.shr(count: int) -> int` | shifts; the right shift copies the sign bit |
+| `n.hash() -> int` | a hash value |
+
+| `float` | |
+| --- | --- |
+| `float.parse(s: string) -> float ! ParseError` | the number that the text is |
+| `float.from(n: int) -> float` | the nearest `float` to an integer |
+| `x.abs() -> float`, `x.sqrt() -> float` | the absolute value, the square root |
+| `x.min(other: float) -> float`, `x.max`, `x.clamp(low, high)` | as for `int` |
+| `x.compare(other: float) -> int` | as for `int` |
+| `x.round() -> int ! Overflow` | the nearest integer; halves go away from zero |
+| `x.floor() -> int ! Overflow`, `x.ceil()`, `x.trunc()` | the integer below, above, toward zero |
+
+| `byte` | |
+| --- | --- |
+| `byte.from(n: int) -> byte ! Overflow` | the byte with a value from 0 to 255 |
+
+```koo
+fn main() {
+    print("{int.parse("-42") else 0} {int.from(byte.from(65) else 0)}")
+    print("{(-7).abs()} {2.pow(8)} {3.min(5)} {3.max(5)} {12.clamp(0, 10)} {3.compare(5)}")
+    big := 9223372036854775807
+    print("{big.wrapping_add(1)} {0.wrapping_sub(1)} {big.wrapping_mul(2)}")
+    print("{12.bit_and(10)} {12.bit_or(10)} {12.bit_xor(10)} {1.shl(4)} {(-32).shr(2)}")
+    print(7.hash() == 7.hash())
+
+    print("{float.parse("2.5") else 0.0} {float.from(3)}")
+    print("{(-2.5).abs()} {16.0.sqrt()} {1.5.min(2.5)} {1.5.max(2.5)} {7.5.clamp(0.0, 1.0)} {2.5.compare(1.5)}")
+    print("{2.5.round() else 0} {(-2.5).round() else 0} {2.7.floor() else 0} {2.2.ceil() else 0} {(-2.7).trunc() else 0}")
+    print(1e30.round() else -1)
+}
+```
+
+```text
+-42 65
+7 256 3 5 10 -1
+-9223372036854775808 -1 -2
+8 14 6 16 -8
+true
+2.5 3.0
+2.5 4.0 1.5 2.5 1.0 1
+3 -3 2 3 -2
+-1
+```
+
+## B.3 Optionals
+
+| `T?` | |
+| --- | --- |
+| `o.is_some() -> bool`, `o.is_none() -> bool` | whether there is a value |
+| `o.map(f: fn(T) -> U) -> U?` | `f` of the value, if there is one |
+
+The operator `else`, the binding condition and `match` are the other ways to use an optional (Section 5.11).
+
+## B.4 Lists
+
+| `[T]` | |
+| --- | --- |
+| `List<T>.with_size(n: int) -> [T]` | `n` zeros, or `false`; `T` is `int`, `float`, `bool` or `byte` |
+| `List<T>.with_capacity(n: int) -> [T]` | an empty list with room for `n` elements |
+| `v.len` | the number of elements |
+| `v.is_empty() -> bool` | whether there are none |
+| `v.get(i: int) -> T?` | element `i`, or `none` |
+| `v.first() -> T?`, `v.last() -> T?` | the first and the last element |
+| `v.contains(x: T) -> bool` | whether an element is equal to `x` |
+| `v.index_of(x: T) -> int?` | the position of the first element equal to `x` |
+| `v.slice(from: int, to: int) -> [T]` | the elements from `from` up to but not including `to` |
+| `v.take(n: int) -> [T]`, `v.skip(n: int) -> [T]` | the first `n` elements, and the rest |
+| `v.reversed() -> [T]` | the elements in the opposite order |
+| `v.sorted() -> [T]` | the elements in increasing order |
+| `v.sorted_by(less: fn(T, T) -> bool) -> [T]` | the elements in the order that `less` gives; stable |
+| `v.enumerate() -> [(int, T)]` | each element with its position |
+| `v.zip(other: [U]) -> [(T, U)]` | pairs of corresponding elements |
+| `v.join(separator: string) -> string` | the text forms of the elements, with the separator between |
+| `v.sum() -> T` | the sum of the elements, zero if there are none |
+| `v.min() -> T?`, `v.max() -> T?` | the smallest and the largest element |
+| `v.map(f: fn(T) -> U) -> [U]` | `f` of each element |
+| `v.filter(keep: fn(T) -> bool) -> [T]` | the elements for which `keep` is true |
+| `v.fold(start: U, f: fn(U, T) -> U) -> U` | the elements combined, from `start` |
+| `v.each(f: fn(T))` | calls `f` with each element |
+| `v.any(test: fn(T) -> bool) -> bool`, `v.all(test)` | whether `test` is true of some element, of every element |
+| `v.count(test: fn(T) -> bool) -> int` | how many elements `test` is true of |
+| `v.find(test: fn(T) -> bool) -> T?` | the first element `test` is true of |
+| `v.position(test: fn(T) -> bool) -> int?` | its position |
+| `var` `v.push(x: T)` | adds an element at the end |
+| `var` `v.pop() -> T?` | removes the last element and returns it |
+| `var` `v.insert(i: int, x: T)` | puts `x` at position `i`, moving the rest up |
+| `var` `v.remove(i: int) -> T` | removes element `i` and returns it |
+| `var` `v.extend(other: [T])` | adds the elements of another list at the end |
+| `var` `v.swap(i: int, j: int)` | exchanges two elements |
+| `var` `v.reverse()` | reverses the list in place |
+| `var` `v.sort()` | sorts the list in place |
+| `var` `v.sort_by(less: fn(T, T) -> bool)` | sorts the list in place, by `less`; stable |
+| `var` `v.clear()` | removes every element |
+
+`contains` and `index_of` need a type with `==`; `sorted`, `sort`, `min` and `max` a type that is ordered; `sum` a list of `int` or `float`.
+
+```koo
+fn main() {
+    var v := [5, 3, 8]
+    print("{v.len} {v.is_empty()} {v.get(1)} {v.get(9)} {v.first()} {v.last()}")
+    print("{v.contains(8)} {v.index_of(8)} {v.slice(1, 3)} {v.take(2)} {v.skip(2)}")
+    print("{v.reversed()} {v.sorted()} {v.sorted_by((a, b) -> a > b)}")
+    print("{v.enumerate()} {v.zip(["a", "b"])} {v.join("+")}")
+    print("{v.sum()} {v.min()} {v.max()}")
+    print("{v.map(n -> n * 2)} {v.filter(n -> n > 4)} {v.fold(0, (a, n) -> a + n)}")
+    print("{v.any(n -> n > 7)} {v.all(n -> n > 7)} {v.count(n -> n > 4)} {v.find(n -> n > 5)} {v.position(n -> n > 5)}")
+
+    v.push(1)
+    print(v.pop())
+    v.insert(0, 9)
+    print(v.remove(1))
+    v.extend([4, 4])
+    v.swap(0, 1)
+    print(v)
+    v.reverse()
+    print(v)
+    v.sort()
+    print(v)
+    v.sort_by((a, b) -> a > b)
+    print(v)
+    v.each(n -> print(n))
+    v.clear()
+    print(v)
+    print("{List<float>.with_size(2)} {List<string>.with_capacity(8).len}")
+}
+```
+
+```text
+3 false 3 none 5 8
+true 2 [3, 8] [5, 3] [8]
+[8, 3, 5] [3, 5, 8] [8, 5, 3]
+[(0, 5), (1, 3), (2, 8)] [(5, "a"), (3, "b")] 5+3+8
+16 3 8
+[10, 6, 16] [5, 8] 16
+true false 2 8 2
+1
+5
+[3, 9, 8, 4, 4]
+[4, 4, 8, 9, 3]
+[3, 4, 4, 8, 9]
+[9, 8, 4, 4, 3]
+9
+8
+4
+4
+3
+[]
+[0.0, 0.0] 0
+```
+
+## B.5 Strings
+
+Positions in a string are counted in bytes.
+
+| `string` | |
+| --- | --- |
+| `string.from_bytes(bytes: [byte]) -> string ! ParseError` | the string with these bytes, if they are valid UTF-8 |
+| `s.len` | the number of bytes |
+| `s.count() -> int` | the number of characters |
+| `s.is_empty() -> bool` | whether there are none |
+| `s.bytes() -> [byte]` | the bytes |
+| `s.chars() -> [string]` | the characters, each as a string |
+| `s.contains(needle: string) -> bool` | whether `needle` occurs in `s` |
+| `s.find(needle: string) -> int?` | the position of its first occurrence |
+| `s.starts_with(prefix: string) -> bool`, `s.ends_with(suffix: string) -> bool` | whether `s` begins or ends so |
+| `s.strip_prefix(prefix: string) -> string?`, `s.strip_suffix(suffix: string) -> string?` | `s` without the beginning or end, if it has it |
+| `s.slice(from: int, to: int) -> string` | the bytes from `from` up to but not including `to` |
+| `s.cut(separator: string) -> (string, string)?` | the parts before and after the first occurrence of the separator |
+| `s.split(separator: string) -> [string]` | the parts between occurrences of the separator |
+| `s.lines() -> [string]` | the lines |
+| `s.trim() -> string` | `s` without white space at either end |
+| `s.to_upper() -> string`, `s.to_lower() -> string` | `s` in upper or lower case |
+| `s.replace(from: string, to: string) -> string` | `s` with every occurrence of `from` replaced |
+| `s.repeat(times: int) -> string` | `s` so many times over |
+| `s.compare(other: string) -> int` | negative, zero or positive, by the order of `<` |
+| `s.hash() -> int` | a hash value |
+
+```koo
+fn main() {
+    s := "  Hello, Wörld  "
+    t := s.trim()
+    print("{string.from_bytes("hi".bytes()) else "?"} {t.len} {t.count()} {t.is_empty()}")
+    print("{"hi".bytes()} {"wö".chars()}")
+    print("{t.contains("lo")} {t.find("W")} {t.starts_with("Hell")} {t.ends_with("x")}")
+    print("{t.strip_prefix("Hello, ")} {t.strip_suffix("?")} {t.slice(0, 5)}")
+    print("{t.cut(", ")} {"a b c".split(" ")} {"one\ntwo".lines()}")
+    print("{t.to_upper()} {t.to_lower()} {t.replace("l", "L")} {"ab".repeat(3)}")
+    print("{"a".compare("b")} {"a".hash() == "a".hash()}")
+}
+```
+
+```text
+hi 13 12 false
+[104, 105] ["w", "ö"]
+true 7 true false
+Wörld none Hello
+("Hello", "Wörld") ["a", "b", "c"] ["one", "two"]
+HELLO, WÖRLD hello, wörld HeLLo, WörLd ababab
+-1 true
+```
+
+## B.6 Maps
+
+| `[K: V]` | |
+| --- | --- |
+| `m[key]` | the value for a key, as a `V?` |
+| `m[key] = value` | adds or replaces an entry |
+| `m.len` | the number of entries |
+| `m.is_empty() -> bool` | whether there are none |
+| `m.get(key: K) -> V?` | the same as `m[key]` |
+| `m.contains(key: K) -> bool` | whether there is an entry for the key |
+| `m.keys() -> [K]`, `m.values() -> [V]`, `m.entries() -> [(K, V)]` | the keys, the values, and both, in the order the keys were added |
+| `var` `m.insert(key: K, value: V)` | the same as `m[key] = value` |
+| `var` `m.remove(key: K) -> V?` | removes an entry, and returns its value if there was one |
+| `var` `m.update(key: K, start: V, f: fn(V) -> V)` | replaces the value `v` for the key by `f(v)`, or sets it to `f(start)` if there is no entry |
+
+```koo
+fn main() {
+    var m := ["one": 1, "two": 2]
+    m["three"] = 3
+    m.insert("four", 4)
+    print("{m["one"]} {m["nine"]} {m.len} {m.is_empty()} {m.get("two")} {m.contains("two")}")
+    print("{m.remove("one")} {m.remove("one")}")
+    m.update("two", 0, n -> n * 10)
+    m.update("five", 0, n -> n + 5)
+    print("{m.keys()} {m.values()}")
+    print(m.entries())
+}
+```
+
+```text
+1 none 4 false 2 true
+1 none
+["two", "three", "four", "five"] [20, 3, 4, 5]
+[("two", 20), ("three", 3), ("four", 4), ("five", 5)]
+```
+
+## B.7 Sets
+
+| `Set<T>` | |
+| --- | --- |
+| `Set<T>.new() -> Set<T>` | an empty set |
+| `Set<T>.from_list(items: [T]) -> Set<T>` | the set of the elements of a list |
+| `s.len` | the number of members |
+| `s.is_empty() -> bool` | whether there are none |
+| `s.contains(item: T) -> bool` | whether the value is a member |
+| `s.items() -> [T]` | the members, in the order they were added |
+| `var` `s.insert(item: T) -> bool` | adds a member; `true` if it was not one already |
+| `var` `s.remove(item: T) -> bool` | removes a member; `true` if it was one |
+
+```koo
+fn main() {
+    var s := Set<int>.from_list([3, 1, 3])
+    print("{s.len} {s.is_empty()} {s.contains(1)} {s.items()}")
+    print("{s.insert(2)} {s.insert(2)} {s.remove(3)} {s.remove(3)}")
+    print("{s} {Set<string>.new().len}")
+}
+```
+
+```text
+2 false true [3, 1]
+true false true false
+Set[1, 2] 0
+```
+
+## B.8 JSON
+
+| | |
+| --- | --- |
+| `value.to_json() -> string` | the value as JSON; for `int`, `float`, `bool`, `string`, lists, optionals, maps with string keys, and the structures and enumerations made of them |
+| `Type.from_json(text: string) -> Type ! JsonError` | the value that the text is; for structures, enumerations and `int` |
+
+`JsonError` has the fields `message: string` and `path: string`. Section 8.7 gives the correspondence between types and JSON.
+
+## B.9 `std/io`
+
+| | |
+| --- | --- |
+| `io.read_line() -> string?` | the next line of the standard input, without its newline; `none` at the end |
+| `io.read_lines() -> [string]` | the rest of the lines of the standard input |
+| `io.write(text: string)` | writes text on the standard output, with no newline |
+| `io.eprint(text: string)` | writes text and a newline on the standard error output |
+| `io.read_file(path: string) -> string ! IoError` | the contents of a file |
+| `io.write_file(path: string, text: string) ! IoError` | makes or replaces a file |
+
+`IoError` has the field `message: string`.
+
+## B.10 `std/os`
+
+| | |
+| --- | --- |
+| `os.args() -> [string]` | the arguments of the program |
+| `os.env(name: string) -> string?` | the value of an environment variable |
+| `os.exit(status: int)` | ends the program with a status |
+
+## B.11 `std/http`
+
+| | |
+| --- | --- |
+| `http.App.new() -> http.App` | a server with no routes |
+| `var` `app.get(path: string, handler)`, `post`, `put`, `patch`, `delete`, `any` | adds a route for a method, or for all |
+| `var` `app.route(method: string, path: string, handler)` | adds a route for a method given by name |
+| `var` `app.files(path: string, directory: string)` | serves the files of a directory under a path |
+| `app.serve(port: int = 8080, workers: int = 0, max_body: int = 1048576, log: bool = false) ! http.Error` | answers requests until the program is told to stop |
+
+A handler is a `fn(http.Request) -> http.Response ! Failure`.
+
+| `http.Request` | |
+| --- | --- |
+| `req.method`, `req.path` | fields: the method and the path, as strings |
+| `req.param(name: string) -> string` | what `:name` in the route matched |
+| `req.rest() -> string?` | what `*` at the end of the route matched |
+| `req.query(name: string) -> string?` | a parameter of the query |
+| `req.header(name: string) -> string?` | a header |
+| `req.cookie(name: string) -> string?` | a cookie |
+| `req.body() -> string` | the body |
+| `req.form(name: string) -> string?` | a field of a form |
+| `req.json() -> T ! JsonError` | the body, as the type that the context expects |
+
+| `http.Response` | |
+| --- | --- |
+| `http.text(body: string, status: int = 200)` | plain text |
+| `http.html(body: string, status: int = 200)` | HTML |
+| `http.json(value: T, status: int = 200)` | a value as JSON |
+| `http.send(body: string, content_type: string, status: int = 200)` | a body of a given type |
+| `http.status(status: int, message: string = "")` | a status, with a message as the body |
+| `http.redirect(to: string, status: int = 302)` | a redirection |
+| `http.file(path: string, status: int = 200)` | a file |
+| `response.header(name: string, value: string) -> http.Response` | the response with a header added |
+| `response.cookie(name: string, value: string, max_age: int = -1) -> http.Response` | the response with a cookie set |
+| `response.with_status(status: int) -> http.Response` | the response with another status |
+
+`http.Error` has the field `message: string`. Chapter 10 has programs that use these.
+
+## B.12 `std/test`
+
+| | |
+| --- | --- |
+| `test.assert(ok: bool)` | panics if the condition is false |
+| `test.assert_eq(left: T, right: T)` | panics, showing both values, if they are not equal |
+| `test.fail(message: string)` | panics with a message |
+
+Appendix C describes how tests are written and run.

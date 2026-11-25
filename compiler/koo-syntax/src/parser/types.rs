@@ -103,6 +103,15 @@ impl Parser {
                 );
                 return Err(());
             }
+            Tok::Kw(Kw::Enum) => {
+                let span = self.span();
+                self.diag(
+                    Diagnostic::new(span, "expected a type, found `enum`")
+                        .with_note("an enum is a declaration of its own, not a type written after `type Name =`")
+                        .with_help("write `enum Color { Red, Green, Blue }`; a variant may have fields: `Circle { radius: float }` (Section 4.7)"),
+                );
+                return Err(());
+            }
             _ => return self.expected("a type"),
         };
         while self.at(&Tok::Question) {
@@ -167,11 +176,29 @@ impl Parser {
                     });
                 }
                 if !self.at(&Tok::Dot) {
-                    self.report_help(
-                        first.span,
-                        format!("expected a type, found `{}`", first.name),
-                        "a type name is capitalized, or is a primitive type such as `int` or `string` (Section 3.1)",
-                    );
+                    let mut diagnostic =
+                        Diagnostic::new(first.span, format!("expected a type, found `{}`", first.name));
+                    diagnostic = match (first.name.as_str(), super::habits::koo_type(&first.name)) {
+                        (_, Some(koo)) => diagnostic
+                            .with_note("the number types are `int` (64 bits), `float` (64 bits) and `byte`; text is `string`")
+                            .with_fix(format!("in Koo that is `{koo}`"), first.span, koo),
+                        ("void" | "unit" | "nil" | "none" | "null", _) => diagnostic
+                            .with_help("a function that returns nothing declares no return type: leave out the `->` and the type"),
+                        ("list" | "array" | "vec" | "slice", _) => diagnostic.with_help("a list of `T` is written `[T]`"),
+                        ("map" | "dict" | "hash" | "hashmap", _) => {
+                            diagnostic.with_help("a map from `K` to `V` is written `[K: V]`")
+                        }
+                        ("struct" | "class" | "record", _) => diagnostic
+                            .with_help("a type with fields is written with braces alone: `type Point = { x: int, y: int }`"),
+                        ("any" | "object" | "dynamic" | "auto" | "var", _) => diagnostic
+                            .with_help("Koo has no type that holds anything: name the type, or use a type parameter, `fn first<T>(items: [T]) -> T?`"),
+                        ("char" | "rune", _) => diagnostic
+                            .with_help("a string is made of bytes and read as characters: `s.chars()` gives each as a `string`"),
+                        _ => diagnostic.with_help(
+                            "a type name is capitalized, or is a primitive type such as `int` or `string` (Section 3.1)",
+                        ),
+                    };
+                    self.diag(diagnostic);
                     return Err(());
                 }
                 // A package prefix. After it the name is usually capitalized, but a name

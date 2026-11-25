@@ -82,6 +82,51 @@ impl<'a> Checker<'a> {
     }
 
     pub(super) fn call(&mut self, callee: &ast::Expr, args: &[ast::Arg], span: Span, expected: Option<&Ty>) -> Expr {
+        // `Point(1, 2)`: a struct made the way another language calls a constructor.
+        if let ast::ExprKind::Name(name) = &callee.kind
+            && name.is_upper()
+            && let Some(fields) = match self.type_names.get(&name.name) {
+                Some(TypeName::Struct(id)) => Some(&self.program.structs[*id].fields),
+                Some(TypeName::Error(id)) => Some(&self.program.errors[*id].fields),
+                _ => None,
+            }
+            && !fields.is_empty()
+        {
+            let names: Vec<String> = fields.iter().map(|field| field.name.clone()).collect();
+            self.error(callee.span, format!("`{}` is a type, not a function", name.name));
+            self.note("a value of a type is made by naming its fields");
+            if names.len() == args.len() && args.iter().all(|arg| arg.name.is_none() && !arg.var) {
+                // `(` becomes ` { x: `, each further argument gets its field, `)` becomes ` }`.
+                let mut edits = Vec::new();
+                let mut from = callee.span.end;
+                for (arg, field) in args.iter().zip(&names) {
+                    let lead = if from == callee.span.end { " { " } else { ", " };
+                    edits.push((
+                        Span {
+                            start: from,
+                            end: arg.value.span.start,
+                        },
+                        format!("{lead}{field}: "),
+                    ));
+                    from = arg.value.span.end;
+                }
+                edits.push((
+                    Span {
+                        start: from,
+                        end: span.end,
+                    },
+                    " }".to_string(),
+                ));
+                self.fix_edits("name the fields", edits);
+            } else {
+                let fields: Vec<String> = names.iter().map(|field| format!("{field}: ...")).collect();
+                self.help(format!("write `{} {{ {} }}`", name.name, fields.join(", ")));
+            }
+            for arg in args {
+                self.expr(&arg.value, None);
+            }
+            return self.unknown(span);
+        }
         match &callee.kind {
             ast::ExprKind::Name(name) if !name.is_upper() => {
                 if self.resolve_local(&name.name).is_some() {
@@ -92,20 +137,33 @@ impl<'a> Checker<'a> {
                     self.lent_fn_ok = false;
                     return self.call_value(function, args, span);
                 }
+                if let Some(call) = self.own_method_call(name, args, span) {
+                    return call;
+                }
                 if self.body_in_prelude
                     && let Some(intrinsic) = name.name.strip_prefix("__").and_then(crate::intrinsics::find)
                 {
                     // The prelude calling the support library.
+                    use crate::intrinsics::I;
                     let mut values = Vec::new();
                     for (arg, param) in args.iter().zip(intrinsic.params) {
-                        values.push(self.expr_as(&arg.value, &param.ty()));
+                        // What the library keeps without knowing its type is of whatever
+                        // type it is given as, and comes back as the type expected of it.
+                        values.push(match param {
+                            I::Cell | I::Given => self.expr(&arg.value, None),
+                            _ => self.expr_as(&arg.value, &param.ty()),
+                        });
                     }
+                    let ty = match intrinsic.ret {
+                        I::Cell => expected.cloned().unwrap_or(Ty::Unknown),
+                        ret => ret.ty(),
+                    };
                     return self.mk_call(
                         ExprKind::Intrinsic {
                             name: intrinsic.name,
                             args: values,
                         },
-                        intrinsic.ret.ty(),
+                        ty,
                         span,
                     );
                 }
@@ -178,6 +236,22 @@ impl<'a> Checker<'a> {
                 }
             }
             ast::ExprKind::Field { base, name } => {
+                // `http.App.new()`: a function of a type of a standard package.
+                if let ast::ExprKind::Field {
+                    base: package,
+                    name: type_name,
+                } = &base.kind
+                    && let ast::ExprKind::Name(package) = &package.kind
+                    && type_name.is_upper()
+                    && self.resolve_local(&package.name).is_none()
+                    && let Some(full) = self.package_type(&[package.clone(), type_name.clone()])
+                {
+                    let type_name = ast::Ident {
+                        name: full,
+                        span: type_name.span,
+                    };
+                    return self.type_level_call(&type_name, name, args, span, expected);
+                }
                 // `os.env(...)`: a function of an imported standard package.
                 if let ast::ExprKind::Name(module) = &base.kind
                     && !self.body_in_prelude
@@ -240,6 +314,7 @@ impl<'a> Checker<'a> {
                     function.span,
                     format!("`{found}` is not a function and cannot be called"),
                 );
+                self.label(format!("this is {}", super::a(&found)));
             }
             for arg in args {
                 self.expr(&arg.value, None);
@@ -256,6 +331,8 @@ impl<'a> Checker<'a> {
                     args.len()
                 ),
             );
+            let found = self.ty_name(&function.ty);
+            self.related(Some(function.span), format!("this is {}", super::a(&found)));
             for arg in args {
                 self.expr(&arg.value, None);
             }
@@ -626,6 +703,21 @@ impl<'a> Checker<'a> {
         {
             return self.user_call(id, Some(receiver), args, span);
         }
+        // `route.handler(request)`: a field that holds a function is called as it is named.
+        let fields = match &receiver.ty {
+            Ty::Struct(id) => Some(&self.program.structs[*id].fields),
+            Ty::Error(id) => Some(&self.program.errors[*id].fields),
+            _ => None,
+        };
+        if let Some(fields) = fields
+            && let Some(index) = fields.iter().position(|field| field.name == name.name)
+            && matches!(fields[index].ty, Ty::Fn(_))
+            && (self.body_in_prelude || !self.is_prelude_type(&receiver.ty))
+        {
+            let ty = fields[index].ty.clone();
+            let function = self.mk(ExprKind::Field(Box::new(receiver), index), ty, name.span);
+            return self.call_value(function, args, span);
+        }
         // Integers that are equal are the same, so their sort need not be stable, and the
         // support library has one made for them. Every other list is sorted by the
         // prelude's `sort`.
@@ -768,18 +860,68 @@ impl<'a> Checker<'a> {
             }
             (ty, _) => {
                 let found = self.ty_name(&ty);
-                let help = match &ty {
-                    Ty::Optional(_) => Some("the value may be absent: unwrap it first with `?`, `else` or `match`"),
-                    Ty::Result(..) => Some("the value may be an error: handle it first with `?`, `else` or `match`"),
-                    _ => None,
-                };
                 let message = format!("`{found}` has no method `{method}`");
-                match help {
-                    Some(help) => self.error_help(name.span, message, help),
-                    None => {
-                        let (known, habit) = (self.method_names(&ty), self.method_habit(&ty, method));
-                        self.error_near(name.span, message, method, known, habit);
+                match &ty {
+                    Ty::Optional(inner) => {
+                        let inner = self.ty_name(inner);
+                        self.error(name.span, message);
+                        self.related(
+                            Some(receiver.span),
+                            format!("this is {}: it may be `none`", super::a(&found)),
+                        );
+                        self.help(format!(
+                            "`{method}` is called on the `{inner}` inside: give a value to use when there is none, `(x else fallback).{method}(...)`, or call it only when the value is there, `if value := x {{ ... }}` (Section 4.8)"
+                        ));
                     }
+                    Ty::Result(inner, _) => {
+                        let inner = self.ty_name(inner);
+                        self.error(name.span, message);
+                        self.related(
+                            Some(receiver.span),
+                            format!("this is {}: it may be an error", super::a(&found)),
+                        );
+                        self.help(format!(
+                            "`{method}` is called on the `{inner}` inside: `x?.{method}(...)` passes the error on to the caller, and `(x else fallback).{method}(...)` gives a value in its place (Section 6.4)"
+                        ));
+                    }
+                    // `xs.length()`: the number of elements, which is a field.
+                    Ty::List(_) | Ty::Str
+                        if matches!(method, "length" | "size" | "count" | "len") && args.is_empty() =>
+                    {
+                        self.error(name.span, message);
+                        self.note("the number of elements is a field, not a method");
+                        let call = Span {
+                            start: name.span.start,
+                            end: span.end,
+                        };
+                        self.fix("write `.len`", call, "len");
+                    }
+                    // `handle.send.method(...)` for a method that has something to say back.
+                    Ty::Struct(id)
+                        if self.program.structs[*id]
+                            .name
+                            .strip_prefix("Actor")
+                            .and_then(|rest| rest.strip_suffix("Send"))
+                            .is_some_and(|actor| {
+                                self.free_fns
+                                    .contains_key(&crate::derive::method_function(actor, method))
+                            }) =>
+                    {
+                        self.error(name.span, format!("`{method}` cannot be sent and forgotten"));
+                        self.label("it returns a value, or may fail");
+                        self.note("`send` is for a method that returns nothing and cannot fail, so that nothing is thrown away (Section 7.3)");
+                        self.help(format!("ask, and wait for the answer: `handle.{method}(...)`"));
+                    }
+                    _ => match self.method_rename(&ty, method) {
+                        Some(koo) => {
+                            self.error(name.span, message);
+                            self.fix(format!("in Koo that is `.{koo}`"), name.span, koo);
+                        }
+                        None => {
+                            let (known, habit) = (self.method_names(&ty), self.method_habit(&ty, method));
+                            self.error_near(name.span, message, method, known, habit);
+                        }
+                    },
                 }
                 for arg in args {
                     self.expr(&arg.value, None);
@@ -789,16 +931,21 @@ impl<'a> Checker<'a> {
         }
     }
 
-    /// Pairs the arguments of a call with the parameters, by position and by name.
+    /// Pairs the arguments of a call with the parameters, by position and by name. The
+    /// second result is whether every argument found a parameter: if not, that is
+    /// reported, and what the call is missing is not worth saying as well. `at` is where
+    /// the function is declared, if the program declares it.
     fn match_args<'e>(
         &mut self,
         function: &str,
         names: &[String],
         args: &'e [ast::Arg],
-        span: Span,
-    ) -> Vec<Option<&'e ast::Arg>> {
+        at: Option<Span>,
+    ) -> (Vec<Option<&'e ast::Arg>>, bool) {
         let mut slots: Vec<Option<&ast::Arg>> = vec![None; names.len()];
         let mut positional = 0;
+        let mut paired = true;
+        let mut extra: Option<Span> = None;
         for arg in args {
             let index = match &arg.name {
                 None => {
@@ -808,36 +955,48 @@ impl<'a> Checker<'a> {
                 Some(name) => match names.iter().position(|p| *p == name.name) {
                     Some(index) => index,
                     None => {
-                        self.error(name.span, format!("`{function}` has no parameter `{}`", name.name));
+                        let message = format!("`{function}` has no parameter `{}`", name.name);
+                        self.error_near(name.span, message, &name.name, names.to_vec(), None);
+                        self.related(at, format!("`{function}` is declared here"));
                         self.expr(&arg.value, None);
+                        paired = false;
                         continue;
                     }
                 },
             };
             if index >= slots.len() {
                 self.expr(&arg.value, None);
+                extra = Some(extra.map_or(arg.value.span, |first| first.to(arg.value.span)));
                 continue;
             }
-            if slots[index].is_some() {
+            if let Some(first) = slots[index] {
                 self.error(
                     arg.value.span,
                     format!("the parameter `{}` is given twice", names[index]),
                 );
+                self.label("given again here");
+                self.related(Some(first.value.span), "first given here");
+                paired = false;
                 continue;
             }
             slots[index] = Some(arg);
         }
-        if positional > names.len() {
-            self.error(
-                span,
-                format!(
-                    "`{function}` takes {} argument{}, found {positional}",
-                    names.len(),
-                    if names.len() == 1 { "" } else { "s" }
-                ),
-            );
+        if let Some(extra) = extra {
+            let takes = match names.len() {
+                0 => "no arguments".to_string(),
+                1 => "1 argument".to_string(),
+                n => format!("{n} arguments"),
+            };
+            self.error(extra, format!("`{function}` takes {takes}, found {positional}"));
+            self.label(if positional - names.len() == 1 {
+                "this argument is one too many"
+            } else {
+                "these arguments are too many"
+            });
+            self.related(at, format!("`{function}` is declared here"));
+            paired = false;
         }
-        slots
+        (slots, paired)
     }
 
     /// A call of a function declared in the program. `receiver` is the value a method is
@@ -845,9 +1004,10 @@ impl<'a> Checker<'a> {
     pub(super) fn user_call(&mut self, id: FnId, receiver: Option<Expr>, args: &[ast::Arg], span: Span) -> Expr {
         let names: Vec<String> = self.sigs[id].params.iter().map(|p| p.name.clone()).collect();
         let function = self.sigs[id].name.clone();
-        let slots = self.match_args(&function, &names, args, span);
+        let at = self.sigs[id].at.map(|at| at.name);
+        let (slots, paired) = self.match_args(&function, &names, args, at);
         let checked = vec![None; slots.len()];
-        self.finish_call(id, receiver, slots, checked, span)
+        self.finish_call(id, receiver, slots, checked, paired, span)
     }
 
     /// Completes a call once its arguments are paired with parameters. An argument that
@@ -858,6 +1018,7 @@ impl<'a> Checker<'a> {
         receiver: Option<Expr>,
         slots: Vec<Option<&ast::Arg>>,
         mut checked: Vec<Option<Expr>>,
+        paired: bool,
         span: Span,
     ) -> Expr {
         let sig = self.sigs[id].clone();
@@ -878,6 +1039,7 @@ impl<'a> Checker<'a> {
             });
         }
         let mut missing = Vec::new();
+        let mut missing_at: Option<Span> = None;
         for (index, (param, slot)) in sig.params.iter().zip(slots).enumerate() {
             let Some(arg) = slot else {
                 // A function of the standard library that reports where it was called
@@ -915,6 +1077,7 @@ impl<'a> Checker<'a> {
                     continue;
                 }
                 missing.push(format!("`{}`", param.name));
+                missing_at = missing_at.or(param.at);
                 continue;
             };
             let done = checked[index].take();
@@ -923,29 +1086,44 @@ impl<'a> Checker<'a> {
                     Some(value) => value,
                     None => self.expr(&arg.value, Some(&param.ty)),
                 };
+                let declared = format!("the parameter `{}` is declared here", param.name);
                 if !arg.var {
-                    self.error_help(
+                    self.error(
                         arg.value.span,
                         format!("`{}` changes this argument, so it is passed with `var`", sig.name),
-                        "write `var` before the argument, so that the change is visible at the call (Section 5.3)",
                     );
+                    self.related(param.at, format!("the parameter `{}` is `var`", param.name));
+                    self.note("`var` at the call shows the reader that the argument may change (Section 5.3)");
+                    let before = Span {
+                        start: arg.value.span.start,
+                        end: arg.value.span.start,
+                    };
+                    self.fix("write `var` before the argument", before, "var ");
                 } else if !value.ty.is_unknown() {
                     self.require_mutable_place(&value, "pass as `var`");
                 }
                 if value.ty != param.ty && !value.ty.is_unknown() && !param.ty.is_unknown() {
                     let (want, found) = (self.ty_name(&param.ty), self.ty_name(&value.ty));
                     self.error(arg.value.span, format!("expected `{want}`, found `{found}`"));
+                    self.label(format!("this is {}", super::a(&found)));
+                    self.related(param.at, declared);
+                    self.note("a `var` argument has exactly the parameter's type: the function may store any such value in it");
                 }
                 value
             } else {
+                let declared = format!("the parameter `{}` is declared here", param.name);
                 if arg.var {
-                    self.error_help(
-                        arg.value.span,
-                        format!("the parameter `{}` is not `var`", param.name),
-                        "remove `var`: the function does not change this argument",
-                    );
+                    self.error(arg.value.span, format!("the parameter `{}` is not `var`", param.name));
+                    self.label(format!("`{}` does not change this argument", sig.name));
+                    self.related(param.at, declared.clone());
+                    let var = Span {
+                        start: arg.var_at,
+                        end: arg.value.span.start,
+                    };
+                    self.fix("remove `var`", var, "");
                 }
-                match done {
+                let reported = self.diags.len();
+                let value = match done {
                     Some(value) => self.coerce(value, &param.ty),
                     None => {
                         self.function_argument_context(&arg.value, param.lent);
@@ -954,15 +1132,29 @@ impl<'a> Checker<'a> {
                         self.lent_fn_ok = false;
                         value
                     }
-                }
+                };
+                // Only a mismatch of the argument itself is about the parameter; an
+                // error inside the argument is not.
+                self.explain_mismatch(reported, arg.value.span, param.at, declared);
+                value
             };
             out.push(Arg { kind: param.kind, expr });
         }
         if !missing.is_empty() {
-            self.error(
-                span,
-                format!("this call of `{}` is missing {}", sig.name, missing.join(", ")),
-            );
+            // An argument that found no parameter is likely the one that is missing.
+            if paired {
+                self.error(
+                    span,
+                    format!("this call of `{}` is missing {}", sig.name, missing.join(", ")),
+                );
+                self.label(format!("no value for {}", missing.join(", ")));
+                match missing_at {
+                    Some(at) if missing.len() == 1 => {
+                        self.related(Some(at), format!("the parameter {} is declared here", missing[0]))
+                    }
+                    _ => self.related(sig.at.map(|at| at.name), format!("`{}` is declared here", sig.name)),
+                }
+            }
             return self.unknown(span);
         }
 
@@ -980,14 +1172,17 @@ impl<'a> Checker<'a> {
             .filter(|arg| arg.kind == ParamKind::Var)
             .filter_map(|arg| place_path(&arg.expr).map(|path| (arg.expr.span, path)))
             .collect();
-        for (i, (_, first)) in writes.iter().enumerate() {
+        for (i, (first_span, first)) in writes.iter().enumerate() {
             for (second_span, second) in &writes[i + 1..] {
                 if overlap(first, second) {
-                    self.error_help(
+                    self.error(
                         *second_span,
                         "this argument overlaps another `var` argument of the same call",
-                        "one thing cannot be changed through two names at once (Section 5.4)",
                     );
+                    self.label("the same thing, lent to be changed a second time");
+                    self.related(Some(*first_span), "first lent to be changed here");
+                    self.note("one thing cannot be changed through two names at once (Section 5.4)");
+                    self.help("pass a copy as one of the two: `var copy := x`");
                 }
             }
         }
@@ -1068,6 +1263,7 @@ impl<'a> Checker<'a> {
         let names: Vec<String> = t.params.iter().map(|p| p.name.clone()).collect();
         let implicit = t.implicit.clone();
         let display = t.display.clone();
+        let at = (!t.prelude).then_some(decl.sig.name.span);
         if let Some(receiver) = &receiver
             && let ast::FnTarget::Method { ty: Some(pattern), .. } = &decl.sig.target
         {
@@ -1075,7 +1271,8 @@ impl<'a> Checker<'a> {
             self.bind(pattern, &ty, &names, &mut env);
         }
         let param_names: Vec<String> = decl.sig.params.iter().map(|p| p.name.name.clone()).collect();
-        let slots = self.match_args(&display, &param_names, args, span);
+        let reported = self.diags.len();
+        let (slots, paired) = self.match_args(&display, &param_names, args, at);
         let mut checked: Vec<Option<Expr>> = vec![None; slots.len()];
         for (index, param) in decl.sig.params.iter().enumerate() {
             let Some(arg) = slots[index] else { continue };
@@ -1109,6 +1306,9 @@ impl<'a> Checker<'a> {
                 Some(ty) => type_args.push(ty.clone()),
                 // The expected type failed to check, and that was reported.
                 None if expected.is_some_and(|ty| ty.is_unknown()) => return self.unknown(span),
+                // A mistake in an argument is why the type is not known, and it is
+                // the mistake to correct.
+                None if self.diags.len() > reported => return self.unknown(span),
                 None => {
                     self.error_help(
                         span,
@@ -1122,7 +1322,7 @@ impl<'a> Checker<'a> {
         let Some(id) = self.instantiate(template, type_args, span) else {
             return self.unknown(span);
         };
-        self.finish_call(id, receiver, slots, checked, span)
+        self.finish_call(id, receiver, slots, checked, paired, span)
     }
 
     /// Checks one argument of a generic call. `pattern` is the parameter's type as

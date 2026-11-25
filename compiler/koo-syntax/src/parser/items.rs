@@ -35,7 +35,26 @@ impl Parser {
                 let _ = self.expected::<()>("the end of the line");
                 self.recover(depth, true);
             } else if result.is_err() {
-                self.recover(depth, true);
+                if let Some(next) = self.unclosed_before.take() {
+                    // A block that no function owns was left open.
+                    self.diag(
+                        Diagnostic::new(next, "a declaration begins here before the one above it ends")
+                            .with_help("a `}` is missing above"),
+                    );
+                    self.recover_item(depth);
+                    continue;
+                }
+                // What is left of a declaration that could not be read says nothing
+                // more: the next one begins at the next word at the left margin.
+                if self.pos == start {
+                    self.bump();
+                }
+                if self.fragment {
+                    self.recover(depth, true);
+                } else {
+                    self.recover_item(depth);
+                }
+                continue;
             }
             if self.pos == start || (!self.at_newline() && !self.at(&Tok::Eof)) {
                 // Recovery stopped at a stray closing bracket: step over it.
@@ -56,6 +75,20 @@ impl Parser {
                     unreachable!()
                 };
                 (path, token.span)
+            }
+            Tok::Str(pieces) => {
+                // `import "std/io"`.
+                let span = self.span();
+                let mut diagnostic = Diagnostic::new(span, "a package path is written without quotes");
+                diagnostic = match pieces.as_slice() {
+                    [crate::token::StrPiece::Lit(path)] => {
+                        let path = path.clone();
+                        diagnostic.with_fix("remove the quotes", span, path)
+                    }
+                    _ => diagnostic.with_help("write `import std/io`"),
+                };
+                self.diag(diagnostic);
+                return Err(());
             }
             _ => return self.expected("a package path"),
         };
@@ -308,7 +341,12 @@ impl Parser {
                 );
                 return Err(());
             }
-            _ => return self.expected("a declaration"),
+            _ => {
+                if self.foreign_item() {
+                    return Err(());
+                }
+                return self.expected("a declaration");
+            }
         };
         Ok(Item {
             docs,
@@ -576,7 +614,13 @@ impl Parser {
                 let span = self.span();
                 return self.fail(span, "a function in an interface has no body");
             }
-            Some(self.block()?)
+            let open = self.span();
+            let block = self.block();
+            if let Some(next) = self.unclosed_before.take() {
+                self.never_closed_before(open, next);
+                return Err(());
+            }
+            Some(block?)
         } else if ctx == FnCtx::Interface || self.fragment {
             None
         } else {
@@ -651,7 +695,53 @@ impl Parser {
         }
         let type_params = self.type_params()?;
         let params = self.params(ctx)?;
-        let ret = if self.eat(&Tok::Arrow) {
+        let close = self.prev_span();
+        let nothing =
+            |tok: &Tok| matches!(tok, Tok::Ident(word) if matches!(word.as_str(), "void" | "unit" | "nil" | "none"));
+        let ret = if self.at(&Tok::Arrow) && (nothing(self.peek2()) || *self.peek2() == Tok::NoneLit) {
+            // `fn main() -> void`.
+            let arrow = self.bump().span;
+            let word = self.bump();
+            let all = Span {
+                start: close.end,
+                end: word.span.end,
+            };
+            self.diag(
+                Diagnostic::new(
+                    arrow.to(word.span),
+                    "a function that returns nothing declares no return type",
+                )
+                .with_fix("leave it out", all, ""),
+            );
+            None
+        } else if self.eat(&Tok::Arrow) {
+            Some(self.ty_no_result(false)?)
+        } else if self.at(&Tok::Colon) {
+            // `fn area(w: int): int`.
+            let span = self.span();
+            self.diag(
+                Diagnostic::new(span, "the return type of a function follows `->`")
+                    .with_note("`:` gives the type of a name: a parameter, a field or a binding")
+                    .with_fix("write `->`", span, " ->"),
+            );
+            self.bump();
+            Some(self.ty_no_result(false)?)
+        } else if matches!(self.peek(), Tok::UpperIdent(_) | Tok::LBracket)
+            || matches!(self.peek(), Tok::Ident(word) if is_primitive(word) || super::habits::koo_type(word).is_some())
+        {
+            // `fn area(w: int) int`.
+            let span = self.span();
+            let before = Span {
+                start: span.start,
+                end: span.start,
+            };
+            self.diag(
+                Diagnostic::new(span, "the return type of a function follows `->`").with_fix(
+                    "write `->` before it",
+                    before,
+                    "-> ",
+                ),
+            );
             Some(self.ty_no_result(false)?)
         } else {
             None
@@ -688,8 +778,58 @@ impl Parser {
 
     fn params(&mut self, ctx: FnCtx) -> PResult<Vec<Param>> {
         let params = self.delimited(&Tok::LParen, &Tok::RParen, |p| {
+            // `int a`, `String name`: the type first, as in C.
+            if let (Tok::Ident(first) | Tok::UpperIdent(first), Tok::Ident(_)) = (p.peek(), p.peek2())
+                && (super::habits::koo_type(first).is_some() || matches!(p.peek(), Tok::UpperIdent(_)))
+            {
+                // Every parameter written that way is turned around at once.
+                let both = p.span().to(p.toks[p.pos + 1].span);
+                let mut edits = Vec::new();
+                let mut at = p.pos;
+                while let (Tok::Ident(ty) | Tok::UpperIdent(ty), Tok::Ident(name)) =
+                    (&p.toks[at].kind, &p.toks[(at + 1).min(p.toks.len() - 1)].kind)
+                {
+                    let ty = super::habits::koo_type(ty).unwrap_or(ty);
+                    edits.push((p.toks[at].span.to(p.toks[at + 1].span), format!("{name}: {ty}")));
+                    if p.toks[(at + 2).min(p.toks.len() - 1)].kind != Tok::Comma {
+                        break;
+                    }
+                    at += 3;
+                }
+                p.diag(
+                    Diagnostic::new(both, "the type of a parameter comes after its name")
+                        .with_edits("write the name first", edits),
+                );
+                return Err(());
+            }
             let name = p.binding_name("parameter name")?;
-            p.expect(&Tok::Colon, "`:` and the parameter's type")?;
+            if matches!(p.peek(), Tok::Comma | Tok::RParen) {
+                // `fn add(a, b)`.
+                p.diag(
+                    Diagnostic::new(name.span, format!("the parameter `{}` needs a type", name.name))
+                        .with_note("the types of a function's parameters are always written: they are what its callers read (Section 6.1)")
+                        .with_help(format!("write `{}: int`, or whatever type it has", name.name)),
+                );
+                return Err(());
+            }
+            if matches!(p.peek(), Tok::UpperIdent(_) | Tok::LBracket)
+                || matches!(p.peek(), Tok::Ident(word) if is_primitive(word) || super::habits::koo_type(word).is_some())
+            {
+                // `a int`: the colon is missing.
+                let after = Span {
+                    start: name.span.end,
+                    end: name.span.end,
+                };
+                p.diag(
+                    Diagnostic::new(p.span(), format!("expected `:` before the type of `{}`", name.name)).with_fix(
+                        "write a colon after the name",
+                        after,
+                        ":",
+                    ),
+                );
+            } else {
+                p.expect(&Tok::Colon, "`:` and the parameter's type")?;
+            }
             let variadic = p.eat(&Tok::Ellipsis);
             let kind_span = p.span();
             let kind = p.param_kind();

@@ -520,6 +520,8 @@ pub struct Arg {
     pub name: Option<Ident>,
     /// Whether the argument is marked `var` (Section 5.3).
     pub var: bool,
+    /// Where `var` begins, when it is written.
+    pub var_at: u32,
     pub value: Expr,
 }
 

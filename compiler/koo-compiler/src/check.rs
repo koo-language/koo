@@ -12,6 +12,7 @@ use koo_syntax::{Diagnostic, Span};
 
 use crate::hir::*;
 
+mod actors;
 mod calls;
 mod exprs;
 mod fuse;
@@ -29,18 +30,37 @@ mod suggest;
 pub fn check<'a>(
     prelude: &'a ast::File,
     file: &'a ast::File,
+    derived: &'a ast::File,
+    problems: Vec<Diagnostic>,
     extra: &'a OnceCell<ast::File>,
     bases: &[u32],
     test_mode: bool,
 ) -> (Program, Vec<Diagnostic>) {
     let mut checker = Checker::new(extra);
     checker.program.test_mode = test_mode;
+    // What could not be written for the program, such as a message that cannot be sent.
+    checker.diags = problems;
     checker.file_bases = bases.to_vec();
     checker.in_prelude = true;
     let prelude_bodies = checker.declare_file(prelude);
+    checker.prelude_types = (checker.program.structs.len(), checker.program.errors.len());
     checker.in_prelude = false;
+    checker.note_declarations(file);
     let bodies = checker.declare_file(file);
+    // What the compiler wrote for the program's types (`derive.rs`) is declared after
+    // them, and stands with the prelude: it may use what only the prelude may, and a
+    // mistake in it is the compiler's.
+    checker.in_prelude = true;
+    let mut prelude_bodies = prelude_bodies;
+    prelude_bodies.extend(checker.declare_file(derived));
+    checker.in_prelude = false;
     checker.finish(file, prelude_bodies, bodies);
+    // What goes wrong in a function the compiler wrote for a type follows from a mistake
+    // in the type, which is the one to report.
+    let written = |d: &Diagnostic| d.message.starts_with("in `the prelude's ");
+    if checker.diags.iter().any(|d| !written(d)) {
+        checker.diags.retain(|d| !written(d));
+    }
     // One mistake in a generic function is found once for each way it is instantiated.
     let mut seen = std::collections::HashSet::new();
     checker
@@ -82,6 +102,40 @@ struct ParamSig {
     /// Whether the parameter is a function that is only lent: it is borrowed and declared
     /// with a function type (Section 5.7). A parameter of type `T` is not, whatever `T` is.
     lent: bool,
+    /// Where the parameter is declared, if the program declares it.
+    at: Option<Span>,
+}
+
+/// Where a function of the program is declared, for the errors that point at it. The
+/// prelude's functions have none: an error never points into the prelude.
+#[derive(Debug, Clone, Copy)]
+struct FnAt {
+    name: Span,
+    /// The return type, if one is written.
+    ret: Option<Span>,
+    /// The end of the signature, where a return type or an error set would be added.
+    end: u32,
+    /// Whether an error set is written.
+    fails: bool,
+}
+
+impl FnAt {
+    fn of(sig: &ast::FnSig) -> FnAt {
+        FnAt {
+            name: sig.name.span,
+            ret: sig.ret.as_ref().map(|ty| ty.span),
+            end: sig.span.end,
+            fails: !matches!(sig.errors, ast::ErrorSpec::None),
+        }
+    }
+
+    /// The place just after the signature.
+    fn after(&self) -> Span {
+        Span {
+            start: self.end,
+            end: self.end,
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -91,6 +145,7 @@ struct FnSig {
     receiver: Option<ParamSig>,
     params: Vec<ParamSig>,
     ret: Ty,
+    at: Option<FnAt>,
 }
 
 pub(crate) struct Checker<'a> {
@@ -156,11 +211,29 @@ pub(crate) struct Checker<'a> {
     scopes: Vec<HashMap<String, LocalId>>,
     ret: Ty,
     loops: usize,
+    /// Where the function being checked is declared, if it is one of the program's and
+    /// not a lambda.
+    here: Option<FnAt>,
+    fn_name: String,
+    /// The actor whose method each function is the body of, and the actor of the
+    /// function being checked.
+    actor_of: HashMap<FnId, &'a ast::ActorDecl>,
+    actor: Option<&'a ast::ActorDecl>,
+    /// The variables declared by a statement that `var` can be written before, by where
+    /// their names are: `x := e` and `x: T = e`.
+    plain_bindings: std::collections::HashSet<u32>,
+    /// Where each name of the program is first declared: `type Name`, `fn name` and
+    /// `fn Type.name`.
+    first_at: HashMap<String, Span>,
+    /// Where the fields of the program's types are declared, by type and field.
+    field_at: HashMap<(String, String), Span>,
     // Prelude errors.
     overflow: ErrorId,
     parse_error: ErrorId,
     /// The first error type that is not predeclared.
     first_declared_error: ErrorId,
+    /// How many struct types and how many error types the prelude declares: they come first.
+    prelude_types: (StructId, ErrorId),
     /// The default values of parameters (Section 5.3).
     param_defaults: Vec<&'a ast::Expr>,
     /// Statements that take apart the tuple a condition bound: `if (a, b) := e`. They
@@ -214,12 +287,20 @@ impl<'a> Checker<'a> {
             locals: Vec::new(),
             used: Vec::new(),
             declared_at: Vec::new(),
+            here: None,
+            fn_name: String::new(),
+            actor_of: HashMap::new(),
+            actor: None,
+            plain_bindings: std::collections::HashSet::new(),
+            first_at: HashMap::new(),
+            field_at: HashMap::new(),
             scopes: Vec::new(),
             ret: Ty::Unit,
             loops: 0,
             overflow: 0,
             parse_error: 0,
             first_declared_error: 0,
+            prelude_types: (0, 0),
             param_defaults: Vec::new(),
             cond_stmts: Vec::new(),
             modules: HashMap::new(),
@@ -288,6 +369,57 @@ impl<'a> Checker<'a> {
         }
     }
 
+    /// The error just reported, to say more about it. There is none while a body of the
+    /// prelude is checked: such an error is reported at the call that needed the body,
+    /// and a place inside the prelude would mean nothing there.
+    fn reported(&mut self) -> Option<&mut Diagnostic> {
+        if self.origin.is_some() {
+            None
+        } else {
+            self.diags.last_mut()
+        }
+    }
+
+    /// Says what the marks under the error just reported point out.
+    fn label(&mut self, text: impl Into<String>) {
+        if let Some(diagnostic) = self.reported() {
+            diagnostic.label = Some(text.into());
+        }
+    }
+
+    /// Points the error just reported at another place that explains it.
+    fn related(&mut self, span: Option<Span>, text: impl Into<String>) {
+        if let (Some(span), Some(diagnostic)) = (span, self.reported()) {
+            diagnostic.related.push((span, text.into()));
+        }
+    }
+
+    fn note(&mut self, text: impl Into<String>) {
+        if let Some(diagnostic) = self.diags.last_mut() {
+            diagnostic.notes.push(text.into());
+        }
+    }
+
+    fn help(&mut self, text: impl Into<String>) {
+        if let Some(diagnostic) = self.diags.last_mut() {
+            diagnostic.help.push(text.into());
+        }
+    }
+
+    /// Gives the error just reported its correction: `text` in place of `span`.
+    fn fix(&mut self, message: impl Into<String>, span: Span, text: impl Into<String>) {
+        self.fix_edits(message, vec![(span, text.into())]);
+    }
+
+    fn fix_edits(&mut self, message: impl Into<String>, edits: Vec<(Span, String)>) {
+        if let Some(diagnostic) = self.reported() {
+            diagnostic.fix = Some(koo_syntax::Fix {
+                message: message.into(),
+                edits,
+            });
+        }
+    }
+
     /// Reports a part of the language that the compiler does not implement yet.
     fn unsupported(&mut self, span: Span, what: &str) {
         self.error_help(
@@ -337,9 +469,9 @@ impl<'a> Checker<'a> {
                 let (key, value) = self.map_types(ty).unwrap();
                 format!("[{}: {}]", self.ty_name(&key), self.ty_name(&value))
             }
-            Ty::Struct(id) => self.program.structs[*id].name.clone(),
+            Ty::Struct(id) => self.shown_name(&self.program.structs[*id].name, *id < self.prelude_types.0),
             Ty::Enum(id) => self.program.enums[*id].name.clone(),
-            Ty::Error(id) => self.program.errors[*id].name.clone(),
+            Ty::Error(id) => self.shown_name(&self.program.errors[*id].name, *id < self.prelude_types.1),
             Ty::Failure => "Failure".to_string(),
             Ty::Tuple(types) => format!(
                 "({})",
@@ -367,7 +499,90 @@ impl<'a> Checker<'a> {
         }
     }
 
+    /// A type's name as the program writes it: the prelude's `HttpRequest` is `http.Request`.
+    fn shown_name(&self, name: &str, prelude: bool) -> String {
+        match name.strip_prefix("Http") {
+            Some(rest) if prelude && rest.starts_with(char::is_uppercase) => format!("http.{rest}"),
+            _ => name.to_string(),
+        }
+    }
+
+    /// The prelude's name for a type of a standard package that the file imports:
+    /// `http.Request` is `HttpRequest`. The import counts as used.
+    pub(crate) fn package_type(&mut self, path: &[ast::Ident]) -> Option<String> {
+        let [package, name] = path else { return None };
+        let mut letters = package.name.chars();
+        let first = letters.next()?.to_ascii_uppercase();
+        let full = format!("{first}{}{}", letters.as_str(), name.name);
+        if !self.type_names.contains_key(&full) {
+            return None;
+        }
+        let file = self.file_of(package.span);
+        let import = self.modules.get_mut(&(file, package.name.clone()))?;
+        import.1 = true;
+        Some(full)
+    }
+
     // ---- declarations -------------------------------------------------------------------
+
+    /// Records where the program declares its names, for the errors that point there.
+    fn note_declarations(&mut self, file: &ast::File) {
+        for item in &file.items {
+            let mut fields: Vec<(String, &[ast::Field])> = Vec::new();
+            let name = match &item.kind {
+                ast::ItemKind::Type(decl) => {
+                    if let ast::TypeBody::Struct(list) = &decl.body {
+                        fields.push((decl.name.name.clone(), list));
+                    }
+                    &decl.name
+                }
+                ast::ItemKind::Enum(decl) => {
+                    for variant in &decl.variants {
+                        if let Some(list) = &variant.fields {
+                            fields.push((variant.name.name.clone(), list));
+                            fields.push((format!("{}.{}", decl.name.name, variant.name.name), list));
+                        }
+                    }
+                    &decl.name
+                }
+                ast::ItemKind::Error(decl) => {
+                    if let ast::ErrorBody::Fields(list) = &decl.body {
+                        fields.push((decl.name.name.clone(), list));
+                    }
+                    &decl.name
+                }
+                ast::ItemKind::Interface(decl) => &decl.name,
+                ast::ItemKind::Actor(decl) => &decl.name,
+                ast::ItemKind::Fn(decl) => {
+                    self.first_at.entry(fn_key(&decl.sig)).or_insert(decl.sig.name.span);
+                    continue;
+                }
+                ast::ItemKind::Const(decl) => {
+                    self.first_at
+                        .entry(format!("fn {}", decl.name.name))
+                        .or_insert(decl.name.span);
+                    continue;
+                }
+                _ => continue,
+            };
+            self.first_at.entry(format!("type {}", name.name)).or_insert(name.span);
+            for (owner, list) in fields {
+                for field in list {
+                    self.field_at
+                        .entry((owner.clone(), field.name.name.clone()))
+                        .or_insert(field.name.span.to(field.ty.span));
+                }
+            }
+        }
+    }
+
+    /// Reports a name that is declared a second time, and points at the first.
+    fn already_declared(&mut self, span: Span, name: &str, key: &str) {
+        self.error(span, format!("`{name}` is already declared"));
+        self.label("declared a second time");
+        let first = self.first_at.get(key).copied().filter(|first| *first != span);
+        self.related(first, format!("`{name}` is first declared here"));
+    }
 
     /// Reads the declarations of one source: its types, constants and function
     /// signatures. Returns the functions whose bodies are to be checked.
@@ -376,17 +591,20 @@ impl<'a> Checker<'a> {
             // The standard packages that exist so far are part of the prelude; an import
             // brings one's name into scope (Section 8.2).
             match &import.kind {
-                ast::ImportKind::Package { path, .. } if matches!(path.as_str(), "std/os" | "std/io" | "std/test") => {
+                ast::ImportKind::Package { path, .. }
+                    if matches!(path.as_str(), "std/os" | "std/io" | "std/test" | "std/http") =>
+                {
                     let key = (self.file_of(import.span), import.binding.clone());
                     if self.modules.insert(key, (import.span, false)).is_some() {
                         self.error(import.span, format!("`{}` is imported twice", import.binding));
+                        self.fix("remove the second import", import.span, "");
                     }
                 }
                 ast::ImportKind::Package { path, .. } if path.starts_with("std/") => {
                     self.error_help(
                         import.span,
                         format!("the package `{path}` is not part of this compiler yet"),
-                        "the standard packages so far are `std/os`, `std/io` and `std/test`",
+                        "the standard packages so far are `std/os`, `std/io`, `std/http` and `std/test`",
                     );
                 }
                 _ => self.unsupported(import.span, "imports of other packages are"),
@@ -396,6 +614,10 @@ impl<'a> Checker<'a> {
         // 1. Every type name, so that declarations may refer to one another in any order.
         for item in &file.items {
             let (name, kind) = match &item.kind {
+                ast::ItemKind::Actor(decl) => {
+                    self.declare_actor(decl);
+                    continue;
+                }
                 ast::ItemKind::Type(decl) if !decl.type_params.is_empty() => {
                     self.declare_generic_type(&decl.name, &decl.type_params, generics::GenericDecl::Struct(decl));
                     continue;
@@ -408,7 +630,8 @@ impl<'a> Checker<'a> {
                     if !decl.type_params.is_empty() || decl.resource {
                         self.unsupported(decl.name.span, "generic and resource interfaces are");
                     } else if self.interfaces.insert(decl.name.name.clone(), decl).is_some() {
-                        self.error(decl.name.span, format!("`{}` is already declared", decl.name.name));
+                        let key = format!("type {}", decl.name.name);
+                        self.already_declared(decl.name.span, &decl.name.name, &key);
                     }
                     continue;
                 }
@@ -454,7 +677,10 @@ impl<'a> Checker<'a> {
                 || self.interfaces.contains_key(&name.name)
                 || is_builtin_type(&name.name)
             {
-                self.error(name.span, format!("`{}` is already declared", name.name));
+                self.already_declared(name.span, &name.name, &format!("type {}", name.name));
+                if is_builtin_type(&name.name) {
+                    self.note(format!("`{}` is a type of the language", name.name));
+                }
             } else if let Some(kind) = kind {
                 self.type_names.insert(name.name.clone(), kind);
             }
@@ -526,7 +752,7 @@ impl<'a> Checker<'a> {
                         self.program.errors[id].fields = self.fields(fields, false).0;
                     }
                 }
-                ast::ItemKind::Actor(decl) => self.unsupported(decl.name.span, "actors are"),
+                ast::ItemKind::Actor(decl) => self.actor_fields(decl),
                 _ => {}
             }
         }
@@ -547,6 +773,9 @@ impl<'a> Checker<'a> {
                 if let Some(id) = self.signature(decl) {
                     bodies.push((id, decl));
                 }
+            }
+            if let ast::ItemKind::Actor(decl) = &item.kind {
+                self.actor_methods(decl, &mut bodies);
             }
         }
 
@@ -621,11 +850,9 @@ impl<'a> Checker<'a> {
             .map(|((_, name), (span, _))| (name.clone(), *span))
             .collect();
         for (name, span) in unused {
-            self.error_help(
-                span,
-                format!("the import `{name}` is not used"),
-                "remove it: an unused import is an error (Section 8.2)",
-            );
+            self.error(span, format!("the import `{name}` is not used"));
+            self.note("an unused import is an error (Section 8.2)");
+            self.fix("remove it", span, "");
         }
         if self.program.test_mode {
             // `koo test`: the functions named `test_*` are the program (Section 12.4).
@@ -675,11 +902,18 @@ impl<'a> Checker<'a> {
                 };
                 if !ok || !unit {
                     let span = self.program.functions[id].span;
-                    self.error_help(
-                        span,
-                        "`main` has the wrong signature",
-                        "`main` is `fn main()` or `fn main() ! E` (Section 6.1)",
+                    let (has_params, at) = (!sig.params.is_empty(), sig.at);
+                    self.error(span, "`main` has the wrong signature");
+                    self.note(
+                        "`main` is `fn main()` or `fn main() ! E`: it takes nothing and returns nothing (Section 6.1)",
                     );
+                    if has_params {
+                        self.help("the program's arguments come from `std/os`: `import std/os`, then `os.args()`");
+                    }
+                    if !unit {
+                        self.related(at.and_then(|at| at.ret), "`main` returns nothing");
+                        self.help("to end with a status, `import std/os` and call `os.exit(1)`; an error that `main` fails with ends the program with status 1");
+                    }
                 }
                 self.program.main = Some(id);
             }
@@ -705,6 +939,8 @@ impl<'a> Checker<'a> {
                     variant.name.span,
                     format!("the variant `{}` is declared twice", variant.name.name),
                 );
+                let first = decl.variants.iter().find(|v| v.name.name == variant.name.name);
+                self.related(first.map(|v| v.name.span), "first declared here");
                 continue;
             }
             let fields = match &variant.fields {
@@ -728,6 +964,8 @@ impl<'a> Checker<'a> {
                     field.name.span,
                     format!("the field `{}` is declared twice", field.name.name),
                 );
+                let first = fields.iter().find(|f| f.name.name == field.name.name);
+                self.related(first.map(|f| f.name.span), "first declared here");
                 continue;
             }
             if !field.attrs.is_empty() {
@@ -827,11 +1065,22 @@ impl<'a> Checker<'a> {
     pub(crate) fn resolve_type(&mut self, ty: &ast::Type) -> Ty {
         match &ty.kind {
             ast::TypeKind::Named { path, args } => {
-                if path.len() != 1 {
-                    self.unsupported(ty.span, "types from other packages are");
-                    return Ty::Unknown;
-                }
-                let name = path[0].name.as_str();
+                let in_package;
+                let name = if path.len() == 1 {
+                    path[0].name.as_str()
+                } else {
+                    // `http.Request`: a type of a standard package.
+                    match self.package_type(path) {
+                        Some(name) => {
+                            in_package = name;
+                            in_package.as_str()
+                        }
+                        None => {
+                            self.unsupported(ty.span, "types from other packages are");
+                            return Ty::Unknown;
+                        }
+                    }
+                };
                 if args.is_empty()
                     && let Some(bound) = self.type_env.get(name)
                 {
@@ -871,7 +1120,12 @@ impl<'a> Checker<'a> {
                     "byte" | "u8" => Ty::Byte,
                     "Failure" => Ty::Failure,
                     "char" | "i8" | "i16" | "i32" | "u16" | "u32" | "u64" | "f32" => {
-                        self.unsupported(ty.span, &format!("`{name}` is"));
+                        self.error(ty.span, format!("`{name}` is not supported by this compiler yet"));
+                        match name {
+                            "char" => self.help("a string gives its characters as strings, with `s.chars()`"),
+                            "f32" => self.fix("use `float`, which is 64 bits", ty.span, "float"),
+                            _ => self.fix("use `int`, which is 64 bits", ty.span, "int"),
+                        }
                         Ty::Unknown
                     }
                     "Decimal" | "Duration" | "Time" | "Map" | "Set" | "Json" | "Channel" | "Shared" => {
@@ -969,11 +1223,19 @@ impl<'a> Checker<'a> {
                 self.error(ty.span, "expected an error type");
                 continue;
             };
-            if path.len() != 1 || !args.is_empty() {
-                self.unsupported(ty.span, "error types from other packages are");
-                continue;
-            }
-            let name = path[0].name.as_str();
+            let in_package;
+            let name = match (path.len(), args.is_empty()) {
+                (1, true) => path[0].name.as_str(),
+                // `http.Error`: an error of a standard package.
+                (2, true) if let Some(name) = self.package_type(path) => {
+                    in_package = name;
+                    in_package.as_str()
+                }
+                _ => {
+                    self.unsupported(ty.span, "error types from other packages are");
+                    continue;
+                }
+            };
             if name == "Failure" {
                 return ErrSet::Any;
             }
@@ -1002,6 +1264,7 @@ impl<'a> Checker<'a> {
             | ast::ExprKind::None => true,
             ast::ExprKind::Str(parts) => parts.iter().all(|p| matches!(p, ast::StrPart::Lit(_))),
             ast::ExprKind::List(items) => items.is_empty(),
+            ast::ExprKind::Map(entries) => entries.is_empty(),
             ast::ExprKind::Unary {
                 op: ast::UnaryOp::Neg,
                 expr: inner,
@@ -1033,7 +1296,7 @@ impl<'a> Checker<'a> {
             return;
         }
         if self.consts.contains_key(&decl.name.name) || self.free_fns.contains_key(&decl.name.name) {
-            self.error(decl.name.span, format!("`{}` is already declared", decl.name.name));
+            self.already_declared(decl.name.span, &decl.name.name, &format!("fn {}", decl.name.name));
             return;
         }
         self.consts.insert(decl.name.name.clone(), value);
@@ -1087,6 +1350,8 @@ impl<'a> Checker<'a> {
                     param.name.span,
                     format!("the parameter `{}` is declared twice", param.name.name),
                 );
+                let first = sig.params.iter().find(|p| p.name.name == param.name.name);
+                self.related(first.map(|p| p.name.span), "first declared here");
             }
             let ty = match implicit.get(&index) {
                 Some(ty) => ty.clone(),
@@ -1102,6 +1367,7 @@ impl<'a> Checker<'a> {
                 ty,
                 default: default_index,
                 lent,
+                at: Some(param.name.span.to(param.ty.span)),
             });
         }
         let ok = sig.ret.as_ref().map(|ty| self.resolve_type(ty)).unwrap_or(Ty::Unit);
@@ -1121,7 +1387,10 @@ impl<'a> Checker<'a> {
         if self.declare_template(decl) {
             return None;
         }
-        let (params, ret) = self.params_and_ret(decl, &HashMap::new());
+        let (mut params, ret) = self.params_and_ret(decl, &HashMap::new());
+        if self.in_prelude {
+            params.iter_mut().for_each(|param| param.at = None);
+        }
 
         let id = self.sigs.len();
         let mut receiver = None;
@@ -1150,7 +1419,8 @@ impl<'a> Checker<'a> {
                 let display = format!("{}.{}", self.ty_name(&ty), sig.name.name);
                 let key = (owner, sig.name.name.clone());
                 if self.methods.contains_key(&key) || self.type_fns.contains_key(&key) {
-                    self.error(sig.name.span, format!("`{display}` is already declared"));
+                    self.already_declared(sig.name.span, &display, &fn_key(sig));
+                    self.note("a type has one function of each name, whether it is a method or a type-level function");
                     return None;
                 }
                 match kind {
@@ -1184,6 +1454,7 @@ impl<'a> Checker<'a> {
                             ty,
                             default: None,
                             lent: false,
+                            at: None,
                         });
                         self.methods.insert(key, id);
                     }
@@ -1197,10 +1468,10 @@ impl<'a> Checker<'a> {
         if matches!(sig.target, ast::FnTarget::Free) {
             let name = &sig.name.name;
             if self.free_fns.contains_key(name) || self.consts.contains_key(name) {
-                self.error_help(
-                    sig.name.span,
-                    format!("`{name}` is already declared"),
-                    "there is no overloading: one name, one function (Section 6.1)",
+                self.already_declared(sig.name.span, name, &fn_key(sig));
+                self.note("there is no overloading: one name, one function (Section 6.1)");
+                self.help(
+                    "give this function another name, or one function both jobs with a default value for a parameter",
                 );
                 return None;
             }
@@ -1222,6 +1493,7 @@ impl<'a> Checker<'a> {
             receiver,
             params,
             ret: ret.clone(),
+            at: (!self.in_prelude).then(|| FnAt::of(sig)),
         });
         self.program.functions.push(Function {
             name: display,
@@ -1246,6 +1518,9 @@ impl<'a> Checker<'a> {
         self.scopes.clear();
         self.scopes.push(HashMap::new());
         self.ret = sig.ret.clone();
+        self.here = sig.at;
+        self.fn_name = sig.name.clone();
+        self.actor = self.actor_of.get(&id).copied();
         self.loops = 0;
         // A default is checked where it is declared, whether or not a call uses it.
         for param in &sig.params {
@@ -1264,7 +1539,7 @@ impl<'a> Checker<'a> {
                 kind: LocalKind::Param(param.kind),
             });
             self.used.push(true);
-            self.declared_at.push(decl.sig.span);
+            self.declared_at.push(param.at.unwrap_or(decl.sig.span));
             self.scopes[0].insert(param.name.clone(), local);
             if param.lent {
                 self.borrowed_fns.insert(local);
@@ -1287,26 +1562,29 @@ impl<'a> Checker<'a> {
                     end,
                 },
                 format!("`{}` can reach its end without returning a value", sig.name),
-                format!(
-                    "it returns `{}`: end every path with `return` or `fail`",
-                    self.ty_name(&sig.ret)
-                ),
+                "end every path with `return` or `fail`",
             );
+            self.label("the function ends here");
+            let returns = format!("it returns `{}`", self.ty_name(&ok));
+            self.related(sig.at.and_then(|at| at.ret), returns);
         }
         // A result may not be ignored, and binding it to a name that is never read ignores
         // it (Section 6.3).
         for local in params..self.locals.len() {
             if matches!(self.locals[local].ty, Ty::Result(..)) && !self.used[local] && self.locals[local].name != "_" {
                 let name = self.locals[local].name.clone();
-                self.error_help(
+                let found = self.ty_name(&self.locals[local].ty);
+                self.error(
                     self.declared_at[local],
                     format!("the result in `{name}` is never handled"),
-                    "propagate it with `?`, inspect it with `match`, or fall back with `else` (Section 6.4)",
                 );
+                self.label(format!("bound to {}, and never looked at", a(&found)));
+                self.note("a result is a value or an error, and the error may not be ignored (Section 6.4)");
+                self.help("end the value with `?` to pass the error on, or with `else` to give a value in its place, or inspect it with `match`");
             }
         }
         Function {
-            name: sig.name,
+            name: self.program.functions[id].name.clone(),
             params,
             locals: std::mem::take(&mut self.locals),
             ret: sig.ret,
@@ -1321,12 +1599,22 @@ impl<'a> Checker<'a> {
 
     fn declare(&mut self, name: &ast::Ident, ty: Ty, mutable: bool, kind: LocalKind) -> LocalId {
         let scope = self.scopes.last().unwrap();
-        if scope.contains_key(&name.name) {
-            self.error_help(
-                name.span,
-                format!("`{}` is already declared in this scope", name.name),
-                "an inner scope may shadow a name; the same scope may not declare it twice (Section 3.5)",
-            );
+        if let Some(&first) = scope.get(&name.name) {
+            self.error(name.span, format!("`{}` is already declared in this scope", name.name));
+            self.label("declared a second time");
+            let first_at = self.declared_at.get(first).copied().filter(|at| *at != Span::default());
+            self.related(first_at, format!("`{}` is first declared here", name.name));
+            if self.locals[first].mutable {
+                self.help(format!(
+                    "to give `{}` a new value, assign with `=`; `:=` declares a new variable",
+                    name.name
+                ));
+            } else {
+                self.help(format!(
+                    "use another name, or declare the first as `var {}` and assign to it with `=`",
+                    name.name
+                ));
+            }
         }
         let id = self.declare_hidden(&name.name, ty, mutable, kind, true);
         self.declared_at[id] = name.span;
@@ -1569,13 +1857,15 @@ impl<'a> Checker<'a> {
                 let declared = ty.as_ref().map(|ty| self.resolve_type(ty));
                 let mut init = self.expr(value, declared.as_ref());
                 if let Some(declared) = &declared {
-                    init = self.coerce(init, declared);
+                    let at = ty.as_ref().map(|ty| ty.span);
+                    init = self.coerce_for(init, declared, at, "the binding declares this type");
                 }
                 let ty = declared.unwrap_or_else(|| init.ty.clone());
                 let ty = if ty == Ty::Never { Ty::Unknown } else { ty };
                 match pattern {
                     ast::BindPattern::Name(name) => {
                         let local = self.declare(name, ty, *mutable, LocalKind::Owned);
+                        self.plain_bindings.insert(name.span.start);
                         Some(Stmt::Let { local, init })
                     }
                     ast::BindPattern::Wildcard(span) => {
@@ -1614,6 +1904,41 @@ impl<'a> Checker<'a> {
                     return None;
                 }
                 Some(Stmt::Expr(self.prelude_call("insert", vec![map, key, new], stmt.span)))
+            }
+            ast::StmtKind::Assign {
+                target:
+                    ast::Expr {
+                        kind: ast::ExprKind::Name(name),
+                        span: target_span,
+                    },
+                op: ast::AssignOp::Set,
+                value,
+            } if self.lambda.is_none()
+                && self.lookup(&name.name).is_none()
+                && !self.consts.contains_key(&name.name)
+                && !self.free_fns.contains_key(&name.name)
+                && suggest::name_habit(&name.name).is_none()
+                && !suggest::has_near(&name.name, &self.names_in_scope()) =>
+            {
+                // `x = 5` where no `x` exists: the variable was meant to be declared.
+                // It is declared, so that its uses below are not reported as well.
+                let init = self.expr(value, None);
+                self.error(name.span, format!("unknown name `{}`", name.name));
+                self.label("no variable of this name is declared");
+                self.note("`=` changes a variable that exists; `:=` declares one");
+                let between = Span {
+                    start: target_span.end,
+                    end: value.span.start,
+                };
+                self.fix(format!("to declare `{}`, write `:=`", name.name), between, " := ");
+                let ty = if init.ty == Ty::Never {
+                    Ty::Unknown
+                } else {
+                    init.ty.clone()
+                };
+                let local = self.declare(name, ty, true, LocalKind::Owned);
+                self.used[local] = true;
+                Some(Stmt::Let { local, init })
             }
             ast::StmtKind::Assign { target, op, value } => {
                 // Assigning to a variable is not a use of the value it held.
@@ -1722,9 +2047,59 @@ impl<'a> Checker<'a> {
         }
     }
 
+    /// The errors of a set as they are written after `!`: `NotFound | Denied`.
+    pub(crate) fn error_names(&self, set: &ErrSet) -> String {
+        match set {
+            ErrSet::Any => "Failure".to_string(),
+            ErrSet::Of(ids) => ids
+                .iter()
+                .map(|&id| self.program.errors[id].name.clone())
+                .collect::<Vec<_>>()
+                .join(" | "),
+        }
+    }
+
+    /// The errors of `set` that the function being checked does not declare.
+    fn undeclared_errors(&self, set: &ErrSet) -> String {
+        match (set, &self.ret) {
+            (ErrSet::Of(ids), Ty::Result(_, ErrSet::Of(declared))) => ids
+                .iter()
+                .filter(|id| !declared.contains(id))
+                .map(|&id| self.program.errors[id].name.clone())
+                .collect::<Vec<_>>()
+                .join(" | "),
+            (_, Ty::Result(_, ErrSet::Any)) => String::new(),
+            _ => self.error_names(set),
+        }
+    }
+
+    /// Gives the error just reported the correction that lets the function being checked
+    /// fail with `errors`, written as after `!`. A lambda has no signature to add them to.
+    pub(crate) fn fix_error_set(&mut self, errors: &str) {
+        let Some(here) = self.here else { return };
+        let name = self.fn_name.clone();
+        if errors.is_empty() {
+            return;
+        }
+        if here.fails {
+            self.fix(
+                format!("or pass it on: add `{errors}` to the errors of `{name}`"),
+                here.after(),
+                format!(" | {errors}"),
+            );
+        } else {
+            self.fix(
+                format!("or pass it on: let `{name}` fail with `{errors}`"),
+                here.after(),
+                format!(" ! {errors}"),
+            );
+        }
+    }
+
     fn unhandled_result(&mut self, expr: &Expr, span: Span) {
         let Ty::Result(_, set) = &expr.ty else { return };
-        let errors = match set {
+        let set = set.clone();
+        let errors = match &set {
             ErrSet::Any => "Failure".to_string(),
             ErrSet::Of(ids) => ids
                 .iter()
@@ -1732,11 +2107,81 @@ impl<'a> Checker<'a> {
                 .collect::<Vec<_>>()
                 .join(", "),
         };
-        self.error_help(
-            span,
-            format!("unhandled result: {errors}"),
-            "propagate it with `?`, inspect it with `match`, or fall back with `else` (Section 6.4)",
-        );
+        let found = self.ty_name(&expr.ty);
+        self.error(span, format!("unhandled result: {errors}"));
+        self.label(format!("this is {}, which may be an error", a(&found)));
+        self.note("a result is a value or an error, and the error may not be ignored (Section 6.4)");
+        if let ExprKind::Local(local) = &expr.kind {
+            // The result was bound to a name, and the name used as if it were the value.
+            let name = self.locals[*local].name.clone();
+            let at = self
+                .declared_at
+                .get(*local)
+                .copied()
+                .filter(|at| *at != Span::default());
+            self.related(at, format!("`{name}` is bound to the result here"));
+            self.help(format!(
+                "handle the error where `{name}` is bound: end the value with `?` to pass the error on, or with `else` to give a value in its place"
+            ));
+            return;
+        }
+        let after = Span {
+            start: span.end,
+            end: span.end,
+        };
+        let undeclared = self.undeclared_errors(&set);
+        if undeclared.is_empty() && matches!(self.ret, Ty::Result(..)) {
+            self.help("to handle it here, give a value in its place with `else`, or inspect it with `match`");
+            self.fix("or pass the error on to the caller with `?`", after, "?");
+        } else {
+            self.help("to handle it here, give a value in its place with `else`, or inspect it with `match`");
+            if self.here.is_some() && !undeclared.is_empty() {
+                // The two edits that pass it on: `?` here, and the error in the signature.
+                let here = self.here.unwrap();
+                let name = self.fn_name.clone();
+                let add = if here.fails {
+                    format!(" | {undeclared}")
+                } else {
+                    format!(" ! {undeclared}")
+                };
+                self.fix_edits(
+                    format!("or pass the error on to the caller: write `?`, and let `{name}` fail with `{undeclared}`"),
+                    vec![(here.after(), add), (after, "?".to_string())],
+                );
+            } else {
+                self.help("or pass the error on to the caller: write `?` after the value");
+            }
+        }
+    }
+
+    /// A value as what the function returns. If it is not of the type the function
+    /// declares, the error points at the declaration.
+    pub(crate) fn returned(&mut self, value: Expr, ret: &Ty) -> Expr {
+        let Some(here) = self.here else {
+            return self.coerce(value, ret);
+        };
+        let ok = match ret {
+            Ty::Result(ok, _) => (**ok).clone(),
+            other => other.clone(),
+        };
+        if ok == Ty::Unit && !matches!(value.ty, Ty::Unit | Ty::Unknown | Ty::Never | Ty::Result(..)) {
+            // The commonest form of this mistake: a function that was never given a
+            // return type.
+            let found = self.ty_name(&value.ty);
+            let name = self.fn_name.clone();
+            self.error(
+                value.span,
+                format!("`{name}` returns nothing, but this `return` has a value"),
+            );
+            self.label(format!("this is {}", a(&found)));
+            self.related(Some(here.name), "no return type is declared");
+            if !here.fails && !found.contains('{') {
+                self.fix("declare the return type", here.after(), format!(" -> {found}"));
+            }
+            return self.unknown(value.span);
+        }
+        let why = format!("the function returns `{}`", self.ty_name(&ok));
+        self.coerce_for(value, ret, here.ret, &why)
     }
 
     /// `return`, `fail`, `break` and `continue`, as an expression that never arrives.
@@ -1749,7 +2194,7 @@ impl<'a> Checker<'a> {
                         let hint = if ret.is_unknown() { None } else { Some(&ret) };
                         let value = self.expr(value, hint);
                         self.note_return(&value.ty);
-                        ExprKind::Return(Some(Box::new(self.coerce(value, &ret))))
+                        ExprKind::Return(Some(Box::new(self.returned(value, &ret))))
                     }
                     None => {
                         let unit = Expr {
@@ -1771,11 +2216,15 @@ impl<'a> Checker<'a> {
                     (Ty::Result(_, set), Ty::Error(id)) => {
                         if !set.contains(*id) {
                             let name = self.program.errors[*id].name.clone();
-                            self.error_help(
-                                value.span,
-                                format!("`{name}` is not in this function's error set"),
-                                format!("add `{name}` after the `!` in the function's signature (Section 6.3)"),
-                            );
+                            let declared = self.error_names(set);
+                            self.error(value.span, format!("`{name}` is not in this function's error set"));
+                            self.label(format!("the function may fail only with `{declared}`"));
+                            if self.here.is_none() {
+                                self.help(format!(
+                                    "add `{name}` after the `!` in the function's signature (Section 6.3)"
+                                ));
+                            }
+                            self.fix_error_set(&name);
                         }
                     }
                     (Ty::Result(_, ErrSet::Any), Ty::Failure) => {}
@@ -1792,11 +2241,18 @@ impl<'a> Checker<'a> {
                         self.note_errors(&ErrSet::of(vec![*id]));
                     }
                     (Ty::Unknown, _) => {}
-                    (_, _) => self.error_help(
-                        stmt.span,
-                        "`fail` in a function that cannot fail",
-                        "give the function an error set: `fn f() -> T ! E` (Section 6.1)",
-                    ),
+                    (_, found) => {
+                        let error = match found {
+                            Ty::Error(id) => self.program.errors[*id].name.clone(),
+                            _ => String::new(),
+                        };
+                        self.error(stmt.span, "`fail` in a function that cannot fail");
+                        self.related(self.here.map(|here| here.name), "no error is declared after a `!`");
+                        if self.here.is_none() || error.is_empty() {
+                            self.help("give the function an error set: `fn f() -> T ! E` (Section 6.1)");
+                        }
+                        self.fix_error_set(&error);
+                    }
                 }
                 ExprKind::Fail(Box::new(value))
             }
@@ -1827,7 +2283,12 @@ impl<'a> Checker<'a> {
         match cond {
             ast::Cond::Expr(expr) => {
                 let checked = self.expr(expr, Some(&Ty::Bool));
-                Cond::Expr(self.coerce(checked, &Ty::Bool))
+                let reported = self.diags.len();
+                let checked = self.coerce(checked, &Ty::Bool);
+                if self.diags.len() > reported {
+                    self.help("a condition is a `bool`: compare the value, as in `n != 0` or `name != \"\"`");
+                }
+                Cond::Expr(checked)
             }
             ast::Cond::Bind { pattern, value } => {
                 let value = self.expr(value, None);
@@ -1956,21 +2417,57 @@ impl<'a> Checker<'a> {
                         return true;
                     }
                     let name = local.name.clone();
-                    let help = match local.kind {
-                        LocalKind::Owned => format!("declare it with `var {name} := ...`"),
+                    let kind = local.kind;
+                    let ty = self.ty_name(&local.ty);
+                    let at = self.declared_at.get(*id).copied().filter(|at| *at != Span::default());
+                    self.error(expr.span, format!("cannot {action} `{name}`, which is not `var`"));
+                    match kind {
+                        LocalKind::Owned => {
+                            self.related(at, format!("`{name}` is declared here, without `var`"));
+                            match at.filter(|at| self.plain_bindings.contains(&at.start)) {
+                                Some(at) => {
+                                    let before = Span {
+                                        start: at.start,
+                                        end: at.start,
+                                    };
+                                    self.fix("declare it with `var`", before, "var ");
+                                }
+                                None => self.help(format!(
+                                    "a name bound by a pattern cannot change; copy it into a variable first: `var copy := {name}`"
+                                )),
+                            }
+                        }
+                        LocalKind::Param(_)
+                            if self
+                                .actor
+                                .is_some_and(|actor| actor.fields.iter().any(|field| field.name.name == name)) =>
+                        {
+                            // A field of the actor whose method this is.
+                            self.related(at, format!("the field `{name}` is declared here, without `var`"));
+                            if let Some(at) = at {
+                                let before = Span {
+                                    start: at.start,
+                                    end: at.start,
+                                };
+                                self.fix("declare the field with `var`", before, "var ");
+                            }
+                        }
                         LocalKind::Param(_) => {
-                            format!(
-                                "declare the parameter as `{name}: var T`, and pass it as `var {name}` (Section 5.3)"
-                            )
+                            self.related(at, format!("the parameter `{name}` is declared here"));
+                            self.note("a parameter is lent to the function: it reads the caller's value and cannot change it (Section 5.3)");
+                            self.help(format!(
+                                "to change the caller's value, declare the parameter as `{name}: var {ty}` and pass `var {name}`"
+                            ));
+                            self.help(format!("to change a copy, make one: `var copy := {name}`"));
                         }
                         LocalKind::Element => {
-                            "a loop variable names an element as it was; change the list through an index".to_string()
+                            self.related(at, format!("`{name}` is the loop's variable"));
+                            self.help("a loop variable names an element as it was; change the list through an index: `for i in 0..xs.len { xs[i] = ... }`");
                         }
                         LocalKind::Capture { .. } => {
-                            "a closure holds a copy of the variable, so assigning to it would change nothing outside; return the new value instead (Section 5.7)".to_string()
+                            self.help("a closure holds a copy of the variable, so assigning to it would change nothing outside; return the new value instead (Section 5.7)");
                         }
-                    };
-                    self.error_help(expr.span, format!("cannot {action} `{name}`, which is not `var`"), help);
+                    }
                     return false;
                 }
                 ExprKind::Field(base, _)
@@ -1981,11 +2478,18 @@ impl<'a> Checker<'a> {
                 }
                 ExprKind::Index(base, _) => current = base,
                 _ => {
-                    self.error_help(
-                        expr.span,
-                        format!("cannot {action} this expression"),
-                        "only a `var` binding, or a field or element of one, can be changed (Section 5.2)",
-                    );
+                    if action == "pass as `var`" {
+                        self.error(expr.span, "this value cannot be passed as `var`");
+                        self.label("not a variable");
+                        self.note("a `var` argument is a variable that the function may change, or a field or element of one (Section 5.3)");
+                        self.help("put the value in a variable first: `var n := ...`, then pass `var n`");
+                    } else {
+                        self.error_help(
+                            expr.span,
+                            format!("cannot {action} this expression"),
+                            "only a `var` binding, or a field or element of one, can be changed (Section 5.2)",
+                        );
+                    }
                     return false;
                 }
             }
@@ -1993,6 +2497,28 @@ impl<'a> Checker<'a> {
     }
 
     // ---- conversions --------------------------------------------------------------------
+
+    /// If an error since `reported` says that the expression at `span` has the wrong type,
+    /// points it at `because`, the place that asks for the type.
+    pub(crate) fn explain_mismatch(&mut self, reported: usize, span: Span, because: Option<Span>, why: String) {
+        let mismatch = self.diags.len() == reported + 1
+            && self.diags[reported].span == span
+            && self.diags[reported].message.starts_with("expected `");
+        if mismatch {
+            self.related(because, why);
+        }
+    }
+
+    /// As `coerce`. If the types do not agree, the error also points at `because`, the
+    /// place that asks for the type, and says `why`.
+    pub(crate) fn coerce_for(&mut self, expr: Expr, expected: &Ty, because: Option<Span>, why: &str) -> Expr {
+        let reported = self.diags.len();
+        let expr = self.coerce(expr, expected);
+        if self.diags.len() > reported {
+            self.related(because, why);
+        }
+        expr
+    }
 
     /// Uses `expr` where `expected` is required, applying the widenings of Section 4.
     pub(crate) fn coerce(&mut self, expr: Expr, expected: &Ty) -> Expr {
@@ -2037,17 +2563,47 @@ impl<'a> Checker<'a> {
             _ => {}
         }
         let (want, found) = (self.ty_name(expected), self.ty_name(&expr.ty));
+        let after = Span {
+            start: span.end,
+            end: span.end,
+        };
+        let before = Span {
+            start: span.start,
+            end: span.start,
+        };
+        // A correction, where there is exactly one thing that was meant.
+        let fix: Option<(&str, Vec<(Span, String)>)> = match (expected, &expr.ty) {
+            (Ty::Float, Ty::Int) if matches!(expr.kind, ExprKind::Int(_)) => {
+                Some(("write the number as a `float`", vec![(after, ".0".to_string())]))
+            }
+            (Ty::Float, Ty::Int) => Some((
+                "convert the `int` to a `float`",
+                vec![(before, "float.from(".to_string()), (after, ")".to_string())],
+            )),
+            (_, Ty::Fn(function)) if function.ret == *expected && function.params.is_empty() => {
+                Some(("call the function", vec![(after, "()".to_string())]))
+            }
+            (Ty::Str, Ty::Int | Ty::Float | Ty::Bool) => Some((
+                "make it text",
+                vec![(before, "\"{".to_string()), (after, "}\"".to_string())],
+            )),
+            _ => None,
+        };
         let help = match (expected, &expr.ty) {
-            (Ty::Float, Ty::Int) => {
-                Some("there is no implicit conversion: write `float.from(x)`, or `1.0` for a literal")
+            (Ty::Float, Ty::Int) => Some("an `int` never becomes a `float` by itself (Section 4.2)"),
+            (_, Ty::Fn(function)) if function.ret == *expected => {
+                Some("this names the function; to use its result, call it")
+            }
+            (Ty::Int | Ty::Float, Ty::Str) if !matches!(expr.kind, ExprKind::Str(_)) => {
+                Some("to read a number from text, write `int.parse(text)` or `float.parse(text)`, which give a result")
             }
             (Ty::Int, Ty::Float) => Some("choose the rounding: `x.round()`, `x.floor()`, `x.ceil()` or `x.trunc()`"),
-            (_, Ty::Optional(inner)) if **inner == *expected => {
-                Some("the value may be absent: use `?`, `else` or `match` (Section 4.8)")
-            }
-            (_, Ty::Result(inner, _)) if **inner == *expected => {
-                Some("the value may be an error: use `?`, `else` or `match` (Section 6.4)")
-            }
+            (_, Ty::Optional(inner)) if **inner == *expected => Some(
+                "the value may be absent: give one to use when there is none, `x else fallback`, or test for it, `if value := x { ... }` (Section 4.8)",
+            ),
+            (_, Ty::Result(inner, _)) if **inner == *expected => Some(
+                "the value may be an error: `x?` passes the error on to the caller, and `x else fallback` gives a value in its place (Section 6.4)",
+            ),
             (Ty::Result(..), Ty::Result(..)) => Some("the errors of the value are not all in the expected error set"),
             _ => None,
         };
@@ -2055,6 +2611,10 @@ impl<'a> Checker<'a> {
         match help {
             Some(help) => self.error_help(span, message, help),
             None => self.error(span, message),
+        }
+        self.label(format!("this is {}", a(&found)));
+        if let Some((message, edits)) = fix {
+            self.fix_edits(message, edits);
         }
         Expr {
             kind: expr.kind,
@@ -2205,4 +2765,32 @@ fn is_constant(expr: &ast::Expr) -> bool {
 
 fn is_type_like(name: &str) -> bool {
     name.chars().next().is_some_and(char::is_uppercase)
+}
+
+/// A type's name with its article: "an `int`", "a `string`".
+pub(crate) fn a(name: &str) -> String {
+    let letters: Vec<char> = name.chars().take(3).map(|c| c.to_ascii_lowercase()).collect();
+    let is_vowel = |c: &char| matches!(c, 'a' | 'e' | 'i' | 'o' | 'u');
+    let vowel = match letters.as_slice() {
+        // "a user", "a unit": a `u` that is said as "you".
+        ['u', second, third, ..] => is_vowel(second) || !is_vowel(third),
+        [first, ..] => is_vowel(first),
+        [] => false,
+    };
+    format!("{} `{name}`", if vowel { "an" } else { "a" })
+}
+
+/// The name a function is recorded under where the program's declarations are noted.
+fn fn_key(sig: &ast::FnSig) -> String {
+    let owner = match &sig.target {
+        ast::FnTarget::Free => return format!("fn {}", sig.name.name),
+        ast::FnTarget::Method { ty, .. } => ty.as_ref(),
+        ast::FnTarget::TypeLevel(ty) => Some(ty),
+    };
+    let owner = match owner.map(|ty| &ty.kind) {
+        Some(ast::TypeKind::Named { path, .. }) => path.last().map(|name| name.name.as_str()).unwrap_or(""),
+        Some(ast::TypeKind::List(_)) => "List",
+        _ => "",
+    };
+    format!("fn {owner}.{}", sig.name.name)
 }

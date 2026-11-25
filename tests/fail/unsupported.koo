@@ -1,10 +1,10 @@
-import std/http
+import std/sql
 
 pub interface Shape {
     fn area() -> float
 }
 
-actor Counter {
+actor Cache<K> {
     var n: int = 0
 }
 
@@ -15,8 +15,8 @@ fn main() {
     scope { print("x") }
     defer { print("y") }
 }
-//! error the package `std/http` is not part of this compiler yet
-//! error actors are not supported by this compiler yet
+//! error the package `std/sql` is not part of this compiler yet
+//! error generic actors, and actors that declare what they satisfy, are not supported by this compiler yet
 //! error distinct types are not supported by this compiler yet
 //! error `Decimal` is not supported by this compiler yet
 //! error tasks are not supported by this compiler yet

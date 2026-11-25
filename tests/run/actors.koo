@@ -1,0 +1,75 @@
+// Actors: state that is asked and told, one message at a time (Section 7.3).
+error NotFound { key: string }
+error Full { limit: int }
+
+enum Kind { Small, Large }
+
+type Item = { name: string, qty: int = 1, kind: Kind, note: string? }
+
+actor Store {
+    var items: [string: Item] = [:]
+    limit: int
+
+    fn put(item: Item) ! Full {
+        if items.len >= limit { fail Full { limit } }
+        items[item.name] = item
+    }
+
+    fn find(name: string) -> Item ! NotFound {
+        return items[name] else fail NotFound { key: name }
+    }
+
+    fn names() -> [string] {
+        return items.keys()
+    }
+
+    fn total() -> int {
+        return items.values().map(item -> item.qty).sum()
+    }
+
+    fn boom(divide_by: int) -> int {
+        return 10 / divide_by
+    }
+}
+
+actor Audit {
+    var lines: [string] = []
+    store: Store
+
+    fn note(line: string) {
+        lines.push("{line} ({store.total()} in store)")
+    }
+
+    fn all() -> [string] {
+        return lines
+    }
+}
+
+fn main() {
+    store := Store.start(limit: 2)
+    audit := Audit.start(store: store)
+    store.put(Item { name: "bolt", qty: 4, kind: Kind.Small, note: none }) else e => print("full: {e.limit}")
+    audit.note("put bolt")
+    store.put(Item { name: "beam", qty: 1, kind: Kind.Large, note: "heavy" }) else e => print("full: {e.limit}")
+    audit.send.note("put beam")
+    store.put(Item { name: "nut", qty: 9, kind: Kind.Small, note: none }) else e => print("full: {e.limit}")
+    print("{store.names()} total {store.total()}")
+    match store.find("beam") {
+        item => print("{item.name}: {item.qty}, {item.note else "no note"}")
+        ! e => print("no {e.key}")
+    }
+    match store.find("gear") {
+        item => print(item.name)
+        ! e => print("no {e.key}")
+    }
+    for line in audit.all() {
+        print(line)
+    }
+}
+
+//= full: 2
+//= ["bolt", "beam"] total 5
+//= beam: 1, heavy
+//= no gear
+//= put bolt (4 in store)
+//= put beam (5 in store)

@@ -10,13 +10,33 @@
 //! * string: `{ rc: i64, len: i64, cap: i64, bytes... }`
 //! * list:   `{ rc: i64, len: i64, cap: i64, elements... }`
 //!
-//! A value is a pointer to its header. A count of `IMMORTAL` or more marks a static value,
-//! which is never freed.
+//! A value is a pointer to its header, which begins with its count. The count says who
+//! may reach the value:
+//!
+//! * above zero, one thread: that many references, counted with plain arithmetic, and
+//!   with exactly one the value is changed where it is;
+//! * `IMMORTAL`, a constant: never counted, never written, never freed;
+//! * below `-2^62`, frozen: the value is never changed again, so any thread may read it,
+//!   and its references (the count less `FROZEN`) are counted atomically. What crosses
+//!   from one actor to another is frozen first (`actor.rs`). A frozen value with one
+//!   reference is that thread's alone, and becomes an ordinary value again when the
+//!   thread wants to change it.
 
 #![cfg_attr(not(test), no_std)]
 #![allow(clippy::missing_safety_doc)]
+// A C `char` is signed on some machines and not on others, so a cast between a C string
+// and bytes is needed on the first and does nothing on the second.
+#![allow(clippy::unnecessary_cast)]
+// The C library's functions are declared here over bytes, where the standard library,
+// which the tests link, declares them over `c_void`. The two are the same to the machine.
+#![allow(unknown_lints)]
+#![allow(suspicious_runtime_symbol_definitions)]
 
 use core::fmt::Write;
+
+pub mod actor;
+pub mod http;
+pub mod thread;
 
 unsafe extern "C" {
     fn malloc(size: usize) -> *mut u8;
@@ -40,7 +60,59 @@ fn rust_panic(_: &core::panic::PanicInfo) -> ! {
 pub extern "C" fn rust_eh_personality() {}
 
 const HEADER: usize = 24;
-const IMMORTAL: i64 = 1 << 62;
+const IMMORTAL: i64 = -1;
+const FROZEN: i64 = i64::MIN;
+
+fn is_frozen(rc: i64) -> bool {
+    rc < -(1 << 62)
+}
+
+unsafe fn count<'a>(value: *mut Header) -> &'a core::sync::atomic::AtomicI64 {
+    unsafe { &*(value as *const core::sync::atomic::AtomicI64) }
+}
+
+/// Takes one more reference to a value of the program's.
+unsafe fn retain(value: *mut Header) {
+    use core::sync::atomic::Ordering::Relaxed;
+    unsafe {
+        let rc = count(value).load(Relaxed);
+        if rc > 0 {
+            (*value).rc = rc + 1;
+        } else if is_frozen(rc) {
+            count(value).fetch_add(1, Relaxed);
+        }
+    }
+}
+
+/// Gives up one reference to a value. Returns whether it was the last, and the value is
+/// the caller's to free.
+unsafe fn release(value: *mut Header) -> bool {
+    use core::sync::atomic::Ordering::{AcqRel, Relaxed};
+    unsafe {
+        let rc = count(value).load(Relaxed);
+        if rc > 0 {
+            (*value).rc = rc - 1;
+            rc == 1
+        } else if is_frozen(rc) {
+            count(value).fetch_sub(1, AcqRel) == FROZEN + 1
+        } else {
+            false
+        }
+    }
+}
+
+/// Whether the one reference to a value is the only one, so that the value may be
+/// changed where it is. A frozen value that nothing else holds is thawed.
+unsafe fn unique(value: *mut Header) -> bool {
+    unsafe {
+        let rc = count(value).load(core::sync::atomic::Ordering::Relaxed);
+        if rc == FROZEN + 1 {
+            (*value).rc = 1;
+            return true;
+        }
+        rc == 1
+    }
+}
 
 #[repr(C)]
 pub struct Header {
@@ -71,10 +143,23 @@ unsafe fn bytes<'a>(s: *const Header) -> &'a [u8] {
 
 // ---- allocation -------------------------------------------------------------------------
 
-/// Allocations made and not yet freed. With `KOO_LEAKS` set in the environment, a program
-/// that ends with any left reports them, which is how the compiler's tests check that
-/// generated code frees what it allocates.
-static mut LIVE: i64 = 0;
+/// Whether allocations are counted. With `KOO_LEAKS` set in the environment they are, each
+/// thread keeping its own count, and a program that ends with any not freed reports them,
+/// which is how the compiler's tests check that generated code frees what it allocates.
+static COUNTING: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
+
+#[inline]
+unsafe fn counted(by: i64) {
+    if COUNTING.load(core::sync::atomic::Ordering::Relaxed) {
+        unsafe { thread::me().live += by };
+    }
+}
+
+/// Takes an allocation out of the count: it is the support library's own from here on,
+/// and not a leak of the program's.
+unsafe fn uncounted() {
+    unsafe { counted(-1) }
+}
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn koo_alloc(size: i64) -> *mut u8 {
@@ -82,7 +167,7 @@ pub unsafe extern "C" fn koo_alloc(size: i64) -> *mut u8 {
     if p.is_null() {
         fatal(b"koo: out of memory\n");
     }
-    unsafe { LIVE += 1 };
+    unsafe { counted(1) };
     p
 }
 
@@ -92,14 +177,14 @@ pub unsafe extern "C" fn koo_alloc_zeroed(size: i64) -> *mut u8 {
     if p.is_null() {
         fatal(b"koo: out of memory\n");
     }
-    unsafe { LIVE += 1 };
+    unsafe { counted(1) };
     p
 }
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn koo_free(p: *mut u8) {
     unsafe {
-        LIVE -= 1;
+        counted(-1);
         free(p)
     }
 }
@@ -109,19 +194,24 @@ pub unsafe extern "C" fn koo_free(p: *mut u8) {
 pub unsafe extern "C" fn koo_exit_main() {
     unsafe {
         koo_flush();
-        // The message of the last input or output error is the library's own.
-        let last = core::mem::replace(&mut *core::ptr::addr_of_mut!(LAST_ERROR), core::ptr::null_mut());
-        if !last.is_null() {
-            koo_free(last as *mut u8);
-        }
-        // And so is a string that was read from JSON and never collected.
-        let text = core::mem::replace(&mut *core::ptr::addr_of_mut!(JSON_TEXT), core::ptr::null_mut());
-        if !text.is_null() {
-            koo_free(text as *mut u8);
-        }
+        // What the actors of the program needed of the system is given back.
+        actor::at_exit();
+        // The message of the last input or output error is the library's own, and so is a
+        // string that was read from JSON and never collected: each thread's.
+        thread::every(|thread| {
+            for kept in [&mut thread.last_error, &mut thread.json_text] {
+                let kept = core::mem::replace(kept, core::ptr::null_mut());
+                if !kept.is_null() {
+                    koo_free(kept as *mut u8);
+                }
+            }
+        });
     }
-    let live = unsafe { LIVE };
-    if live != 0 && !unsafe { getenv(c"KOO_LEAKS".as_ptr() as *const u8) }.is_null() {
+    let mut live = 0;
+    unsafe { thread::every(|thread| live += thread.live) };
+    // After a panic that ended a message and not the program, what the message held was
+    // never freed, and the count says nothing.
+    if live != 0 && !unsafe { actor::leaked() } {
         let mut out = Buffer::new();
         let _ = writeln!(out, "koo: {live} allocations were not freed");
         out.flush(2);
@@ -145,7 +235,8 @@ pub unsafe extern "C" fn koo_panic(message: *const u8, len: i64, file: *const He
     }
     out.push(b"\n");
     out.flush(2);
-    unsafe { exit(101) }
+    // A panic ends the program, unless it is in a message that it only ends.
+    unsafe { actor::leave() }
 }
 
 /// `panic(message)` in a program.
@@ -187,11 +278,16 @@ unsafe fn str_from(bytes: &[u8]) -> *mut Header {
 }
 
 /// Makes the string in `slot` uniquely owned with room for `extra` more bytes.
+/// A string of the program's, holding a copy of these bytes.
+unsafe fn new_str(bytes: &[u8]) -> *mut Header {
+    unsafe { koo_str_from_bytes(bytes.as_ptr(), bytes.len() as i64) }
+}
+
 unsafe fn str_reserve(slot: *mut *mut Header, extra: usize) -> *mut Header {
     let s = unsafe { *slot };
     let len = unsafe { (*s).len } as usize;
     let needed = len + extra;
-    if unsafe { (*s).rc } == 1 {
+    if unsafe { unique(s) } {
         if needed <= unsafe { (*s).cap } as usize {
             return s;
         }
@@ -212,7 +308,10 @@ unsafe fn str_reserve(slot: *mut *mut Header, extra: usize) -> *mut Header {
     unsafe {
         core::ptr::copy_nonoverlapping((s as *const u8).add(HEADER), (copy as *mut u8).add(HEADER), len);
         (*copy).len = len as i64;
-        (*s).rc -= 1;
+        // Others held it too; if it is frozen, they may have let go of it since.
+        if release(s) {
+            koo_free(s as *mut u8);
+        }
         *slot = copy;
     }
     copy
@@ -278,9 +377,17 @@ pub unsafe extern "C" fn koo_str_hash(s: *const Header) -> i64 {
     hash as i64
 }
 
-/// The IEEE 754 `totalOrder` of two floats (Section 4.2): negative, zero or positive.
+/// The order of two floats (Section 4.2): negative, zero or positive. It is the IEEE 754
+/// `totalOrder`, except that what is not a number is one value, after every number.
+/// `totalOrder` tells such values apart by a sign that a processor is free to choose:
+/// `0.0 / 0.0` is negative on x86-64 and positive on arm64, and a program must not sort
+/// differently on the two.
 #[unsafe(no_mangle)]
 pub extern "C" fn koo_float_compare(a: f64, b: f64) -> i64 {
+    let (a, b) = (
+        if a.is_nan() { f64::NAN } else { a },
+        if b.is_nan() { f64::NAN } else { b },
+    );
     match a.total_cmp(&b) {
         core::cmp::Ordering::Less => -1,
         core::cmp::Ordering::Equal => 0,
@@ -609,10 +716,19 @@ pub unsafe extern "C" fn koo_bytes_to_str(list: *const Header) -> *mut Header {
 
 static mut ARGC: i32 = 0;
 static mut ARGV: *const *const u8 = core::ptr::null();
-/// Whether the last operation that can fail did, and why.
-static mut FAILED: bool = false;
-static mut LAST_ERROR: *mut Header = core::ptr::null_mut();
-static mut AT_END: bool = false;
+
+/// Notes that an operation that can fail did, and why: the message is kept for the thread
+/// to ask for.
+unsafe fn failed_with(message: *mut Header) {
+    unsafe {
+        let me = thread::me();
+        if !me.last_error.is_null() {
+            koo_free(me.last_error as *mut u8);
+        }
+        me.last_error = message;
+        me.failed = true;
+    }
+}
 
 unsafe extern "C" {
     fn strlen(s: *const u8) -> usize;
@@ -635,6 +751,8 @@ pub unsafe extern "C" fn koo_init(argc: i32, argv: *const *const u8) {
     unsafe {
         ARGC = argc;
         ARGV = argv;
+        let counting = !getenv(c"KOO_LEAKS".as_ptr() as *const u8).is_null();
+        COUNTING.store(counting, core::sync::atomic::Ordering::Relaxed);
     }
 }
 
@@ -685,11 +803,7 @@ unsafe fn fail_with(prefix: &[u8], path: *const Header) {
         let reason = c_text(strerror(*errno_location()));
         koo_str_append_bytes(&mut message, b": ".as_ptr(), 2);
         koo_str_append_bytes(&mut message, reason.as_ptr(), reason.len() as i64);
-        if !LAST_ERROR.is_null() {
-            koo_free(LAST_ERROR as *mut u8);
-        }
-        LAST_ERROR = message;
-        FAILED = true;
+        failed_with(message);
     }
 }
 
@@ -767,7 +881,7 @@ pub unsafe extern "C" fn koo_read_line() -> *mut Header {
         if input.start == input.end {
             let n = unsafe { read(0, input.data.as_mut_ptr(), input.data.len()) };
             if n <= 0 {
-                unsafe { AT_END = !any };
+                unsafe { thread::me().at_end = !any };
                 break;
             }
             input.start = 0;
@@ -804,7 +918,7 @@ pub unsafe extern "C" fn koo_read_line() -> *mut Header {
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn koo_at_end() -> bool {
-    unsafe { AT_END }
+    unsafe { thread::me().at_end }
 }
 
 /// The text of a file. On failure the result is empty and `koo_failed` turns true.
@@ -868,16 +982,17 @@ pub unsafe extern "C" fn koo_write_file(path: *const Header, text: *const Header
 /// Whether the last operation that can fail did. Asking clears the answer.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn koo_failed() -> bool {
-    unsafe { core::mem::replace(&mut *core::ptr::addr_of_mut!(FAILED), false) }
+    unsafe { core::mem::replace(&mut thread::me().failed, false) }
 }
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn koo_last_error() -> *mut Header {
     unsafe {
-        if LAST_ERROR.is_null() {
+        let last = thread::me().last_error;
+        if last.is_null() {
             return koo_str_new(0);
         }
-        let message = bytes(LAST_ERROR);
+        let message = bytes(last);
         koo_str_from_bytes(message.as_ptr(), message.len() as i64)
     }
 }
@@ -892,7 +1007,9 @@ pub unsafe extern "C" fn koo_eprint(s: *const Header) {
 /// Standard output without a line feed.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn koo_write(s: *const Header) {
+    PRINTING.lock();
     unsafe { stdout_write(bytes(s)) }
+    PRINTING.unlock();
 }
 
 #[unsafe(no_mangle)]
@@ -940,8 +1057,17 @@ static mut STDOUT: Stdout = Stdout {
     len: 0,
 };
 
+/// In a process just forked: what a thread of the parent held is let go of.
+unsafe fn threads_after_fork() {
+    PRINTING.unlock();
+    unsafe { thread::after_fork() };
+}
+
+/// Held while the output buffer is used, so that what two threads print does not mix
+/// inside a line.
+static PRINTING: thread::Lock = thread::Lock::new();
+
 unsafe fn stdout_write(bytes: &[u8]) {
-    // Programs are single-threaded until the task runtime exists (milestone 0.3).
     let out = unsafe { &mut *core::ptr::addr_of_mut!(STDOUT) };
     if bytes.len() > out.data.len() - out.len {
         write_all(1, &out.data[..out.len]);
@@ -957,18 +1083,22 @@ unsafe fn stdout_write(bytes: &[u8]) {
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn koo_flush() {
+    PRINTING.lock();
     let out = unsafe { &mut *core::ptr::addr_of_mut!(STDOUT) };
     write_all(1, &out.data[..out.len]);
     out.len = 0;
+    PRINTING.unlock();
 }
 
 /// `print(s)`: the text and a line feed.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn koo_print(s: *const Header) {
+    PRINTING.lock();
     unsafe {
         stdout_write(bytes(s));
         stdout_write(b"\n");
     }
+    PRINTING.unlock();
 }
 
 /// Reports an error returned from `main` and exits with status 1 (Section 6.1).
@@ -1043,10 +1173,7 @@ pub unsafe extern "C" fn koo_list_new(cap: i64, elem_size: i64) -> *mut Header {
 // the position after what it read, or -1 if the text is not that. A function that reads a
 // value leaves it here for the call that follows to collect, since it has only one result.
 
-static mut JSON_TEXT: *mut Header = core::ptr::null_mut();
-static mut JSON_INT: i64 = 0;
-static mut JSON_FLOAT: f64 = 0.0;
-static mut JSON_IS_INT: bool = false;
+// It is kept for the thread (`thread.rs`), so that two threads can read at once.
 
 /// How deep arrays and objects may nest in a value that is skipped.
 const JSON_DEPTH: usize = 512;
@@ -1157,13 +1284,14 @@ pub unsafe extern "C" fn koo_json_string(text: *const Header, at: i64) -> i64 {
         koo_str_append_bytes(&mut out, piece.as_ptr(), piece.len() as i64)
     });
     unsafe {
-        let kept = core::mem::replace(&mut *core::ptr::addr_of_mut!(JSON_TEXT), core::ptr::null_mut());
+        let me = thread::me();
+        let kept = core::mem::replace(&mut me.json_text, core::ptr::null_mut());
         if !kept.is_null() {
             koo_free(kept as *mut u8);
         }
         match end {
             Some(end) => {
-                JSON_TEXT = out;
+                me.json_text = out;
                 end as i64
             }
             None => {
@@ -1178,7 +1306,7 @@ pub unsafe extern "C" fn koo_json_string(text: *const Header, at: i64) -> i64 {
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn koo_json_text() -> *mut Header {
     unsafe {
-        let kept = core::mem::replace(&mut *core::ptr::addr_of_mut!(JSON_TEXT), core::ptr::null_mut());
+        let kept = core::mem::replace(&mut thread::me().json_text, core::ptr::null_mut());
         if kept.is_null() { koo_str_new(0) } else { kept }
     }
 }
@@ -1244,9 +1372,10 @@ pub unsafe extern "C" fn koo_json_number(text: *const Header, at: i64) -> i64 {
         return -1;
     };
     unsafe {
-        JSON_IS_INT = int.is_some();
-        JSON_INT = int.unwrap_or(0);
-        JSON_FLOAT = float;
+        let me = thread::me();
+        me.json_is_int = int.is_some();
+        me.json_int = int.unwrap_or(0);
+        me.json_float = float;
     }
     end as i64
 }
@@ -1254,17 +1383,17 @@ pub unsafe extern "C" fn koo_json_number(text: *const Header, at: i64) -> i64 {
 /// Whether the number read last is an integer that fits in an `int`.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn koo_json_is_int() -> bool {
-    unsafe { JSON_IS_INT }
+    unsafe { thread::me().json_is_int }
 }
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn koo_json_int() -> i64 {
-    unsafe { JSON_INT }
+    unsafe { thread::me().json_int }
 }
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn koo_json_float() -> f64 {
-    unsafe { JSON_FLOAT }
+    unsafe { thread::me().json_float }
 }
 
 /// The position after `word` if the text has it at `at`, or -1.
@@ -1406,6 +1535,31 @@ pub unsafe extern "C" fn koo_json_tag(text: *const Header, at: i64, key: *const 
     }
 }
 
+/// How deep the arrays and objects being read are nested. A text nested deeper than
+/// `JSON_NEST_MAX` is refused, so that reading it cannot run out of stack.
+const JSON_NEST_MAX: i64 = 128;
+
+/// Begins reading a text.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn koo_json_begin() {
+    unsafe { thread::me().json_nest = 0 };
+}
+
+/// Goes one array or object deeper. Returns whether that is allowed.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn koo_json_enter() -> bool {
+    unsafe {
+        let me = thread::me();
+        me.json_nest += 1;
+        me.json_nest <= JSON_NEST_MAX
+    }
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn koo_json_leave() {
+    unsafe { thread::me().json_nest -= 1 };
+}
+
 /// The string as JSON writes it: in quotes, with what must be escaped escaped.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn koo_json_quote(s: *const Header) -> *mut Header {
@@ -1450,7 +1604,7 @@ pub unsafe extern "C" fn koo_json_quote(s: *const Header) -> *mut Header {
 
 /// Whether a count marks a static value. Exposed for the tests.
 pub fn is_immortal(rc: i64) -> bool {
-    rc >= IMMORTAL / 2
+    rc == IMMORTAL
 }
 
 #[cfg(test)]

@@ -244,7 +244,7 @@ impl Parser {
         let reported = self.diags.len();
         let Ok(args) = self.type_args() else {
             if let Some(diagnostic) = self.diags.get_mut(reported) {
-                diagnostic.help = Some(HELP.to_string());
+                diagnostic.help = vec![HELP.to_string()];
             }
             return Err(());
         };
@@ -383,9 +383,15 @@ impl Parser {
                 }
                 None
             };
+            let var_at = p.span().start;
             let var = p.eat_kw(Kw::Var);
             let value = p.expr()?;
-            Ok(Arg { name, var, value })
+            Ok(Arg {
+                name,
+                var,
+                var_at,
+                value,
+            })
         })
     }
 
@@ -470,6 +476,21 @@ impl Parser {
                     body: Box::new(body),
                 }
             }
+            Tok::Ident(word)
+                if matches!(word.as_str(), "f" | "F")
+                    && matches!(self.raw(1), Tok::Str(_))
+                    && self.toks[self.pos + 1].span.start == self.span().end =>
+            {
+                // `f"total: {n}"`: the string of Python. It is read as the string it is.
+                let span = self.span();
+                self.diag(
+                    Diagnostic::new(span, "a string needs no `f` to hold values")
+                        .with_note("every string takes values in braces: `\"total: {n}\"`")
+                        .with_fix("remove it", span, ""),
+                );
+                self.bump();
+                return self.primary();
+            }
             Tok::Ident(_) | Tok::UpperIdent(_) => ExprKind::Name(Self::ident_from(self.bump())),
             Tok::LParen if self.paren_then(&Tok::Arrow) => {
                 // `(a, b) -> body`, `(e: NotFound) -> body`, `() -> body`.
@@ -527,10 +548,15 @@ impl Parser {
             }
             Tok::Bang => {
                 let span = self.span();
-                self.report_help(
-                    span,
-                    "expected an expression, found `!`",
-                    "logical negation is written `not x`",
+                let glued = self.toks[(self.pos + 1).min(self.toks.len() - 1)].span.start == span.end;
+                self.diag(
+                    Diagnostic::new(span, "expected an expression, found `!`")
+                        .with_note("`!` introduces the errors of a function: `fn f() -> T ! E`")
+                        .with_fix(
+                            "logical negation is written `not`",
+                            span,
+                            if glued { "not " } else { "not" },
+                        ),
                 );
                 return Err(());
             }
@@ -565,6 +591,7 @@ impl Parser {
 
     /// `[a, b]`, `[]`, `[k: v]` and `[:]`.
     fn list_or_map(&mut self) -> PResult<ExprKind> {
+        let opened = self.pos;
         self.bump();
         let saved = self.enter(false);
         let kind = if self.eat(&Tok::Colon) {
@@ -589,7 +616,19 @@ impl Parser {
                 ExprKind::List(items)
             }
         };
-        self.expect(&Tok::RBracket, "`,` or `]`")?;
+        if !self.at(&Tok::RBracket) {
+            let reported = self.diags.len();
+            self.expected_separator(&Tok::RBracket);
+            if self.closer(opened).is_none()
+                && let Some(diagnostic) = self.diags.get_mut(reported)
+            {
+                diagnostic
+                    .related
+                    .push((self.toks[opened].span, "this `[` is never closed".to_string()));
+            }
+            return Err(());
+        }
+        self.bump();
         self.leave(saved);
         Ok(kind)
     }

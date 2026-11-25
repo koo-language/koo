@@ -22,6 +22,7 @@ pub(super) struct Enclosing {
     scopes: Vec<HashMap<String, LocalId>>,
     ret: Ty,
     loops: usize,
+    here: Option<super::FnAt>,
     lambda: Option<LambdaState>,
     /// The function's own function parameters that are only lent to it.
     borrowed_fns: std::collections::HashSet<LocalId>,
@@ -58,6 +59,7 @@ impl<'a> Checker<'a> {
         std::mem::swap(&mut self.locals, &mut other.locals);
         std::mem::swap(&mut self.used, &mut other.used);
         std::mem::swap(&mut self.declared_at, &mut other.declared_at);
+        std::mem::swap(&mut self.here, &mut other.here);
         std::mem::swap(&mut self.scopes, &mut other.scopes);
         std::mem::swap(&mut self.ret, &mut other.ret);
         std::mem::swap(&mut self.loops, &mut other.loops);
@@ -137,6 +139,11 @@ impl<'a> Checker<'a> {
                     if function.params.len() == 1 { "is" } else { "are" },
                 ),
             );
+            let wanted = self.ty_name(&Ty::Fn(Box::new(function.clone())));
+            self.label(format!("a `{wanted}` is expected here"));
+            if function.params.len() == 1 && params.len() == 2 {
+                self.help("a function of one parameter is written `x -> ...`; if the one value is a pair, take it apart inside: `pair -> { (a, b) := pair ... }`");
+            }
             return self.unknown(span);
         }
         // The parameters: from their annotations, or from the expected type.
@@ -200,6 +207,7 @@ impl<'a> Checker<'a> {
             receiver: None,
             params: Vec::new(),
             ret: function.ret.clone(),
+            at: None,
         });
         self.program.functions.push(Function {
             name,

@@ -1,0 +1,33 @@
+// A method that panics ends its actor, and another takes its place with the state the
+// actor starts with (Section 7.4). The asker of the message that did it panics too.
+actor Fragile {
+    var count: int = 0
+
+    fn bump() -> int {
+        count += 1
+        return count
+    }
+
+    fn divide(by: int) -> int {
+        return 100 / by
+    }
+
+    fn crash() {
+        divide(0)
+    }
+}
+
+fn main() {
+    fragile := Fragile.start()
+    print("{fragile.bump()} {fragile.bump()}")
+    fragile.send.crash()
+    print("after the panic: {fragile.bump()}")
+    print("{fragile.divide(0)}")
+    print("not reached")
+}
+
+//= 1 2
+//= after the panic: 1
+//! exit 101
+//! stderr the actor `Fragile` panicked, and starts again
+//! stderr panic: division by zero

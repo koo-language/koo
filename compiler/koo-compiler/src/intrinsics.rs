@@ -16,6 +16,13 @@ pub enum I {
     Str,
     Strs,
     Bytes,
+    /// A value of the program's that the support library keeps and hands back without
+    /// knowing its type: the state of an actor, or what waits to be run. The checker
+    /// gives it the type that is expected of it.
+    Cell,
+    /// Like `Cell`, and the support library keeps it: the program's variable is left
+    /// empty, and does not free it.
+    Given,
 }
 
 impl I {
@@ -28,6 +35,7 @@ impl I {
             I::Str => Ty::Str,
             I::Strs => Ty::list(Ty::Str),
             I::Bytes => Ty::list(Ty::Byte),
+            I::Cell | I::Given => Ty::Unknown,
         }
     }
 
@@ -37,7 +45,7 @@ impl I {
             I::Int => "i64",
             I::Float => "double",
             I::Bool => "i1",
-            I::Str | I::Strs | I::Bytes => "ptr",
+            I::Str | I::Strs | I::Bytes | I::Cell | I::Given => "ptr",
         }
     }
 }
@@ -184,6 +192,294 @@ pub const INTRINSICS: &[Intrinsic] = &[
         name: "now_nanos",
         params: &[],
         ret: I::Int,
+    },
+    // Reading and writing JSON.
+    Intrinsic {
+        name: "json_ws",
+        params: &[I::Str, I::Int],
+        ret: I::Int,
+    },
+    Intrinsic {
+        name: "str_byte",
+        params: &[I::Str, I::Int],
+        ret: I::Int,
+    },
+    Intrinsic {
+        name: "json_string",
+        params: &[I::Str, I::Int],
+        ret: I::Int,
+    },
+    Intrinsic {
+        name: "json_text",
+        params: &[],
+        ret: I::Str,
+    },
+    Intrinsic {
+        name: "json_number",
+        params: &[I::Str, I::Int],
+        ret: I::Int,
+    },
+    Intrinsic {
+        name: "json_is_int",
+        params: &[],
+        ret: I::Bool,
+    },
+    Intrinsic {
+        name: "json_int",
+        params: &[],
+        ret: I::Int,
+    },
+    Intrinsic {
+        name: "json_float",
+        params: &[],
+        ret: I::Float,
+    },
+    Intrinsic {
+        name: "json_word",
+        params: &[I::Str, I::Int, I::Str],
+        ret: I::Int,
+    },
+    Intrinsic {
+        name: "json_skip",
+        params: &[I::Str, I::Int],
+        ret: I::Int,
+    },
+    Intrinsic {
+        name: "json_tag",
+        params: &[I::Str, I::Int, I::Str],
+        ret: I::Bool,
+    },
+    Intrinsic {
+        name: "json_quote",
+        params: &[I::Str],
+        ret: I::Str,
+    },
+    Intrinsic {
+        name: "json_begin",
+        params: &[],
+        ret: I::Unit,
+    },
+    Intrinsic {
+        name: "json_enter",
+        params: &[],
+        ret: I::Bool,
+    },
+    Intrinsic {
+        name: "json_leave",
+        params: &[],
+        ret: I::Unit,
+    },
+    // Actors (`koo-rt/src/actor.rs`).
+    Intrinsic {
+        name: "actor_new",
+        params: &[I::Str, I::Cell],
+        ret: I::Int,
+    },
+    Intrinsic {
+        name: "actor_take",
+        params: &[I::Int, I::Str],
+        ret: I::Cell,
+    },
+    Intrinsic {
+        name: "actor_put",
+        params: &[I::Int, I::Given],
+        ret: I::Unit,
+    },
+    Intrinsic {
+        name: "actor_tell",
+        params: &[I::Int, I::Given],
+        ret: I::Unit,
+    },
+    Intrinsic {
+        name: "actor_letter",
+        params: &[I::Int, I::Int],
+        ret: I::Unit,
+    },
+    Intrinsic {
+        name: "actor_alive",
+        params: &[I::Int],
+        ret: I::Bool,
+    },
+    Intrinsic {
+        name: "actor_end",
+        params: &[I::Int, I::Int],
+        ret: I::Cell,
+    },
+    Intrinsic {
+        name: "actor_scan",
+        params: &[],
+        ret: I::Unit,
+    },
+    Intrinsic {
+        name: "actor_any",
+        params: &[I::Str],
+        ret: I::Int,
+    },
+    Intrinsic {
+        name: "freeze",
+        params: &[I::Cell],
+        ret: I::Unit,
+    },
+    Intrinsic {
+        name: "guard",
+        params: &[],
+        ret: I::Bool,
+    },
+    Intrinsic {
+        name: "guard_done",
+        params: &[],
+        ret: I::Unit,
+    },
+    Intrinsic {
+        name: "actor_recover",
+        params: &[],
+        ret: I::Unit,
+    },
+    Intrinsic {
+        name: "actor_home",
+        params: &[],
+        ret: I::Str,
+    },
+    Intrinsic {
+        name: "actor_local",
+        params: &[I::Str],
+        ret: I::Bool,
+    },
+    Intrinsic {
+        name: "actor_message",
+        params: &[],
+        ret: I::Str,
+    },
+    Intrinsic {
+        name: "actor_body",
+        params: &[],
+        ret: I::Str,
+    },
+    Intrinsic {
+        name: "actor_reply",
+        params: &[I::Str, I::Str],
+        ret: I::Unit,
+    },
+    Intrinsic {
+        name: "actor_hang_up",
+        params: &[],
+        ret: I::Unit,
+    },
+    Intrinsic {
+        name: "actor_ask",
+        params: &[I::Str, I::Str, I::Str],
+        ret: I::Str,
+    },
+    Intrinsic {
+        name: "actor_kind",
+        params: &[],
+        ret: I::Str,
+    },
+    Intrinsic {
+        name: "actor_send",
+        params: &[I::Str, I::Str, I::Str],
+        ret: I::Unit,
+    },
+    // The web server (`koo-rt/src/http.rs`).
+    Intrinsic {
+        name: "http_reset",
+        params: &[],
+        ret: I::Unit,
+    },
+    Intrinsic {
+        name: "http_route",
+        params: &[I::Str, I::Str],
+        ret: I::Unit,
+    },
+    Intrinsic {
+        name: "http_listen",
+        params: &[I::Int, I::Int, I::Int, I::Int],
+        ret: I::Int,
+    },
+    Intrinsic {
+        name: "http_next",
+        params: &[],
+        ret: I::Int,
+    },
+    Intrinsic {
+        name: "http_id",
+        params: &[],
+        ret: I::Int,
+    },
+    Intrinsic {
+        name: "http_method",
+        params: &[I::Int],
+        ret: I::Str,
+    },
+    Intrinsic {
+        name: "http_path",
+        params: &[I::Int],
+        ret: I::Str,
+    },
+    Intrinsic {
+        name: "http_rest",
+        params: &[I::Int],
+        ret: I::Str,
+    },
+    Intrinsic {
+        name: "http_param",
+        params: &[I::Int, I::Str],
+        ret: I::Str,
+    },
+    Intrinsic {
+        name: "http_query_has",
+        params: &[I::Int, I::Str],
+        ret: I::Bool,
+    },
+    Intrinsic {
+        name: "http_query",
+        params: &[I::Int, I::Str],
+        ret: I::Str,
+    },
+    Intrinsic {
+        name: "http_form_has",
+        params: &[I::Int, I::Str],
+        ret: I::Bool,
+    },
+    Intrinsic {
+        name: "http_form",
+        params: &[I::Int, I::Str],
+        ret: I::Str,
+    },
+    Intrinsic {
+        name: "http_cookie_has",
+        params: &[I::Int, I::Str],
+        ret: I::Bool,
+    },
+    Intrinsic {
+        name: "http_cookie",
+        params: &[I::Int, I::Str],
+        ret: I::Str,
+    },
+    Intrinsic {
+        name: "http_header_has",
+        params: &[I::Int, I::Str],
+        ret: I::Bool,
+    },
+    Intrinsic {
+        name: "http_header",
+        params: &[I::Int, I::Str],
+        ret: I::Str,
+    },
+    Intrinsic {
+        name: "http_body",
+        params: &[I::Int],
+        ret: I::Str,
+    },
+    Intrinsic {
+        name: "http_respond",
+        params: &[I::Int, I::Int, I::Str, I::Str, I::Str],
+        ret: I::Unit,
+    },
+    Intrinsic {
+        name: "http_respond_file",
+        params: &[I::Int, I::Int, I::Str, I::Str, I::Str],
+        ret: I::Unit,
     },
 ];
 

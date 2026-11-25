@@ -1,0 +1,37 @@
+// State that every request shares: an actor.
+//
+//     koo run examples/http/counter.koo
+//     curl localhost:8080/any/path
+//     curl localhost:8080/stats
+//
+// The server answers on every core, each in a process of its own, and a handler keeps
+// nothing in memory from one request to the next. The actor is one: it owns the counts,
+// and answers one message at a time, so there is nothing to lock.
+
+import std/http
+
+type Stats = { hits: int, paths: [string: int] }
+
+actor Counter {
+    var hits: int = 0
+    var paths: [string: int] = [:]
+
+    fn hit(path: string) -> int {
+        hits += 1
+        paths[path] = (paths[path] else 0) + 1
+        return hits
+    }
+
+    fn stats() -> Stats {
+        return Stats { hits, paths }
+    }
+}
+
+fn main() ! http.Error {
+    counter := Counter.start()
+    var app := http.App.new()
+    app.get("/stats", req -> http.json(counter.stats()))
+    app.get("/*", req -> http.text("you are visitor {counter.hit(req.path)}"))
+    print("listening on http://localhost:8080")
+    app.serve(port: 8080)?
+}

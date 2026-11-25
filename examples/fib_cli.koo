@@ -1,0 +1,40 @@
+// A Fibonacci number, for the n given on the command line, or typed when asked.
+//
+//     koo run examples/fib_cli.koo -- 30
+//     koo run examples/fib_cli.koo
+
+import std/io
+import std/os
+
+fn fib(n: int) -> int {
+    var a := 0
+    var b := 1
+    for _ in 0..n {
+        next := a + b
+        a = b
+        b = next
+    }
+    return a
+}
+
+// The text to read n from: the first argument, or a line typed at the prompt.
+fn input() -> string {
+    args := os.args()
+    if args.len > 0 { return args[0] }
+    io.write("n: ")
+    return io.read_line() else "10"
+}
+
+fn main() {
+    text := input().trim()
+    n := int.parse(text) else {
+        io.eprint("`{text}` is not a whole number")
+        os.exit(2)
+        return
+    }
+    if n < 0 or n > 92 {
+        io.eprint("n is from 0 to 92: fib(93) does not fit in an int")
+        os.exit(2)
+    }
+    print("fib({n}) = {fib(n)}")
+}

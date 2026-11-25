@@ -1,0 +1,1501 @@
+=== var eq
+fn main() {
+    var a = 0
+    print("{a}")
+}
+---
+error: a variable is declared with `:=`
+ --> main.koo:2:11
+  |
+2 |     var a = 0
+  |           ^ `=` changes a variable that already exists
+  |
+help: write `:=`
+  |
+2 -     var a = 0
+2 +     var a := 0
+
+1 error
+
+=== let
+fn main() {
+    let x = 5
+    print("{x}")
+}
+---
+error: `let` is not Koo: a variable is declared with `:=`
+ --> main.koo:2:5
+  |
+2 |     let x = 5
+  |     ^^^
+  |
+  = note: `x := 5` declares a variable that does not change, and `var x := 5` one that does
+help: declare `x` the Koo way
+  |
+2 -     let x = 5
+2 +     x := 5
+
+1 error
+
+=== tuple assign
+fn main() {
+    var a := 0
+    var b := 1
+    (a, b) = (b, a + b)
+    print("{a}")
+}
+---
+error: this cannot be assigned to
+ --> main.koo:4:5
+  |
+4 |     (a, b) = (b, a + b)
+  |     ^^^^^^ a tuple is not a variable
+  |
+  = note: `(a, b) := pair` declares two new names; `=` changes one variable at a time
+  = help: assign to each variable in turn; to swap two, keep one in a new name first: `t := a`, `a = b`, `b = t`
+
+1 error
+
+=== semicolon
+fn main() {
+    x := 5;
+    print("{x}")
+}
+---
+error: expected the end of the line, found `;`
+ --> main.koo:2:11
+  |
+2 |     x := 5;
+  |           ^
+  |
+  = note: Koo has no semicolons: a statement ends at the end of its line
+help: remove it
+  |
+2 -     x := 5;
+2 +     x := 5
+
+1 error
+
+=== unclosed
+fn main() {
+    if true {
+        print("a")
+}
+---
+error: this `{` is never closed
+ --> main.koo:1:11
+  |
+1 | fn main() {
+  |           ^ the file ends before its `}`
+2 |     if true {
+  |             - a `}` may be missing for this `{`: the `}` on line 4 is not indented like it
+
+1 error
+
+=== void
+fn main() -> void {
+    print("a")
+}
+---
+error: a function that returns nothing declares no return type
+ --> main.koo:1:11
+  |
+1 | fn main() -> void {
+  |           ^^^^^^^
+  |
+help: leave it out
+  |
+1 - fn main() -> void {
+1 + fn main() {
+
+1 error
+
+=== cfor
+fn main() {
+    for (i = 0; i < 3; i++) {
+        print("a")
+    }
+}
+---
+error: this is the `for` of another language
+ --> main.koo:2:9
+  |
+2 |     for (i = 0; i < 3; i++) {
+  |         ^^^^^^^^^^^^^^^^^^^
+  |
+  = note: a `for` loop goes over a range or a list: `for i in 0..n { ... }`, `for item in items { ... }`
+help: count with a range
+  |
+2 -     for (i = 0; i < 3; i++) {
+2 +     for i in 0..3 {
+
+1 error
+
+=== elif
+fn main() {
+    x := 3
+    if x == 1 {
+        print("a")
+    } elif x == 2 {
+        print("b")
+    }
+}
+---
+error: `elif` is written `else if`
+ --> main.koo:5:7
+  |
+5 |     } elif x == 2 {
+  |       ^^^^
+  |
+help: write `else if`
+  |
+5 -     } elif x == 2 {
+5 +     } else if x == 2 {
+
+1 error
+
+=== function
+function add(a: int, b: int) -> int {
+    return a + b
+}
+
+fn main() {
+    print("{add(1, 2)}")
+}
+---
+error: `function` is not Koo: a function is declared with `fn`
+ --> main.koo:1:1
+  |
+1 | function add(a: int, b: int) -> int {
+  | ^^^^^^^^
+  |
+  = note: `fn add(a: int, b: int) -> int { return a + b }`: each parameter has a type, the result follows `->`, and the body is in braces
+help: write `fn`
+  |
+1 - function add(a: int, b: int) -> int {
+1 + fn add(a: int, b: int) -> int {
+
+1 error
+
+=== def
+def add(a, b):
+    return a + b
+---
+error: `def` is not Koo: a function is declared with `fn`
+ --> main.koo:1:1
+  |
+1 | def add(a, b):
+  | ^^^
+  |
+  = note: `fn add(a: int, b: int) -> int { return a + b }`: each parameter has a type, the result follows `->`, and the body is in braces
+help: write `fn`
+  |
+1 - def add(a, b):
+1 + fn add(a, b):
+
+1 error
+
+=== func
+func add(a int, b int) int {
+    return a + b
+}
+---
+error: `func` is not Koo: a function is declared with `fn`
+ --> main.koo:1:1
+  |
+1 | func add(a int, b int) int {
+  | ^^^^
+  |
+  = note: `fn add(a: int, b: int) -> int { return a + b }`: each parameter has a type, the result follows `->`, and the body is in braces
+help: write `fn`
+  |
+1 - func add(a int, b int) int {
+1 + fn add(a int, b int) int {
+
+1 error
+
+=== bang
+fn main() {
+    done := false
+    if !done {
+        print("a")
+    }
+}
+---
+error: expected an expression, found `!`
+ --> main.koo:3:8
+  |
+3 |     if !done {
+  |        ^
+  |
+  = note: `!` introduces the errors of a function: `fn f() -> T ! E`
+help: logical negation is written `not`
+  |
+3 -     if !done {
+3 +     if not done {
+
+1 error
+
+=== ternary
+fn main() {
+    x := 3
+    y := x > 2 ? 1 : 0
+    print("{y}")
+}
+---
+error: Koo has no `? :`
+ --> main.koo:3:16
+  |
+3 |     y := x > 2 ? 1 : 0
+  |                ^
+  |
+  = note: a `?` after a value passes its error on to the caller (Section 6.4)
+  = help: an `if` has a value: write `if condition { a } else { b }`
+
+1 error
+
+=== single quote
+fn main() {
+    print('hello')
+}
+---
+error: a string is written in double quotes
+ --> main.koo:2:11
+  |
+2 |     print('hello')
+  |           ^^^^^^^
+  |
+  = note: single quotes hold one character: `'a'`
+help: write it in double quotes
+  |
+2 -     print('hello')
+2 +     print("hello")
+
+1 error
+
+=== param no type
+fn add(a, b) -> int {
+    return a + b
+}
+
+fn main() {
+    print("{add(1, 2)}")
+}
+---
+error: the parameter `a` needs a type
+ --> main.koo:1:8
+  |
+1 | fn add(a, b) -> int {
+  |        ^
+  |
+  = note: the types of a function's parameters are always written: they are what its callers read (Section 6.1)
+  = help: write `a: int`, or whatever type it has
+
+1 error
+
+=== param c style
+fn add(int a, int b) -> int {
+    return a + b
+}
+
+fn main() {
+    print("{add(1, 2)}")
+}
+---
+error: the type of a parameter comes after its name
+ --> main.koo:1:8
+  |
+1 | fn add(int a, int b) -> int {
+  |        ^^^^^
+  |
+help: write the name first
+  |
+1 - fn add(int a, int b) -> int {
+1 + fn add(a: int, b: int) -> int {
+
+1 error
+
+=== struct
+struct Point {
+    x: int
+    y: int
+}
+
+fn main() {
+}
+---
+error: `struct` is not Koo: a type with fields is declared with `type`
+ --> main.koo:1:1
+  |
+1 | struct Point {
+  | ^^^^^^
+  |
+  = help: write `type Point = { x: int, y: int }`, with a comma or a new line between fields
+  = help: a method is a function declared on it: `fn (self: Point) area() -> int { ... }` (Section 4.6)
+
+1 error
+
+=== class
+class Point {
+    x: int
+}
+
+fn main() {
+}
+---
+error: `class` is not Koo: a type with fields is declared with `type`
+ --> main.koo:1:1
+  |
+1 | class Point {
+  | ^^^^^
+  |
+  = help: write `type Point = { x: int, y: int }`, with a comma or a new line between fields
+  = help: a method is a function declared on it: `fn (self: Point) area() -> int { ... }` (Section 4.6)
+
+1 error
+
+=== new
+type Point = { x: int, y: int }
+
+fn main() {
+    p := new Point { x: 1, y: 2 }
+    print("{p.x}")
+}
+---
+error: Koo has no `new`
+ --> main.koo:4:10
+  |
+4 |     p := new Point { x: 1, y: 2 }
+  |          ^^^
+  |
+  = note: a value is made by naming its type and its fields: `Point { x: 1, y: 2 }`
+help: remove it
+  |
+4 -     p := new Point { x: 1, y: 2 }
+4 +     p := Point { x: 1, y: 2 }
+
+1 error
+
+=== match arrow
+fn main() {
+    x := 3
+    match x {
+        1 -> print("one")
+        _ -> print("other")
+    }
+}
+---
+error: expected `=>`, found `->`
+ --> main.koo:4:11
+  |
+4 |         1 -> print("one")
+  |           ^^
+  |
+  = note: an arm of a `match` is `pattern => result`; `->` writes a lambda and a return type
+help: write `=>`
+  |
+4 -         1 -> print("one")
+4 +         1 => print("one")
+
+error: expected `=>`, found `->`
+ --> main.koo:5:11
+  |
+5 |         _ -> print("other")
+  |           ^^
+  |
+  = note: an arm of a `match` is `pattern => result`; `->` writes a lambda and a return type
+help: write `=>`
+  |
+5 -         _ -> print("other")
+5 +         _ => print("other")
+
+2 errors
+
+=== const
+const LIMIT = 5
+
+fn main() {
+    print("{LIMIT}")
+}
+---
+error: `const` is not Koo: a constant is declared by its name alone
+ --> main.koo:1:1
+  |
+1 | const LIMIT = 5
+  | ^^^^^
+  |
+  = note: a name at the top level is a constant, written in snake_case (Section 3.5)
+help: declare it the Koo way
+  |
+1 - const LIMIT = 5
+1 + limit := 5
+
+1 error
+
+=== import string
+import "std/io"
+
+fn main() {
+}
+---
+error: a package path is written without quotes
+ --> main.koo:1:8
+  |
+1 | import "std/io"
+  |        ^^^^^^^^
+  |
+help: remove the quotes
+  |
+1 - import "std/io"
+1 + import std/io
+
+1 error
+
+=== unclosed paren
+fn main() {
+    print("a"
+    print("b")
+}
+---
+error: expected `,` or `)`, found `print`
+ --> main.koo:3:5
+  |
+2 |     print("a"
+  |          - this `(` is never closed
+3 |     print("b")
+  |     ^^^^^
+
+1 error
+
+=== print stmt
+fn main() {
+    print "hello"
+}
+---
+error: a call of `print` puts its arguments in parentheses
+ --> main.koo:2:11
+  |
+2 |     print "hello"
+  |           ^^^^^^^
+  |
+help: add the parentheses
+  |
+2 -     print "hello"
+2 +     print("hello")
+
+1 error
+
+=== try
+fn main() {
+    try {
+        print("a")
+    } catch e {
+        print("b")
+    }
+}
+---
+error: Koo has no `try`: an error is a value, handled where the call is made
+ --> main.koo:2:5
+  |
+2 |     try {
+  |     ^^^
+  |
+  = help: `value := risky()?` passes the error on to the caller
+  = help: `value := risky() else fallback` puts a value in its place
+  = help: `match risky() { value => ..., ! e => ... }` looks at it (Section 6.4)
+
+1 error
+
+=== throw
+error Bad {}
+
+fn f() ! Bad {
+    throw Bad {}
+}
+
+fn main() {
+}
+---
+error: `throw` is not Koo: an error is reported with `fail`
+ --> main.koo:4:5
+  |
+4 |     throw Bad {}
+  |     ^^^^^
+  |
+  = note: and the function says what it may fail with: `fn f() -> T ! E` (Section 6.2)
+help: write `fail`
+  |
+4 -     throw Bad {}
+4 +     fail Bad {}
+
+1 error
+
+=== while paren
+fn main() {
+    var i := 0
+    while (i < 3) {
+        i++
+    }
+}
+---
+error: `++` does not exist
+ --> main.koo:4:10
+  |
+4 |         i++
+  |          ^^
+  |
+help: write `+= 1`
+  |
+4 -         i++
+4 +         i += 1
+
+1 error
+
+=== colon eq type
+fn main() {
+    x: int := 5
+    print("{x}")
+}
+---
+error: after a type, the value follows `=`
+ --> main.koo:2:12
+  |
+2 |     x: int := 5
+  |            ^^
+  |
+  = note: `:=` declares a variable and takes its type from the value; `name: Type = value` states the type
+help: write `=`
+  |
+2 -     x: int := 5
+2 +     x: int = 5
+
+1 error
+
+=== arrow fn
+fn add(a: int, b: int): int {
+    return a + b
+}
+
+fn main() {
+    print("{add(1, 2)}")
+}
+---
+error: the return type of a function follows `->`
+ --> main.koo:1:23
+  |
+1 | fn add(a: int, b: int): int {
+  |                       ^
+  |
+  = note: `:` gives the type of a name: a parameter, a field or a binding
+help: write `->`
+  |
+1 - fn add(a: int, b: int): int {
+1 + fn add(a: int, b: int) -> int {
+
+1 error
+
+=== return type missing arrow
+fn add(a: int, b: int) int {
+    return a + b
+}
+
+fn main() {
+}
+---
+error: the return type of a function follows `->`
+ --> main.koo:1:24
+  |
+1 | fn add(a: int, b: int) int {
+  |                        ^^^
+  |
+help: write `->` before it
+  |
+1 | fn add(a: int, b: int) -> int {
+  |                        +++
+
+1 error
+
+=== eq in if
+fn main() {
+    x := 3
+    if x = 3 {
+        print("a")
+    }
+}
+---
+error: expected `{`, found `=`
+ --> main.koo:3:10
+  |
+3 |     if x = 3 {
+  |          ^
+  |
+  = note: `=` assigns; a condition compares
+  = help: to bind an optional's value, write `if x := value { ... }`
+help: compare with `==`
+  |
+3 -     if x = 3 {
+3 +     if x == 3 {
+
+1 error
+
+=== stray brace
+fn main() {
+    print("a")
+}
+}
+---
+error: this `}` closes nothing
+ --> main.koo:4:1
+  |
+4 | }
+  | ^
+  |
+  = help: remove it, or look above for the `{` it was meant to close
+
+1 error
+
+=== string concat stmt
+fn main() {
+    x := 3
+    x + 1
+}
+---
+error: this expression is not a statement
+ --> main.koo:3:5
+  |
+3 |     x + 1
+  |     ^^^^^ its value is not used
+  |
+  = help: to keep the value, bind it with `:=` or `return` it; a statement is a call, or ends in `?` or `else`
+
+1 error
+
+=== double colon
+type Color = enum { Red, Green }
+
+fn main() {
+    c := Color::Red
+}
+---
+error: expected a type, found `enum`
+ --> main.koo:1:14
+  |
+1 | type Color = enum { Red, Green }
+  |              ^^^^
+  |
+  = note: an enum is a declaration of its own, not a type written after `type Name =`
+  = help: write `enum Color { Red, Green, Blue }`; a variant may have fields: `Circle { radius: float }` (Section 4.7)
+
+error: `::` does not exist
+ --> main.koo:4:15
+  |
+4 |     c := Color::Red
+  |               ^^
+  |
+  = note: a member of a type or a package is reached with `.`, as a field is
+help: write `.`
+  |
+4 -     c := Color::Red
+4 +     c := Color.Red
+
+2 errors
+
+=== fat lambda
+fn main() {
+    xs := [1, 2, 3]
+    ys := xs.map(x => x * 2)
+    print("{ys}")
+}
+---
+error: expected `,` or `)`, found `=>`
+ --> main.koo:3:20
+  |
+3 |     ys := xs.map(x => x * 2)
+  |                    ^^
+  |
+  = note: `=>` belongs to the arms of a `match`
+help: a lambda is written with `->`
+  |
+3 -     ys := xs.map(x => x * 2)
+3 +     ys := xs.map(x -> x * 2)
+
+1 error
+
+=== pipe lambda
+fn main() {
+    xs := [1, 2, 3]
+    ys := xs.map(|x| x * 2)
+    print("{ys}")
+}
+---
+error: expected an expression, found `|`
+ --> main.koo:3:18
+  |
+3 |     ys := xs.map(|x| x * 2)
+  |                  ^
+  |
+  = help: a lambda is written with an arrow: `x -> x + 1`, or `(a, b) -> { ... }` for a body of several statements
+
+1 error
+
+=== generic brackets
+fn main() {
+    xs: List[int] = []
+    print("{xs}")
+}
+---
+error: type arguments are written in angle brackets
+ --> main.koo:2:13
+  |
+2 |     xs: List[int] = []
+  |             ^
+  |
+  = help: a list of `int` is written `[int]`
+
+1 error
+
+=== type first
+fn main() {
+    int x = 5
+    print("{x}")
+}
+---
+error: the type of a variable comes after its name
+ --> main.koo:2:5
+  |
+2 |     int x = 5
+  |     ^^^^^
+  |
+  = note: a binding is `x := value`, or `x: int = value` when the type is to be stated
+help: write the name first
+  |
+2 -     int x = 5
+2 +     x: int = 5
+
+1 error
+
+=== py if
+fn main() {
+    x := 3
+    if x > 2:
+        print("big")
+}
+---
+error: expected `{`, found `:`
+ --> main.koo:3:13
+  |
+3 |     if x > 2:
+  |             ^
+  |
+  = help: a block is written in braces, not after a colon: `if x > 0 { ... }`
+
+1 error
+
+=== no braces
+fn main() {
+    x := 3
+    if x > 2 print("big")
+}
+---
+error: expected `{`, found `print`
+ --> main.koo:3:14
+  |
+3 |     if x > 2 print("big")
+  |              ^^^^^
+  |
+  = help: a block is written in braces, even when it holds one statement
+
+1 error
+
+=== then
+fn main() {
+    x := 3
+    if x > 2 then {
+        print("big")
+    }
+}
+---
+error: expected `{`, found `then`
+ --> main.koo:3:14
+  |
+3 |     if x > 2 then {
+  |              ^^^^
+  |
+  = help: a block is written in braces: write `{` in place of `then`, and `}` where it ends
+
+1 error
+
+=== hash comment
+fn main() {
+    # say hello
+    print("hello")
+}
+---
+error: a comment begins with `//`
+ --> main.koo:2:5
+  |
+2 |     # say hello
+  |     ^
+  |
+help: write `//`
+  |
+2 -     # say hello
+2 +     // say hello
+
+1 error
+
+=== fstring
+fn main() {
+    n := 3
+    print(f"n is {n}")
+}
+---
+error: a string needs no `f` to hold values
+ --> main.koo:3:11
+  |
+3 |     print(f"n is {n}")
+  |           ^
+  |
+  = note: every string takes values in braces: `"total: {n}"`
+help: remove it
+  |
+3 -     print(f"n is {n}")
+3 +     print("n is {n}")
+
+1 error
+
+=== and and
+fn main() {
+    a := true
+    b := false
+    if a && b || a {
+        print("x")
+    }
+}
+---
+error: `&&` does not exist
+ --> main.koo:4:10
+  |
+4 |     if a && b || a {
+  |          ^^
+  |
+help: write `and`
+  |
+4 -     if a && b || a {
+4 +     if a and b || a {
+
+error: `||` does not exist
+ --> main.koo:4:15
+  |
+4 |     if a && b || a {
+  |               ^^
+  |
+help: write `or`
+  |
+4 -     if a && b || a {
+4 +     if a && b or a {
+
+2 errors
+
+=== triple eq
+fn main() {
+    a := 1
+    if a === 1 {
+        print("x")
+    }
+}
+---
+error: `===` does not exist
+ --> main.koo:3:10
+  |
+3 |     if a === 1 {
+  |          ^^^
+  |
+help: write `==`
+  |
+3 -     if a === 1 {
+3 +     if a == 1 {
+
+1 error
+
+=== switch
+fn main() {
+    x := 3
+    switch x {
+        case 1: print("a")
+    }
+}
+---
+error: `switch` is not Koo: choosing among cases is `match`
+ --> main.koo:3:5
+  |
+3 |     switch x {
+  |     ^^^^^^
+  |
+  = help: write `match value { 1 => ..., 2 | 3 => ..., _ => ... }`: one arm a line, and `_` for every other case (Section 6.6)
+
+1 error
+
+=== top stmt
+print("hello")
+---
+error: a statement cannot stand outside a function
+ --> main.koo:1:1
+  |
+1 | print("hello")
+  | ^^^^^
+  |
+  = note: a file holds declarations: types, constants and functions
+  = help: the program starts in `main`: put the statements in `fn main() { ... }`
+
+1 error
+
+=== top assign
+limit = 10
+
+fn main() {
+    print("{limit}")
+}
+---
+error: a constant is declared with `:=`
+ --> main.koo:1:7
+  |
+1 | limit = 10
+  |       ^
+  |
+  = note: a name at the top level is a constant; state that changes belongs in a function (Section 3.5)
+help: write `:=`
+  |
+1 - limit = 10
+1 + limit := 10
+
+1 error
+
+=== pub class
+public class Main {
+}
+---
+error: `public` is not Koo: what a package offers is marked `pub`
+ --> main.koo:1:1
+  |
+1 | public class Main {
+  | ^^^^^^
+  |
+help: write `pub`
+  |
+1 - public class Main {
+1 + pub class Main {
+
+1 error
+
+=== package
+package main
+
+fn main() {
+}
+---
+error: `package` is not Koo: a file does not name its package
+ --> main.koo:1:1
+  |
+1 | package main
+  | ^^^^^^^
+  |
+  = note: the directory a file is in is its package (Section 8.1)
+help: remove the line
+  |
+1 - package main
+
+1 error
+
+=== use
+use std::io;
+
+fn main() {
+}
+---
+error: `use` is not Koo: a package is brought in with `import`
+ --> main.koo:1:1
+  |
+1 | use std::io;
+  | ^^^
+  |
+  = help: write `import std/io`, and then name what it holds through it: `io.read_file(path)` (Section 8.2)
+
+1 error
+
+=== return type str
+fn name() -> str {
+    return "a"
+}
+
+fn main() {
+}
+---
+error: expected a type, found `str`
+ --> main.koo:1:14
+  |
+1 | fn name() -> str {
+  |              ^^^
+  |
+  = note: the number types are `int` (64 bits), `float` (64 bits) and `byte`; text is `string`
+help: in Koo that is `string`
+  |
+1 - fn name() -> str {
+1 + fn name() -> string {
+
+1 error
+
+=== i32
+fn add(a: i32, b: i32) -> i32 {
+    return a + b
+}
+
+fn main() {
+}
+---
+error: `i32` is not supported by this compiler yet
+ --> main.koo:1:11
+  |
+1 | fn add(a: i32, b: i32) -> i32 {
+  |           ^^^
+  |
+help: use `int`, which is 64 bits
+  |
+1 - fn add(a: i32, b: i32) -> i32 {
+1 + fn add(a: int, b: i32) -> i32 {
+
+error: `i32` is not supported by this compiler yet
+ --> main.koo:1:19
+  |
+1 | fn add(a: i32, b: i32) -> i32 {
+  |                   ^^^
+  |
+help: use `int`, which is 64 bits
+  |
+1 - fn add(a: i32, b: i32) -> i32 {
+1 + fn add(a: i32, b: int) -> i32 {
+
+error: `i32` is not supported by this compiler yet
+ --> main.koo:1:27
+  |
+1 | fn add(a: i32, b: i32) -> i32 {
+  |                           ^^^
+  |
+help: use `int`, which is 64 bits
+  |
+1 - fn add(a: i32, b: i32) -> i32 {
+1 + fn add(a: i32, b: i32) -> int {
+
+3 errors
+
+=== loop
+fn main() {
+    loop {
+        break
+    }
+}
+---
+error: `loop` is not Koo: a loop without an end is `while true`
+ --> main.koo:2:5
+  |
+2 |     loop {
+  |     ^^^^
+  |
+help: write `while true`
+  |
+2 -     loop {
+2 +     while true {
+
+1 error
+
+=== end
+fn main() {
+    x := 1
+    if x > 0 {
+        print("a")
+    end
+}
+---
+error: this `{` is never closed
+ --> main.koo:1:11
+  |
+1 | fn main() {
+  |           ^ the file ends before its `}`
+2 |     x := 1
+3 |     if x > 0 {
+  |              - a `}` may be missing for this `{`: the `}` on line 6 is not indented like it
+
+error: `end` is not Koo: a block ends with `}`
+ --> main.koo:5:5
+  |
+5 |     end
+  |     ^^^
+  |
+help: write `}`
+  |
+5 -     end
+5 +     }
+
+2 errors
+
+=== missing close paren same line
+fn main() {
+    print("a"
+}
+---
+error: expected `,` or `)`, found `}`
+ --> main.koo:3:1
+  |
+2 |     print("a"
+  |          - this `(` is never closed
+3 | }
+  | ^
+
+1 error
+
+=== extra paren
+fn main() {
+    print("a"))
+}
+---
+error: this `)` closes nothing
+ --> main.koo:2:15
+  |
+2 |     print("a"))
+  |               ^
+  |
+help: remove it
+  |
+2 -     print("a"))
+2 +     print("a")
+
+1 error
+
+=== unclosed string
+fn main() {
+    print("hello)
+}
+---
+error: this string literal is not closed
+ --> main.koo:2:11
+  |
+2 |     print("hello)
+  |           ^^^^^^^
+  |
+  = help: a string ends on the line it begins; use a text block (`"""`) for several lines
+
+1 error
+
+=== missing comma
+fn main() {
+    xs := [1 2 3]
+    print("{xs}")
+}
+---
+error: expected `,` or `]`, found `2`
+ --> main.koo:2:14
+  |
+2 |     xs := [1 2 3]
+  |              ^
+  |
+help: a comma is missing
+  |
+2 |     xs := [1, 2 3]
+  |             +
+
+1 error
+
+=== struct eq
+type Point = { x: int, y: int }
+
+fn main() {
+    p := Point { x = 1, y = 2 }
+    print("{p.x}")
+}
+---
+error: expected `,` or `}`, found `=`
+ --> main.koo:4:20
+  |
+4 |     p := Point { x = 1, y = 2 }
+  |                    ^
+  |
+  = note: a field is given its value with `:`, as it is given its type
+help: write `:`
+  |
+4 -     p := Point { x = 1, y = 2 }
+4 +     p := Point { x: 1, y = 2 }
+
+1 error
+
+=== struct semicolons
+type Point = {
+    x: int;
+    y: int;
+}
+
+fn main() {
+}
+---
+error: expected `,` or `}`, found `;`
+ --> main.koo:2:11
+  |
+2 |     x: int;
+  |           ^
+  |
+  = note: Koo has no semicolons: a statement ends at the end of its line
+help: remove it
+  |
+2 -     x: int;
+2 +     x: int
+
+1 error
+
+=== fn in fn
+fn main() {
+    fn helper() {
+    }
+}
+---
+error: a declaration cannot appear inside a block
+ --> main.koo:2:5
+  |
+2 |     fn helper() {
+  |     ^^
+  |
+  = help: types and functions are declared at the top level of a file; a local function is a lambda bound to a name
+
+1 error
+
+=== lambda fn
+fn main() {
+    xs := [1, 2]
+    ys := xs.map(fn(x) { return x * 2 })
+    print("{ys}")
+}
+---
+error: expected an expression, found `fn`
+ --> main.koo:3:18
+  |
+3 |     ys := xs.map(fn(x) { return x * 2 })
+  |                  ^^
+  |
+  = help: a lambda is written with an arrow: `x -> x + 1`, or `(a, b) -> { ... }` for a body of several statements
+
+1 error
+
+=== nil
+fn main() {
+    x := nil
+    y := null
+}
+---
+error: unknown name `nil`
+ --> main.koo:2:10
+  |
+2 |     x := nil
+  |          ^^^
+  |
+  = help: Koo has no null: a value that may be absent has the type `T?`, and its absence is `none`
+
+error: unknown name `null`
+ --> main.koo:3:10
+  |
+3 |     y := null
+  |          ^^^^
+  |
+  = help: Koo has no null: a value that may be absent has the type `T?`, and its absence is `none`
+
+2 errors
+
+=== semicolons many
+fn main() {
+    a := 1; b := 2
+    print("{a}{b}")
+}
+---
+error: expected the end of the line, found `;`
+ --> main.koo:2:11
+  |
+2 |     a := 1; b := 2
+  |           ^
+  |
+  = note: Koo has no semicolons: a statement ends at the end of its line
+  = help: write each statement on a line of its own
+
+1 error
+
+=== while true py
+fn main() {
+    while True:
+        break
+}
+---
+error: expected `{`, found `:`
+ --> main.koo:2:15
+  |
+2 |     while True:
+  |               ^
+  |
+  = help: a block is written in braces, not after a colon: `if x > 0 { ... }`
+
+1 error
+
+=== for range
+fn main() {
+    for i in range(3) {
+        print("{i}")
+    }
+}
+---
+error: unknown function `range`
+ --> main.koo:2:14
+  |
+2 |     for i in range(3) {
+  |              ^^^^^
+  |
+  = help: a range is written `0..n`, or `0..=n` to include `n`
+
+1 error
+
+=== unclosed bracket
+fn main() {
+    xs := [1, 2, 3
+    print("{xs}")
+}
+---
+error: expected `,` or `]`, found `print`
+ --> main.koo:3:5
+  |
+2 |     xs := [1, 2, 3
+  |           - this `[` is never closed
+3 |     print("{xs}")
+  |     ^^^^^
+
+1 error
+
+=== missing fn brace
+fn helper() {
+    print("a")
+
+fn main() {
+    helper()
+}
+---
+error: this `{` is never closed
+ --> main.koo:1:13
+  |
+1 | fn helper() {
+  |             ^
+...
+4 | fn main() {
+  | -- the next declaration begins here, so a `}` is missing before it
+
+1 error
+
+=== dangling operator
+fn main() {
+    x := 1 +
+    print("{x}")
+}
+---
+error: expected an expression, found the end of the line
+ --> main.koo:2:13
+  |
+2 |     x := 1 +
+  |             ^ the line ends after `+`, which needs a value after it
+
+1 error
+
+=== keyword name
+fn main() {
+    type := 3
+    print("{type}")
+}
+---
+error: `type` is a word of the language, so it cannot be used as a name
+ --> main.koo:2:5
+  |
+2 |     type := 3
+  |     ^^^^
+  |
+  = help: choose another name, such as `kind` for `type` or `failure` for `error`
+
+error: expected an expression, found `type`
+ --> main.koo:3:13
+  |
+3 |     print("{type}")
+  |             ^^^^
+  |
+  = note: `type` is a word of the language, so it cannot be used as a name
+
+2 errors
+
+=== camel
+fn main() {
+    myValue := 3
+    print("{myValue}")
+}
+---
+error: `myValue` is not snake_case
+ --> main.koo:2:5
+  |
+2 |     myValue := 3
+  |     ^^^^^^^
+  |
+  = note: a variable name is written in snake_case (Section 3.1)
+help: write `my_value`, here and where it is used
+  |
+2 -     myValue := 3
+2 +     my_value := 3
+
+1 error
+
+=== type lower
+type point = { x: int }
+
+fn main() {
+}
+---
+error: expected a type name, found the lowercase name `point`
+ --> main.koo:1:6
+  |
+1 | type point = { x: int }
+  |      ^^^^^
+  |
+  = note: a type name is written in UpperCamelCase (Section 3.1)
+help: write `Point`, here and where it is used
+  |
+1 - type point = { x: int }
+1 + type Point = { x: int }
+
+1 error
+
+=== inc expr
+fn main() {
+    var i := 0
+    xs := [1, 2]
+    print("{xs[i++]}")
+}
+---
+error: `++` does not exist
+ --> main.koo:4:17
+  |
+4 |     print("{xs[i++]}")
+  |                 ^^
+  |
+  = help: change the variable in a statement of its own, `x += 1`, before or after this line
+
+1 error
+
+=== empty
+---
+error: the program has no `main` function
+ --> main.koo:1:1
+  |
+1 |
+  | ^
+  |
+  = help: add `fn main() { ... }`
+
+1 error
+

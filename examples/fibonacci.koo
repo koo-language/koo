@@ -1,0 +1,31 @@
+// Fibonacci numbers, two ways.
+//
+//     koo run examples/fibonacci.koo
+
+// The definition, written as it reads. Slow for large n: it recomputes everything.
+fn fib(n: int) -> int {
+    if n < 2 { return n }
+    return fib(n - 1) + fib(n - 2)
+}
+
+// The same numbers with a loop: one pass, two variables.
+fn fib_fast(n: int) -> int {
+    var a := 0
+    var b := 1
+    for _ in 0..n {
+        next := a + b
+        a = b
+        b = next
+    }
+    return a
+}
+
+fn main() {
+    var first: [int] = []
+    for i in 0..15 {
+        first.push(fib(i))
+    }
+    print("the first 15: {first}")
+    print("fib(35) by recursion: {fib(35)}")
+    print("fib(90) by loop:      {fib_fast(90)}")
+}

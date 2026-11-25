@@ -15,5 +15,5 @@ pub mod lexer;
 mod parser;
 pub mod token;
 
-pub use diag::{Diagnostic, LineIndex, SourceFile, SourceMap, Span};
+pub use diag::{Diagnostic, Fix, LineIndex, SourceFile, SourceMap, Span};
 pub use parser::{Parsed, parse_file, parse_file_at, parse_fragment};

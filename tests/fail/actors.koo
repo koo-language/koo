@@ -1,0 +1,45 @@
+// What an actor may not do, and what is said about it.
+actor Jobs {
+    var done: int = 0
+    limit: int
+
+    fn run(job: fn() -> int) -> int {
+        done += 1
+        return job()
+    }
+
+    fn pair() -> (int, int) {
+        return (done, limit)
+    }
+
+    fn raise(limit: int) {
+        limit = 3
+    }
+
+    fn stop() {
+    }
+
+    fn grow() {
+        limit += 1
+    }
+
+    fn run_twice() -> int {
+        return done * 2
+    }
+}
+
+fn main() {
+    jobs := Jobs.start(limit: 2)
+    jobs.send.pair()
+    jobs.send.run_twice()
+}
+
+//! error this type cannot be sent to an actor, or back from one
+//! error this type cannot be sent to an actor, or back from one
+//! error `limit` is a field of this actor
+//! error cannot assign to `limit`, which is not `var`
+//! error `stop` cannot be the name of an actor's method
+//! error cannot assign to `limit`, which is not `var`
+//! stderr declare the field with `var`
+//! error `pair` cannot be sent and forgotten
+//! error `run_twice` cannot be sent and forgotten

@@ -224,7 +224,7 @@ fn type_arguments_follow_capitalized_names() {
     assert_eq!(expr("(Low) < level"), "(< Low level)");
     rejects("x := Low < level", "expected a type");
     rejects("x := Low < Level > other", "after the type arguments");
-    let help = parse_fragment("x := Low < level").diagnostics[0].help.clone().unwrap();
+    let help = parse_fragment("x := Low < level").diagnostics[0].help[0].clone();
     assert!(help.contains("parenthesize the left side"), "{help}");
 }
 
@@ -420,7 +420,8 @@ fn expression_statements_are_calls() {
 fn there_are_no_semicolons() {
     rejects("f(); g()", "expected the end of the line, found `;`");
     let parsed = parse_fragment("f();");
-    assert!(parsed.diagnostics[0].help.as_deref().unwrap().contains("no semicolons"));
+    assert!(advice(&parsed.diagnostics[0]).contains("no semicolons"));
+    assert!(parsed.diagnostics[0].fix.is_some(), "a `;` that ends a line is removed");
 }
 
 // ---- Sections 3.5, 6.7: bindings, assignments, control flow -----------------------------
@@ -772,7 +773,15 @@ fn function_declaration_errors() {
     file_rejects("fn f()", "a function needs a body");
     file_rejects("fn (this: Order) f() {}", "expected `self`");
     file_rejects("fn (self) f() {}", "expected `:`");
-    file_rejects("fn f(x) {}", "expected `:` and the parameter's type");
+    file_rejects("fn f(x) {}", "the parameter `x` needs a type");
+    file_rejects("fn f(x int) {}", "expected `:` before the type of `x`");
+    file_rejects(
+        "fn f(int x, string y) {}",
+        "the type of a parameter comes after its name",
+    );
+    file_rejects("fn f(): int {}", "the return type of a function follows `->`");
+    file_rejects("fn f() int {}", "the return type of a function follows `->`");
+    file_rejects("fn f() -> void {}", "declares no return type");
     file_rejects("fn f<>() {}", "empty type parameter list");
 }
 
@@ -875,7 +884,9 @@ fn constants_and_documentation() {
     assert!(parsed.file.items[1].docs.is_empty());
     assert_eq!(dump::item(&parsed.file.items[1]), "(const timeout: Duration 30s)");
     file_rejects("var counter := 0", "a top-level binding cannot be `var`");
-    file_rejects("f()", "expected a declaration");
+    file_rejects("f()", "a statement cannot stand outside a function");
+    file_rejects("x = 5", "a constant is declared with `:=`");
+    file_rejects("\"text\"", "expected a declaration");
 }
 
 // ---- Recovery ---------------------------------------------------------------------------
@@ -1071,16 +1082,23 @@ fn function_types_that_return_functions() {
     );
 }
 
+/// Everything a diagnostic says besides its message.
+fn advice(diagnostic: &koo_syntax::Diagnostic) -> String {
+    let mut text = diagnostic.help.join("\n");
+    text.push_str(&diagnostic.notes.join("\n"));
+    if let Some(fix) = &diagnostic.fix {
+        text.push_str(&fix.message);
+        for (_, edit) in &fix.edits {
+            text.push_str(edit);
+        }
+    }
+    text
+}
+
 #[test]
 fn messages() {
     rejects("x := !y", "expected an expression, found `!`");
-    assert!(
-        parse_fragment("x := !y").diagnostics[0]
-            .help
-            .as_deref()
-            .unwrap()
-            .contains("not x")
-    );
+    assert!(advice(&parse_fragment("x := !y").diagnostics[0]).contains("not"));
     rejects("fn f(int: string) {}", "cannot be used as a parameter name");
     file_rejects("import std/http as Http", "expected an import name");
     rejects("x := \"\"\"\n    a\\\n    \"\"\"", "at the end of a line");

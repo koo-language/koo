@@ -1,0 +1,78 @@
+// Many threads ask the same few actors at once. Each ask has its actor to itself, so no
+// money is made or lost, whoever gets there first.
+
+actor Account {
+    var balance: int
+    var history: [string] = []
+
+    fn withdraw(amount: int) -> bool {
+        if amount > balance { return false }
+        balance -= amount
+        history.push("out {amount}")
+        return true
+    }
+
+    fn deposit(amount: int) {
+        balance += amount
+        history.push("in {amount}")
+    }
+
+    fn total() -> int {
+        return balance
+    }
+
+    fn entries() -> [string] {
+        return history
+    }
+}
+
+actor Teller {
+    var moved: int = 0
+
+    fn work(accounts: [Account], seed: int, times: int) {
+        var n := seed
+        for i in 0..times {
+            n = (n * 1103515245 + 12345) % 2147483648
+            from := accounts[n % accounts.len]
+            to := accounts[(n / 7) % accounts.len]
+            amount := n % 50
+            if from.withdraw(amount) {
+                to.deposit(amount)
+                moved += 1
+            }
+        }
+    }
+
+    fn done() -> int {
+        return moved
+    }
+}
+
+fn main() {
+    var accounts: [Account] = []
+    for i in 0..4 { accounts.push(Account.start(balance: 1000)) }
+    var tellers: [Teller] = []
+    for i in 0..8 { tellers.push(Teller.start()) }
+    for i in 0..8 {
+        tellers[i].send.work(accounts, i + 1, 2000)
+    }
+    var moved := 0
+    for teller in tellers { moved += teller.done() }
+    var total := 0
+    var entries := 0
+    for account in accounts {
+        total += account.total()
+        // What an account answers with is this thread's to change: the account's own
+        // history is not touched.
+        var history := account.entries()
+        entries += history.len
+        history.push("seen")
+    }
+    print("total {total}")
+    print("entries {entries == moved * 2}")
+    print("again {accounts[0].entries().len == accounts[0].entries().len}")
+}
+
+//= total 4000
+//= entries true
+//= again true

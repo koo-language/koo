@@ -11,6 +11,7 @@
 //!   condition, a `match` scrutinee or a `for` subject is being parsed.
 
 mod exprs;
+mod habits;
 mod items;
 mod patterns;
 mod stmts;
@@ -88,7 +89,33 @@ fn parse_in_place(src: &str, fragment: bool, base: u32) -> Parsed {
     parser.docs = docs;
     parser.index = index;
     let file = parser.file();
+    // What the parser said about a stretch of text as a whole (a `for` loop written as
+    // in C) stands for what the lexer said about its parts (`i++`).
+    let claimed = std::mem::take(&mut parser.claimed);
     let mut diagnostics = lexed.diagnostics;
+    diagnostics.retain(|d| {
+        !claimed
+            .iter()
+            .any(|region| region.start <= d.span.start && d.span.end <= region.end)
+    });
+    // And what the lexer said stands for what the parser then made of the same text:
+    // of a token the lexer had to guess at, and of a line whose string never ends.
+    let line_of = |offset: u32| parser.index.line(offset);
+    let unclosed: Vec<u32> = diagnostics
+        .iter()
+        .filter(|d| d.message.contains("is not closed"))
+        .map(|d| line_of(d.span.start))
+        .collect();
+    let guessed: Vec<Span> = diagnostics.iter().map(|d| d.span).collect();
+    parser.diags.retain(|d| {
+        let on_unclosed_line = std::iter::once(d.span)
+            .chain(d.related.iter().map(|(span, _)| *span))
+            .any(|span| unclosed.contains(&line_of(span.start)));
+        let at_guess = guessed
+            .iter()
+            .any(|span| span.start <= d.span.start && d.span.start < span.end);
+        !on_unclosed_line && !at_guess
+    });
     diagnostics.append(&mut parser.diags);
     diagnostics.sort_by_key(|d| d.span.start);
     Parsed { file, diagnostics }
@@ -99,6 +126,35 @@ fn parse_in_place(src: &str, fragment: bool, base: u32) -> Parsed {
 struct Saved {
     struct_lit_ok: bool,
     else_bind_ok: bool,
+}
+
+/// `myValue` as `my_value`.
+fn snake_case(name: &str) -> String {
+    let mut out = String::new();
+    for (i, c) in name.chars().enumerate() {
+        if c.is_ascii_uppercase() {
+            if i > 0 && !out.ends_with('_') {
+                out.push('_');
+            }
+            out.push(c.to_ascii_lowercase());
+        } else {
+            out.push(c);
+        }
+    }
+    out
+}
+
+/// `order_line` as `OrderLine`.
+fn camel_case(name: &str) -> String {
+    name.split('_')
+        .map(|part| {
+            let mut chars = part.chars();
+            match chars.next() {
+                Some(first) => first.to_ascii_uppercase().to_string() + chars.as_str(),
+                None => String::new(),
+            }
+        })
+        .collect()
 }
 
 /// `what` with its indefinite article.
@@ -112,6 +168,11 @@ pub(crate) struct Parser {
     pos: usize,
     /// One entry per open bracket: whether newlines are significant inside it.
     nl_sig: Vec<bool>,
+    /// One entry per open bracket: the bracket.
+    openers: Vec<Tok>,
+    /// Set when a block is left because a declaration begins at the left margin inside
+    /// it: where that declaration is. The block was never closed.
+    unclosed_before: Option<Span>,
     /// Whether the line break before the current token has been consumed.
     nl_skipped: bool,
     /// Whether `Name {` may begin a struct literal here.
@@ -129,6 +190,11 @@ pub(crate) struct Parser {
     /// The current depth of `nested` calls.
     nesting: u32,
     diags: Vec<Diagnostic>,
+    /// Stretches of text reported as a whole: what the lexer reported inside is dropped.
+    claimed: Vec<Span>,
+    /// Blocks whose `}` is not indented as the line of their `{` is: the `{` and the `}`.
+    /// When a `{` is never closed, the last of these is the likely place of the missing `}`.
+    misaligned: Vec<(Span, Span)>,
 }
 
 impl Parser {
@@ -137,6 +203,8 @@ impl Parser {
             toks,
             pos: 0,
             nl_sig: Vec::new(),
+            openers: Vec::new(),
+            unclosed_before: None,
             nl_skipped: false,
             struct_lit_ok: true,
             else_bind_ok: true,
@@ -147,6 +215,8 @@ impl Parser {
             index: LineIndex::new(""),
             nesting: 0,
             diags: Vec::new(),
+            claimed: Vec::new(),
+            misaligned: Vec::new(),
         }
     }
 
@@ -250,6 +320,33 @@ impl Parser {
         self.diags.push(Diagnostic::new(span, message).with_help(help));
     }
 
+    fn diag(&mut self, diagnostic: Diagnostic) {
+        self.diags.push(diagnostic);
+    }
+
+    /// The column at which `offset` is: the number of bytes from the start of its line.
+    fn column(&self, offset: u32) -> u32 {
+        offset - self.index.line_start(self.index.line(offset))
+    }
+
+    /// The first token on the line of the token at `i`.
+    fn line_first(&self, i: usize) -> usize {
+        let mut first = i;
+        while first > 0 && !self.toks[first].nl_before {
+            first -= 1;
+        }
+        first
+    }
+
+    /// The last token on the line of the token at `i`.
+    fn line_last(&self, i: usize) -> usize {
+        let mut last = i;
+        while last + 1 < self.toks.len() && !self.toks[last + 1].nl_before && self.toks[last + 1].kind != Tok::Eof {
+            last += 1;
+        }
+        last
+    }
+
     fn fail<T>(&mut self, span: Span, message: impl Into<String>) -> PResult<T> {
         self.report(span, message);
         Err(())
@@ -270,44 +367,57 @@ impl Parser {
         let found = self.peek().describe();
         let span = self.here();
         let message = format!("expected {what}, found {found}");
-        match self.peek() {
+        let mut diagnostic = Diagnostic::new(span, message);
+        let block = what.starts_with("`{`");
+        diagnostic = match self.peek() {
             Tok::Semi => {
-                self.report_help(
-                    span,
-                    message,
-                    "Koo has no semicolons: a statement ends at the end of its line",
-                );
+                let note = "Koo has no semicolons: a statement ends at the end of its line";
+                if self.line_last(self.pos) == self.pos {
+                    diagnostic.with_note(note).with_fix("remove it", span, "")
+                } else {
+                    diagnostic.with_note(note).with_help("write each statement on a line of its own")
+                }
             }
-            Tok::Eq if what == "`{`" => {
-                self.report_help(
-                    span,
-                    message,
-                    "`=` assigns: compare with `==`, or bind with `if x := value` when the value is optional",
-                );
+            Tok::Eq if block => diagnostic
+                .with_note("`=` assigns; a condition compares")
+                .with_help("to bind an optional's value, write `if x := value { ... }`")
+                .with_fix("compare with `==`", span, "=="),
+            Tok::Colon if block => diagnostic
+                .with_help("a block is written in braces, not after a colon: `if x > 0 { ... }`"),
+            Tok::Ident(word) if block && matches!(word.as_str(), "then" | "do" | "begin") => {
+                let help = format!("a block is written in braces: write `{{` in place of `{word}`, and `}}` where it ends");
+                diagnostic.with_help(help)
             }
-            Tok::FatArrow if what.contains("`)`") => {
-                self.report_help(
-                    span,
-                    message,
-                    "a lambda is written with `->`: `x -> x + 1`; `=>` belongs to the arms of a `match`",
-                );
+            Tok::Newline | Tok::Eof if block => diagnostic.with_help("the `{` of a block goes on the same line as what it belongs to"),
+            _ if what == "`{`" && !self.at_newline() => {
+                diagnostic.with_help("a block is written in braces, even when it holds one statement")
             }
-            Tok::Int(_) | Tok::Float(_) if what == "a member name" => {
-                self.report_help(
-                    span,
-                    message,
-                    "the elements of a tuple have no names or numbers: take it apart with a pattern, as in `(first, second) := pair` (Section 4.5)",
-                );
+            Tok::FatArrow if what.contains("`)`") => diagnostic
+                .with_note("`=>` belongs to the arms of a `match`")
+                .with_fix("a lambda is written with `->`", span, "->"),
+            Tok::Pipe | Tok::Kw(Kw::Fn) if what == "an expression" => {
+                diagnostic.with_help("a lambda is written with an arrow: `x -> x + 1`, or `(a, b) -> { ... }` for a body of several statements")
             }
-            Tok::NoneLit if what.contains("name") => {
-                self.report_help(
-                    span,
-                    message,
-                    "`none` is the value of an optional that holds nothing, so it cannot name something else",
-                );
+            Tok::Newline | Tok::Eof if what == "an expression" && self.pos > 0 => {
+                let before = self.toks[self.pos - 1].kind.describe();
+                diagnostic.with_label(format!("the line ends after {before}, which needs a value after it"))
             }
-            _ => self.report(span, message),
-        }
+            Tok::Kw(word) if what == "an expression" || what.contains("name") => {
+                let word = word.as_str();
+                diagnostic.with_note(format!("`{word}` is a word of the language, so it cannot be used as a name"))
+            }
+            Tok::RParen | Tok::RBracket if what == "the end of the line" => {
+                diagnostic.message = format!("this {found} closes nothing");
+                diagnostic.with_fix("remove it", span, "")
+            }
+            Tok::Int(_) | Tok::Float(_) if what == "a member name" => diagnostic.with_help(
+                "the elements of a tuple have no names or numbers: take it apart with a pattern, as in `(first, second) := pair` (Section 4.5)",
+            ),
+            Tok::NoneLit if what.contains("name") => diagnostic
+                .with_help("`none` is the value of an optional that holds nothing, so it cannot name something else"),
+            _ => diagnostic,
+        };
+        self.diag(diagnostic);
         Err(())
     }
 
@@ -333,6 +443,7 @@ impl Parser {
     /// Returns the value to hand back to `leave`.
     fn enter(&mut self, significant: bool) -> Saved {
         self.nl_sig.push(significant);
+        self.openers.push(self.toks[self.pos.saturating_sub(1)].kind.clone());
         Saved {
             struct_lit_ok: std::mem::replace(&mut self.struct_lit_ok, true),
             else_bind_ok: std::mem::replace(&mut self.else_bind_ok, true),
@@ -342,6 +453,7 @@ impl Parser {
     /// Call after the closing bracket has been consumed.
     fn leave(&mut self, saved: Saved) {
         self.nl_sig.pop();
+        self.openers.pop();
         self.struct_lit_ok = saved.struct_lit_ok;
         self.else_bind_ok = saved.else_bind_ok;
     }
@@ -354,6 +466,7 @@ impl Parser {
         close: &Tok,
         mut item: impl FnMut(&mut Parser) -> PResult<T>,
     ) -> PResult<Vec<T>> {
+        let opened = self.pos;
         self.expect(open, &open.describe())?;
         let saved = self.enter(false);
         let mut items = Vec::new();
@@ -363,21 +476,73 @@ impl Parser {
                 break;
             }
         }
-        self.expect(close, &format!("`,` or {}", close.describe()))?;
+        if !self.at(close) {
+            let reported = self.diags.len();
+            self.expected_separator(close);
+            // If no bracket closes this one, that is the mistake, and where it is.
+            if self.closer(opened).is_none()
+                && let Some(diagnostic) = self.diags.get_mut(reported)
+            {
+                let text = format!("this {} is never closed", open.describe());
+                diagnostic.related.push((self.toks[opened].span, text));
+            }
+            return Err(());
+        }
+        self.bump();
         self.leave(saved);
         Ok(items)
     }
 
-    /// The index of the `)` that matches the `(` at the current position.
-    fn matching_paren(&self) -> Option<usize> {
+    /// Reports that an item of a list is followed by neither a comma nor the bracket that
+    /// ends the list.
+    fn expected_separator(&mut self, close: &Tok) {
+        let _ = self.expected::<()>(&format!("`,` or {}", close.describe()));
+        let value = matches!(
+            self.peek(),
+            Tok::Ident(_) | Tok::UpperIdent(_) | Tok::Int(_) | Tok::Float(_) | Tok::Str(_) | Tok::True | Tok::False
+        );
+        let end = self.prev_span().end;
+        if let Some(diagnostic) = self.diags.last_mut() {
+            if value && !self.toks[self.pos].nl_before {
+                // `[1 2 3]`: two values with nothing between them.
+                diagnostic.fix = Some(crate::diag::Fix {
+                    message: "a comma is missing".to_string(),
+                    edits: vec![(Span { start: end, end }, ",".to_string())],
+                });
+            } else if self.toks[self.pos].kind == Tok::Eq && *close == Tok::RBrace {
+                // `Point { x = 1 }`.
+                let span = self.toks[self.pos].span;
+                diagnostic
+                    .notes
+                    .push("a field is given its value with `:`, as it is given its type".to_string());
+                diagnostic.fix = Some(crate::diag::Fix {
+                    message: "write `:`".to_string(),
+                    edits: vec![(
+                        Span {
+                            start: end,
+                            end: span.end,
+                        },
+                        ":".to_string(),
+                    )],
+                });
+            }
+        }
+    }
+
+    /// The index of the bracket that closes the one at `open`, if one does.
+    fn closer(&self, open: usize) -> Option<usize> {
         let mut depth = 0usize;
-        for i in self.pos..self.toks.len() {
-            match self.toks[i].kind {
+        for (i, token) in self.toks.iter().enumerate().skip(open) {
+            match token.kind {
                 Tok::LParen | Tok::LBracket | Tok::LBrace => depth += 1,
                 Tok::RParen | Tok::RBracket | Tok::RBrace => {
                     depth = depth.checked_sub(1)?;
                     if depth == 0 {
-                        return (self.toks[i].kind == Tok::RParen).then_some(i);
+                        let pair = matches!(
+                            (&self.toks[open].kind, &token.kind),
+                            (Tok::LParen, Tok::RParen) | (Tok::LBracket, Tok::RBracket) | (Tok::LBrace, Tok::RBrace)
+                        );
+                        return pair.then_some(i);
                     }
                 }
                 Tok::Eof => return None,
@@ -385,6 +550,11 @@ impl Parser {
             }
         }
         None
+    }
+
+    /// The index of the `)` that matches the `(` at the current position.
+    fn matching_paren(&self) -> Option<usize> {
+        self.closer(self.pos)
     }
 
     /// Whether the current token is a `(` whose matching `)` is followed by `tok`.
@@ -439,25 +609,52 @@ impl Parser {
     /// After an error, restores the bracket state of the enclosing block and skips to the
     /// end of the statement.
     fn recover(&mut self, depth: usize, struct_lit_ok: bool) {
-        // Each entry above `depth` is a bracket that was open when the error was found.
-        let mut nesting = self.nl_sig.len().saturating_sub(depth);
+        // The brackets above `depth` were open when the error was found.
         self.nl_sig.truncate(depth);
+        let mut open: Vec<Tok> = self.openers.split_off(depth.min(self.openers.len()));
         self.struct_lit_ok = struct_lit_ok;
         self.else_bind_ok = true;
         loop {
-            if nesting == 0 && self.at_newline() {
+            if open.is_empty() && self.at_newline() {
                 return;
             }
-            match self.toks[self.pos].kind {
+            let closes = match self.toks[self.pos].kind {
                 Tok::Eof => return,
-                Tok::LParen | Tok::LBracket | Tok::LBrace => nesting += 1,
-                Tok::RParen | Tok::RBracket | Tok::RBrace => {
-                    if nesting == 0 {
-                        return;
-                    }
-                    nesting -= 1;
+                Tok::LParen | Tok::LBracket | Tok::LBrace => {
+                    open.push(self.toks[self.pos].kind.clone());
+                    None
                 }
-                _ => {}
+                Tok::RParen => Some(Tok::LParen),
+                Tok::RBracket => Some(Tok::LBracket),
+                Tok::RBrace => Some(Tok::LBrace),
+                _ => None,
+            };
+            if let Some(opener) = closes {
+                // A closing bracket closes the nearest bracket of its kind, and with it
+                // whatever was left open inside. One that closes nothing here belongs
+                // to the enclosing block: an unclosed `(` must not swallow its `}`.
+                match open.iter().rposition(|open| *open == opener) {
+                    Some(at) => open.truncate(at),
+                    None if open.is_empty() || opener == Tok::LBrace => return,
+                    None => {}
+                }
+            }
+            self.bump();
+        }
+    }
+
+    /// After an error in a declaration, skips to the next line that begins one: a word
+    /// at the left margin.
+    fn recover_item(&mut self, depth: usize) {
+        self.nl_sig.truncate(depth);
+        self.openers.truncate(depth);
+        self.struct_lit_ok = true;
+        self.else_bind_ok = true;
+        loop {
+            let token = &self.toks[self.pos];
+            let word = matches!(token.kind, Tok::Ident(_) | Tok::UpperIdent(_) | Tok::Kw(_) | Tok::At);
+            if token.kind == Tok::Eof || (token.nl_before && word && self.column(token.span.start) == 0) {
+                return;
             }
             self.bump();
         }
@@ -484,10 +681,11 @@ impl Parser {
             Tok::Ident(_) => {
                 let id = Self::ident_from(self.bump());
                 if id.name.bytes().any(|b| b.is_ascii_uppercase()) {
-                    self.report_help(
-                        id.span,
-                        format!("`{}` is not snake_case", id.name),
-                        format!("{a} is written in snake_case (Section 3.1)"),
+                    let snake = snake_case(&id.name);
+                    self.diag(
+                        Diagnostic::new(id.span, format!("`{}` is not snake_case", id.name))
+                            .with_note(format!("{a} is written in snake_case (Section 3.1)"))
+                            .with_fix(format!("write `{snake}`, here and where it is used"), id.span, snake),
                     );
                 }
                 Ok(id)
@@ -540,10 +738,11 @@ impl Parser {
             }
             Tok::Ident(_) => {
                 let id = Self::ident_from(self.bump());
-                self.report_help(
-                    id.span,
-                    format!("expected {a}, found the lowercase name `{}`", id.name),
-                    format!("{a} is written in UpperCamelCase (Section 3.1)"),
+                let camel = camel_case(&id.name);
+                self.diag(
+                    Diagnostic::new(id.span, format!("expected {a}, found the lowercase name `{}`", id.name))
+                        .with_note(format!("{a} is written in UpperCamelCase (Section 3.1)"))
+                        .with_fix(format!("write `{camel}`, here and where it is used"), id.span, camel),
                 );
                 Ok(id)
             }

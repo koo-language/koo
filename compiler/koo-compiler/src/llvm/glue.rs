@@ -4,7 +4,7 @@
 //! Each takes a pointer to the value. They are ordinary internal functions, and LLVM
 //! inlines the small ones.
 
-use super::{FnState, Gen, Glue, is_aggregate};
+use super::{FROZEN, FnState, Gen, Glue, is_aggregate};
 use crate::hir::*;
 
 impl Gen<'_> {
@@ -18,6 +18,10 @@ impl Gen<'_> {
             }
             Glue::Retain(ty) => {
                 self.retain_glue(ty);
+                "ptr %p".to_string()
+            }
+            Glue::Freeze(ty) => {
+                self.freeze_glue(ty);
                 "ptr %p".to_string()
             }
             Glue::Fmt(ty) => {
@@ -149,10 +153,6 @@ impl Gen<'_> {
     /// Releases the counted value whose handle is at `%p`, calling `free` if that was the
     /// last reference. An empty slot holds null.
     fn release_handle(&mut self, free: impl FnOnce(&mut Self, &str)) {
-        self.release_handle_with("@koo.release", free)
-    }
-
-    fn release_handle_with(&mut self, release: &str, free: impl FnOnce(&mut Self, &str)) {
         let value = self.value("load ptr, ptr %p");
         let empty = self.value(format!("icmp eq ptr {value}, null"));
         let live = self.new_label("live");
@@ -160,7 +160,7 @@ impl Gen<'_> {
         let end = self.new_label("end");
         self.cond_br(&empty, &end, &live);
         self.label(&live);
-        let was_last = self.value(format!("call i1 {release}(ptr {value})"));
+        let was_last = self.value(format!("call i1 @koo.release(ptr {value})"));
         self.cond_br(&was_last, &last, &end);
         self.label(&last);
         free(self, &value);
@@ -171,9 +171,8 @@ impl Gen<'_> {
     fn drop_glue(&mut self, ty: &Ty) {
         match ty {
             Ty::Fn(_) => {
-                // A function value that owns what it captured says how to free it. A static
-                // one is a constant, and its count is left alone.
-                self.release_handle_with("@koo.release.fn", |generator, value| {
+                // A function value that owns what it captured says how to free it.
+                self.release_handle(|generator, value| {
                     let free_ptr = generator.value(format!("getelementptr inbounds ptr, ptr {value}, i64 2"));
                     let free = generator.value(format!("load ptr, ptr {free_ptr}"));
                     generator.emit(format!("call void {free}(ptr {value})"));
@@ -271,11 +270,7 @@ impl Gen<'_> {
 
     fn retain_glue(&mut self, ty: &Ty) {
         match ty {
-            Ty::Fn(_) => {
-                let value = self.value("load ptr, ptr %p");
-                self.emit(format!("call void @koo.retain.fn(ptr {value})"));
-            }
-            Ty::Str | Ty::List(_) | Ty::Error(_) | Ty::Failure => {
+            Ty::Fn(_) | Ty::Str | Ty::List(_) | Ty::Error(_) | Ty::Failure => {
                 let value = self.value("load ptr, ptr %p");
                 self.emit(format!("call void @koo.retain(ptr {value})"));
             }
@@ -326,6 +321,134 @@ impl Gen<'_> {
                 if self.droppable(ok) {
                     let payload = self.field_ptr(&llty, "%p", 1);
                     self.retain_at(ok, &payload);
+                }
+                self.br(&end);
+                self.label(&end);
+            }
+            _ => {}
+        }
+    }
+
+    /// Marks the counted value whose handle is at `%p` as frozen, and runs `inside` for
+    /// what it holds, unless it is frozen already (and then so is all it holds) or is a
+    /// constant.
+    fn freeze_handle(&mut self, inside: impl FnOnce(&mut Self, &str)) {
+        let value = self.value("load ptr, ptr %p");
+        let empty = self.value(format!("icmp eq ptr {value}, null"));
+        let live = self.new_label("live");
+        let mark = self.new_label("mark");
+        let end = self.new_label("end");
+        self.cond_br(&empty, &end, &live);
+        self.label(&live);
+        let rc = self.value(format!("load atomic i64, ptr {value} unordered, align 8, !tbaa !2"));
+        let local = self.value(format!("icmp sgt i64 {rc}, 0"));
+        self.cond_br(&local, &mark, &end);
+        self.label(&mark);
+        // Nothing else can reach it yet, so the count is written as any other.
+        let frozen = self.value(format!("add i64 {rc}, {FROZEN}"));
+        self.emit(format!("store i64 {frozen}, ptr {value}, !tbaa !2"));
+        inside(self, &value);
+        self.br(&end);
+        self.label(&end);
+    }
+
+    fn freeze_glue(&mut self, ty: &Ty) {
+        match ty {
+            // What a function value captured cannot be reached from here, and no message
+            // holds one (Section 7.3).
+            Ty::Fn(_) => {}
+            Ty::Str => self.freeze_handle(|_, _| {}),
+            Ty::List(element) => self.freeze_handle(|generator, value| {
+                if generator.droppable(element) {
+                    generator.each_element(value, element, |generator, place| generator.freeze_at(element, place));
+                }
+            }),
+            Ty::Error(id) => {
+                let box_ty = self.error_box_ty(*id);
+                let fields = self.p.errors[*id].fields.clone();
+                self.freeze_handle(|generator, value| {
+                    for (index, field) in fields.iter().enumerate() {
+                        if generator.droppable(&field.ty) {
+                            let place = generator.field_ptr(&box_ty, value, index + 2);
+                            generator.freeze_at(&field.ty, &place);
+                        }
+                    }
+                });
+            }
+            Ty::Failure => {
+                // The box says which error type it holds, and that type's glue freezes it.
+                let value = self.value("load ptr, ptr %p");
+                let empty = self.value(format!("icmp eq ptr {value}, null"));
+                let live = self.new_label("live");
+                let end = self.new_label("frozen");
+                self.cond_br(&empty, &end, &live);
+                self.label(&live);
+                let id_ptr = self.value(format!("getelementptr inbounds i64, ptr {value}, i64 1"));
+                let id = self.value(format!("load i64, ptr {id_ptr}, !tbaa !2"));
+                let with_fields: Vec<usize> = (0..self.p.errors.len())
+                    .filter(|id| !self.p.errors[*id].fields.is_empty())
+                    .collect();
+                let labels: Vec<String> = with_fields.iter().map(|_| self.new_label("freeze")).collect();
+                let cases: Vec<String> = with_fields
+                    .iter()
+                    .zip(&labels)
+                    .map(|(id, label)| format!("i64 {id}, label %{label}"))
+                    .collect();
+                self.terminate(format!("switch i64 {id}, label %{end} [ {} ]", cases.join(" ")));
+                for (id, label) in with_fields.iter().zip(&labels) {
+                    self.label(label);
+                    self.freeze_at(&Ty::Error(*id), "%p");
+                    self.br(&end);
+                }
+                self.label(&end);
+            }
+            Ty::Tuple(types) => {
+                let llty = self.llty(ty);
+                for (index, element) in types.iter().enumerate() {
+                    if self.droppable(element) {
+                        let place = self.field_ptr(&llty, "%p", index);
+                        self.freeze_at(element, &place);
+                    }
+                }
+            }
+            Ty::Struct(id) => {
+                let struct_ty = self.llty(ty);
+                let fields = self.p.structs[*id].fields.clone();
+                for (index, field) in fields.iter().enumerate() {
+                    if self.droppable(&field.ty) {
+                        let place = self.field_ptr(&struct_ty, "%p", index);
+                        self.freeze_at(&field.ty, &place);
+                    }
+                }
+            }
+            Ty::Enum(id) => self.each_variant(*id, |generator, field_ty, place| generator.freeze_at(field_ty, place)),
+            Ty::Optional(inner) => {
+                let llty = self.llty(ty);
+                let present = self.value("load i1, ptr %p");
+                let some = self.new_label("some");
+                let end = self.new_label("end");
+                self.cond_br(&present, &some, &end);
+                self.label(&some);
+                let payload = self.field_ptr(&llty, "%p", 1);
+                self.freeze_at(inner, &payload);
+                self.br(&end);
+                self.label(&end);
+            }
+            Ty::Result(ok, _) => {
+                let llty = self.llty(ty);
+                let error = self.value("load ptr, ptr %p");
+                let failed = self.value(format!("icmp ne ptr {error}, null"));
+                let err = self.new_label("err");
+                let good = self.new_label("ok");
+                let end = self.new_label("end");
+                self.cond_br(&failed, &err, &good);
+                self.label(&err);
+                self.freeze_at(&Ty::Failure, "%p");
+                self.br(&end);
+                self.label(&good);
+                if self.droppable(ok) {
+                    let payload = self.field_ptr(&llty, "%p", 1);
+                    self.freeze_at(ok, &payload);
                 }
                 self.br(&end);
                 self.label(&end);
@@ -523,11 +646,21 @@ impl Gen<'_> {
     fn unique_glue(&mut self, ty: &Ty) {
         let Ty::List(element) = ty else { unreachable!() };
         let list = self.value("load ptr, ptr %slot");
-        let rc = self.value(format!("load i64, ptr {list}, !tbaa !2"));
+        let rc = self.value(format!("load atomic i64, ptr {list} unordered, align 8, !tbaa !2"));
         let shared = self.value(format!("icmp ne i64 {rc}, 1"));
+        let other = self.new_label("other");
+        let thaw = self.new_label("thaw");
         let copy = self.new_label("copy");
         let end = self.new_label("end");
-        self.cond_br(&shared, &copy, &end);
+        self.cond_br(&shared, &other, &end);
+        self.label(&other);
+        // A frozen list with one reference is reached from here and nowhere else: it is
+        // this thread's again, and is changed where it is.
+        let alone = self.value(format!("icmp eq i64 {rc}, {}", FROZEN + 1));
+        self.cond_br(&alone, &thaw, &copy);
+        self.label(&thaw);
+        self.emit(format!("store i64 1, ptr {list}, !tbaa !2"));
+        self.br(&end);
         self.label(&copy);
         let len_ptr = self.value(format!("getelementptr inbounds i64, ptr {list}, i64 1"));
         let len = self.value(format!("load i64, ptr {len_ptr}, !tbaa !2"));
@@ -544,9 +677,17 @@ impl Gen<'_> {
         if self.droppable(element) {
             self.each_element(&fresh, element, |generator, place| generator.retain_at(element, place));
         }
-        // The slot gives up its reference to the original, which others still hold.
-        let less = self.value(format!("sub i64 {rc}, 1"));
-        self.emit(format!("store i64 {less}, ptr {list}, !tbaa !2"));
+        // The slot gives up its reference to the original. Others held it too, but if it
+        // is frozen they may be other threads, which have let go of it since.
+        let was_last = self.value(format!("call i1 @koo.release(ptr {list})"));
+        let last = self.new_label("last");
+        let kept = self.new_label("kept");
+        self.cond_br(&was_last, &last, &kept);
+        self.label(&last);
+        let free = self.glue(Glue::FreeList(ty.clone()));
+        self.emit(format!("call void {free}(ptr {list})"));
+        self.br(&kept);
+        self.label(&kept);
         self.emit(format!("store ptr {fresh}, ptr %slot"));
         self.br(&end);
         self.label(&end);

@@ -42,7 +42,10 @@ mod stmts;
 mod unique;
 
 /// The reference count of a static value. It is never freed.
-const IMMORTAL: i64 = 1 << 62;
+/// The count of a constant, which is never counted (see `@koo.retain` below).
+const IMMORTAL: i64 = -1;
+/// What a count that is frozen has added to it: the smallest integer.
+const FROZEN: i64 = i64::MIN;
 
 /// Generates the module for a program. `src` and `prelude_src` are the texts of the
 /// program and of the prelude, for the line numbers in panic reports.
@@ -119,6 +122,8 @@ struct FnState {
 enum Glue {
     Drop(Ty),
     Retain(Ty),
+    /// Marks a value and all it holds as shared between threads.
+    Freeze(Ty),
     Fmt(Ty),
     /// Structural equality of two values (Section 3.4).
     Eq(Ty),
@@ -351,6 +356,7 @@ impl<'a> Gen<'a> {
         let glue = match glue {
             Glue::Drop(ty) => Glue::Drop(erase(&ty)),
             Glue::Retain(ty) => Glue::Retain(erase(&ty)),
+            Glue::Freeze(ty) => Glue::Freeze(erase(&ty)),
             Glue::Fmt(ty) => Glue::Fmt(erase(&ty)),
             Glue::Eq(ty) => Glue::Eq(erase(&ty)),
             Glue::Hash(ty) => Glue::Hash(erase(&ty)),
@@ -365,6 +371,7 @@ impl<'a> Gen<'a> {
         let name = match &glue {
             Glue::Drop(ty) => format!("@\"drop.{}\"", self.mangle(ty)),
             Glue::Retain(ty) => format!("@\"retain.{}\"", self.mangle(ty)),
+            Glue::Freeze(ty) => format!("@\"freeze.{}\"", self.mangle(ty)),
             Glue::Fmt(ty) => format!("@\"fmt.{}\"", self.mangle(ty)),
             Glue::Eq(ty) => format!("@\"eq.{}\"", self.mangle(ty)),
             Glue::Hash(ty) => format!("@\"hash.{}\"", self.mangle(ty)),
@@ -590,9 +597,7 @@ impl<'a> Gen<'a> {
 
     /// Adds one reference to a string, list or error value.
     fn retain_value(&mut self, ty: &Ty, value: &str) {
-        if matches!(ty, Ty::Fn(_)) {
-            self.emit(format!("call void @koo.retain.fn(ptr {value})"));
-        } else if self.droppable(ty) {
+        if self.droppable(ty) {
             self.emit(format!("call void @koo.retain(ptr {value})"));
         }
     }
@@ -602,6 +607,15 @@ impl<'a> Gen<'a> {
         if self.droppable(ty) {
             let retain = self.glue(Glue::Retain(ty.clone()));
             self.emit(format!("call void {retain}(ptr {ptr})"));
+        }
+    }
+
+    /// Freezes the value at `ptr`, and everything it holds: none of it is changed again,
+    /// and all of it may be reached from other threads.
+    fn freeze_at(&mut self, ty: &Ty, ptr: &str) {
+        if self.droppable(ty) {
+            let freeze = self.glue(Glue::Freeze(ty.clone()));
+            self.emit(format!("call void {freeze}(ptr {ptr})"));
         }
     }
 
@@ -692,7 +706,7 @@ impl<'a> Gen<'a> {
             if def.fields.is_empty() {
                 let _ = writeln!(
                     out,
-                    "@\"error.{}\" = private global %\"X.{}\" {{ i64 {IMMORTAL}, i64 {id} }}",
+                    "@\"error.{}\" = private unnamed_addr constant %\"X.{}\" {{ i64 {IMMORTAL}, i64 {id} }}",
                     def.name, def.name
                 );
             }
@@ -707,7 +721,7 @@ impl<'a> Gen<'a> {
             };
             let _ = writeln!(
                 out,
-                "@str.{id} = private global {{ i64, i64, i64, [{len} x i8] }} {{ i64 {IMMORTAL}, i64 {len}, i64 {len}, [{len} x i8] {data} }}"
+                "@str.{id} = private unnamed_addr constant {{ i64, i64, i64, [{len} x i8] }} {{ i64 {IMMORTAL}, i64 {len}, i64 {len}, [{len} x i8] {data} }}"
             );
         }
         for (id, message) in self.messages.iter().enumerate() {
@@ -853,6 +867,10 @@ impl<'a> Gen<'a> {
     fn entry_point(&mut self) -> String {
         let mut text =
             String::from("define i32 @main(i32 %argc, ptr %argv) {\n  call void @koo_init(i32 %argc, ptr %argv)\n");
+        // What runs a message that was told to an actor (`koo-rt/src/actor.rs`).
+        if self.p.functions.iter().any(|function| function.name == "a__job") {
+            text.push_str("  call void @koo_actor_runner(ptr @\"koo.a__job\")\n");
+        }
         if self.p.test_mode {
             let tests = self.p.tests.clone();
             let cases: Vec<String> = (0..tests.len()).map(|i| format!("i64 {i}, label %test{i}")).collect();
@@ -877,6 +895,10 @@ impl<'a> Gen<'a> {
         } else {
             return String::new();
         }
+        // The actors that are still running stop when `main` returns (Section 7.3).
+        if self.p.functions.iter().any(|function| function.name == "a__stop_all") {
+            text.push_str("  call void @\"koo.a__stop_all\"()\n");
+        }
         text.push_str("  call void @koo_exit_main()\n  ret i32 0\n}\n\n");
         text
     }
@@ -893,6 +915,9 @@ declare void @koo_panic_str(ptr, ptr, i64) noreturn cold
 declare void @koo_main_failed(ptr) noreturn cold
 declare void @koo_flush()
 declare void @koo_exit_main()
+declare i32 @_setjmp(ptr) returns_twice
+declare ptr @koo_guard_enter()
+declare void @koo_actor_runner(ptr)
 declare void @koo_init(i32, ptr)
 declare i64 @koo_test_index()
 declare void @koo_print(ptr)
@@ -932,49 +957,49 @@ declare double @llvm.maximum.f64(double, double)
 declare void @llvm.memcpy.p0.p0.i64(ptr noalias, ptr noalias, i64, i1)
 declare void @llvm.memmove.p0.p0.i64(ptr, ptr, i64, i1)
 
-@koo.empty = private global { i64, i64, i64 } { i64 4611686018427387904, i64 0, i64 0 }
+@koo.empty = private unnamed_addr constant { i64, i64, i64 } { i64 -1, i64 0, i64 0 }
 
+; A count says who may reach the value (`koo-rt/src/lib.rs`):
+;   above zero: one thread, and that many references, counted with plain arithmetic;
+;   -1: a constant, never counted and never written;
+;   below -2^62: frozen, which is never changed again and may be reached from any thread;
+;       its references, counted atomically, are the count less the smallest integer.
 define internal void @koo.retain(ptr %value) alwaysinline {
-  %rc = load i64, ptr %value, !tbaa !2
-  %more = add i64 %rc, 1
-  store i64 %more, ptr %value, !tbaa !2
-  ret void
-}
-
-; A function value that is static (a named function, or a lambda that captures nothing)
-; is a constant, so that LLVM can see which function it calls: its count is never written.
-define internal void @koo.retain.fn(ptr %value) alwaysinline {
-  %rc = load i64, ptr %value, !tbaa !2
-  %static = icmp sge i64 %rc, 2305843009213693952
-  br i1 %static, label %done, label %count
+  %rc = load atomic i64, ptr %value unordered, align 8, !tbaa !2
+  %local = icmp sgt i64 %rc, 0
+  br i1 %local, label %count, label %shared
 count:
   %more = add i64 %rc, 1
   store i64 %more, ptr %value, !tbaa !2
+  ret void
+shared:
+  %frozen = icmp slt i64 %rc, -4611686018427387904
+  br i1 %frozen, label %atomic, label %done
+atomic:
+  %old = atomicrmw add ptr %value, i64 1 monotonic
   br label %done
 done:
   ret void
-}
-
-define internal i1 @koo.release.fn(ptr %value) alwaysinline {
-  %rc = load i64, ptr %value, !tbaa !2
-  %static = icmp sge i64 %rc, 2305843009213693952
-  br i1 %static, label %done, label %count
-count:
-  %less = sub i64 %rc, 1
-  store i64 %less, ptr %value, !tbaa !2
-  %last = icmp eq i64 %less, 0
-  br label %done
-done:
-  %result = phi i1 [ false, %0 ], [ %last, %count ]
-  ret i1 %result
 }
 
 ; Takes one reference from the value. Returns whether that was the last one.
 define internal i1 @koo.release(ptr %value) alwaysinline {
-  %rc = load i64, ptr %value, !tbaa !2
+  %rc = load atomic i64, ptr %value unordered, align 8, !tbaa !2
+  %local = icmp sgt i64 %rc, 0
+  br i1 %local, label %count, label %shared
+count:
   %less = sub i64 %rc, 1
   store i64 %less, ptr %value, !tbaa !2
   %last = icmp eq i64 %less, 0
   ret i1 %last
+shared:
+  %frozen = icmp slt i64 %rc, -4611686018427387904
+  br i1 %frozen, label %atomic, label %static
+atomic:
+  %old = atomicrmw sub ptr %value, i64 1 acq_rel
+  %gone = icmp eq i64 %old, -9223372036854775807
+  ret i1 %gone
+static:
+  ret i1 false
 }
 "#;

@@ -194,7 +194,7 @@ impl<'a> Checker<'a> {
                     }
                 }
             }
-            ast::ExprKind::Try(inner) => self.try_expr(inner, span),
+            ast::ExprKind::Try(inner) => self.try_expr(inner, span, expected),
             ast::ExprKind::Unary { op, expr: inner } => match op {
                 ast::UnaryOp::Neg => {
                     if let ast::ExprKind::Int(text) = &inner.kind {
@@ -216,7 +216,11 @@ impl<'a> Checker<'a> {
                 }
                 ast::UnaryOp::Not => {
                     let operand = self.expr(inner, Some(&Ty::Bool));
+                    let reported = self.diags.len();
                     let operand = self.coerce(operand, &Ty::Bool);
+                    if self.diags.len() > reported {
+                        self.help("`not` takes a `bool`: compare the value first, as in `n == 0` or `name == \"\"`");
+                    }
                     self.mk(ExprKind::Unary(UnOp::Not, Box::new(operand)), Ty::Bool, span)
                 }
             },
@@ -364,6 +368,7 @@ impl<'a> Checker<'a> {
     pub(super) fn require_printable(&mut self, value: &Expr) {
         if matches!(value.ty, Ty::Unit | Ty::Never) {
             self.error(value.span, "this expression has no value to print");
+            self.label("this gives nothing back");
         }
         if matches!(value.ty, Ty::Result(..)) {
             self.unhandled_result(value, value.span);
@@ -410,6 +415,69 @@ impl<'a> Checker<'a> {
             {
                 // A named function is a value of its function type (Section 4.11).
                 let sig = &self.sigs[id];
+                // Where a function that may fail is wanted, one that cannot will do, and
+                // so will one that fails with fewer errors: `home` stands for
+                // `(request) -> home(request)`, whose result is widened.
+                if let Some(Ty::Fn(want)) = expected.map(peel)
+                    && want.ret != sig.ret
+                    && want.params.len() == sig.params.len()
+                    && want
+                        .params
+                        .iter()
+                        .zip(&sig.params)
+                        .all(|((kind, ty), param)| *kind == param.kind && *ty == param.ty)
+                    && sig.receiver.is_none()
+                    && self.can_coerce(&sig.ret, &want.ret)
+                {
+                    let ident = |text: String| ast::Ident { name: text, span };
+                    let kinds: Vec<ast::ParamKind> = want
+                        .params
+                        .iter()
+                        .map(|(kind, _)| match kind {
+                            ParamKind::Borrow => ast::ParamKind::Borrow,
+                            ParamKind::Var => ast::ParamKind::Var,
+                            ParamKind::Take => ast::ParamKind::Take,
+                        })
+                        .collect();
+                    let params: Vec<ast::LambdaParam> = kinds
+                        .iter()
+                        .enumerate()
+                        .map(|(i, kind)| ast::LambdaParam {
+                            name: Some(ident(format!("arg__{i}"))),
+                            kind: *kind,
+                            ty: None,
+                            span,
+                        })
+                        .collect();
+                    let args: Vec<ast::Arg> = kinds
+                        .iter()
+                        .enumerate()
+                        .map(|(i, kind)| ast::Arg {
+                            name: None,
+                            var: *kind == ast::ParamKind::Var,
+                            var_at: span.start,
+                            value: ast::Expr {
+                                kind: ast::ExprKind::Name(ident(format!("arg__{i}"))),
+                                span,
+                            },
+                        })
+                        .collect();
+                    let call = ast::Expr {
+                        kind: ast::ExprKind::Call {
+                            callee: Box::new(ast::Expr {
+                                kind: ast::ExprKind::Name(name.clone()),
+                                span,
+                            }),
+                            args,
+                        },
+                        span,
+                    };
+                    let body = ast::Body::Stmt(Box::new(ast::Stmt {
+                        kind: ast::StmtKind::Expr(call),
+                        span,
+                    }));
+                    return self.lambda(&params, &body, expected, span);
+                }
                 let ty = Ty::Fn(Box::new(FnTy {
                     params: sig.params.iter().map(|p| (p.kind, p.ty.clone())).collect(),
                     ret: sig.ret.clone(),
@@ -593,19 +661,29 @@ impl<'a> Checker<'a> {
             (Ty::List(_) | Ty::Str, "len") => self.mk(ExprKind::Builtin(Builtin::Len, vec![base]), Ty::Int, span),
             (Ty::Unknown, _) => self.unknown(span),
             (Ty::Optional(_), _) => {
-                self.error_help(
-                    span,
+                let found = self.ty_name(&base.ty);
+                self.error(
+                    base.span,
                     format!("the value may be absent, so `.{}` cannot be used on it", name.name),
-                    "unwrap it first with `?`, `else` or `match` (Section 4.8)",
                 );
+                self.label(format!("this is {}: it may be `none`", super::a(&found)));
+                self.help(format!(
+                    "give a value to use when there is none, `(x else fallback).{0}`, or use it only when it is there, `if value := x {{ ... value.{0} ... }}` (Section 4.8)",
+                    name.name
+                ));
                 self.unknown(span)
             }
             (Ty::Result(..), _) => {
-                self.error_help(
-                    span,
+                let found = self.ty_name(&base.ty);
+                self.error(
+                    base.span,
                     format!("the value may be an error, so `.{}` cannot be used on it", name.name),
-                    "handle the result first with `?`, `else` or `match` (Section 6.3)",
                 );
+                self.label(format!("this is {}", super::a(&found)));
+                self.help(format!(
+                    "handle the error first: `x?.{0}` passes it on to the caller, and `(x else fallback).{0}` gives a value in its place (Section 6.4)",
+                    name.name
+                ));
                 self.unknown(span)
             }
             (other, _) => {
@@ -618,8 +696,11 @@ impl<'a> Checker<'a> {
         }
     }
 
-    fn try_expr(&mut self, inner: &ast::Expr, span: Span) -> Expr {
-        let value = self.expr(inner, None);
+    fn try_expr(&mut self, inner: &ast::Expr, span: Span, expected: Option<&Ty>) -> Expr {
+        // What is wanted of `f()?` is what `f` succeeds with, which settles the type
+        // parameters of a generic `f` that its arguments leave open: `x: Order = decode(text)?`.
+        let hint = expected.filter(|_| matches!(inner.kind, ast::ExprKind::Call { .. }));
+        let value = self.expr(inner, hint);
         match value.ty.clone() {
             Ty::Result(ok, set) => {
                 match &self.ret {
@@ -634,35 +715,49 @@ impl<'a> Checker<'a> {
                                 _ => vec!["Failure".to_string()],
                             };
                             let missing = missing.join(" | ");
-                            self.error_help(
+                            let declared = self.error_names(declared);
+                            self.error(
                                 span,
                                 format!("`?` propagates `{missing}`, which is not in this function's error set"),
-                                format!(
-                                    "add `{missing}` after the `!` in the function's signature, or handle it here with `else` or `match`"
-                                ),
                             );
+                            self.label(format!("the function may fail only with `{declared}`"));
+                            if self.here.is_none() {
+                                self.help(format!("add `{missing}` after the `!` in the function's signature"));
+                            }
+                            self.help(
+                                "to handle it here, give a value in its place with `else`, or inspect it with `match`",
+                            );
+                            self.fix_error_set(&missing);
                         }
                     }
                     Ty::Unknown => self.note_errors(&set),
                     _ => {
-                        let set = self.ty_name(&Ty::Result(Box::new(Ty::Unit), set));
-                        let set = set.trim_start_matches("() ");
-                        self.error_help(
-                            span,
-                            "`?` in a function that cannot fail",
-                            format!("add `{set}` to the function's signature, or handle the error here with `else` or `match`"),
-                        );
+                        let errors = self.error_names(&set);
+                        self.error(span, "`?` in a function that cannot fail");
+                        self.label(format!("this passes `{errors}` on to the caller"));
+                        self.related(self.here.map(|here| here.name), "no error is declared after a `!`");
+                        if self.here.is_none() {
+                            self.help(format!("add `! {errors}` to the function's signature"));
+                        }
+                        self.help("to handle the error here, give a value in its place with `else`, or inspect it with `match`");
+                        self.fix_error_set(&errors);
                     }
                 }
                 self.mk(ExprKind::Try(Box::new(value)), *ok, span)
             }
             Ty::Optional(inner_ty) => {
                 if !matches!(self.ret, Ty::Optional(_) | Ty::Unknown) {
-                    self.error_help(
+                    self.error(
                         span,
                         "`?` on an optional in a function that does not return an optional",
-                        "supply an alternative with `else` (Section 6.4)",
                     );
+                    self.label("if this is `none`, `?` returns `none` from the function");
+                    let returns = match &self.ret {
+                        Ty::Unit => "the function returns nothing".to_string(),
+                        other => format!("the function returns `{}`", self.ty_name(other)),
+                    };
+                    self.related(self.here.and_then(|here| here.ret.or(Some(here.name))), returns);
+                    self.help("give a value to use when there is none: `x else fallback` (Section 6.4)");
                 }
                 self.mk(ExprKind::Try(Box::new(value)), *inner_ty, span)
             }
@@ -670,11 +765,13 @@ impl<'a> Checker<'a> {
             Ty::Never => value,
             other => {
                 let found = self.ty_name(&other);
-                self.error_help(
-                    span,
-                    format!("`?` needs a result or an optional, found `{found}`"),
-                    "there is nothing to propagate: remove the `?`",
-                );
+                self.error(span, format!("`?` needs a result or an optional, found `{found}`"));
+                self.label(format!("this is {}: it is always there", super::a(&found)));
+                let mark = Span {
+                    start: span.end.saturating_sub(1),
+                    end: span.end,
+                };
+                self.fix("there is nothing to pass on: remove the `?`", mark, "");
                 self.unknown(span)
             }
         }
@@ -737,17 +834,90 @@ impl<'a> Checker<'a> {
         }
         if a.ty != b.ty {
             let (left, right) = (self.ty_name(&a.ty), self.ty_name(&b.ty));
-            let help = match (&a.ty, &b.ty) {
-                (Ty::Int, Ty::Float) | (Ty::Float, Ty::Int) => {
-                    "numeric types do not mix: convert one side with `float.from(x)` (Section 4.2)"
-                }
-                _ => "both sides of an operator have the same type",
-            };
-            self.error_help(
-                span,
+            self.error(
+                rhs.span,
                 format!("`{}` cannot be applied to `{left}` and `{right}`", op.as_str()),
-                help,
             );
+            self.label(format!("this is {}", super::a(&right)));
+            self.related(Some(lhs.span), format!("this is {}", super::a(&left)));
+            // What the other side is called in advice: its name, if it is a variable.
+            let named = |expr: &ast::Expr| match &expr.kind {
+                ast::ExprKind::Name(name) => name.name.clone(),
+                _ => "x".to_string(),
+            };
+            match (&a.ty, &b.ty) {
+                (Ty::Int, Ty::Float) | (Ty::Float, Ty::Int) => {
+                    self.note("an `int` never becomes a `float` by itself (Section 4.2)");
+                    let int = if a.ty == Ty::Int { lhs } else { rhs };
+                    match &int.kind {
+                        ast::ExprKind::Int(_) => {
+                            let end = Span {
+                                start: int.span.end,
+                                end: int.span.end,
+                            };
+                            self.fix("write the number as a `float`", end, ".0");
+                        }
+                        // Parentheses that are there already serve as the call's.
+                        ast::ExprKind::Paren(_) => {
+                            let start = int.span.start;
+                            self.fix(
+                                "convert the `int` to a `float`",
+                                Span { start, end: start },
+                                "float.from",
+                            );
+                        }
+                        _ => {
+                            let (start, end) = (int.span.start, int.span.end);
+                            self.fix_edits(
+                                "convert the `int` to a `float`",
+                                vec![
+                                    (Span { start, end: start }, "float.from(".to_string()),
+                                    (Span { start: end, end }, ")".to_string()),
+                                ],
+                            );
+                        }
+                    }
+                }
+                (Ty::Str, _) | (_, Ty::Str) if matches!(op, ast::BinaryOp::Add) => {
+                    let other = named(if a.ty == Ty::Str { rhs } else { lhs });
+                    self.help(format!(
+                        "put the value inside the string, as in `\"total: {{{other}}}\"`, or make it text with `{other}.to_string()`"
+                    ));
+                }
+                (Ty::Str, Ty::Int | Ty::Float) | (Ty::Int | Ty::Float, Ty::Str) => {
+                    let (text, number) = if a.ty == Ty::Str { (lhs, rhs) } else { (rhs, lhs) };
+                    let kind = if matches!((&a.ty, &b.ty), (Ty::Float, _) | (_, Ty::Float)) {
+                        "float"
+                    } else {
+                        "int"
+                    };
+                    // `n == "3"`: the number was meant.
+                    let digits = match &text.kind {
+                        ast::ExprKind::Str(parts) => match parts.as_slice() {
+                            [ast::StrPart::Lit(digits)] if digits.parse::<f64>().is_ok() => Some(digits.clone()),
+                            _ => None,
+                        },
+                        _ => None,
+                    };
+                    match digits {
+                        Some(digits) if kind == "float" || digits.parse::<i64>().is_ok() => {
+                            self.fix("compare with the number", text.span, digits);
+                        }
+                        _ => self.help(format!(
+                            "to compare numbers, turn the text into one with `{kind}.parse({})`; to compare text, write `{}.to_string()`",
+                            named(text),
+                            named(number)
+                        )),
+                    }
+                }
+                (Ty::Optional(inner), other) | (other, Ty::Optional(inner)) if **inner == *other => {
+                    self.help("one side may be absent: give it a value with `else`, as in `(x else 0)`, or unwrap it with `if value := x { ... }`");
+                }
+                (Ty::Result(inner, _), other) | (other, Ty::Result(inner, _)) if **inner == *other => {
+                    self.help("one side may be an error: `x?` passes the error on to the caller, and `(x else 0)` gives a value in its place (Section 6.4)");
+                }
+                _ => self.note("both sides of an operator have the same type"),
+            }
             return self.unknown(span);
         }
         let defined = match hir_op {
@@ -796,13 +966,17 @@ impl<'a> Checker<'a> {
                 BinOp::Eq | BinOp::Ne if self.is_prelude_type(&a.ty) => {
                     "maps and sets cannot be compared with `==` in this compiler yet"
                 }
-                BinOp::Eq | BinOp::Ne => "a function value has no `==` (Section 3.4)",
+                BinOp::Eq | BinOp::Ne if matches!(a.ty, Ty::Fn(_)) => "a function value has no `==` (Section 3.4)",
+                BinOp::Eq | BinOp::Ne => {
+                    "it holds a map, a set or a function, none of which can be compared with `==` in this compiler"
+                }
                 BinOp::Lt | BinOp::Le | BinOp::Gt | BinOp::Ge => {
                     "give the type a method `fn (self: T) compare(other: T) -> int` to order it (Section 4.9)"
                 }
                 _ => "arithmetic is defined on the numeric types, and `+` also joins strings (Section 3.4)",
             };
             self.error_help(span, format!("`{}` is not defined for `{found}`", op.as_str()), help);
+            self.label(format!("both sides are {}", super::a(&found)));
             return self.unknown(span);
         }
         let ty = if arithmetic { a.ty.clone() } else { Ty::Bool };
@@ -827,7 +1001,18 @@ impl<'a> Checker<'a> {
         for item in items {
             let value = self.expr(item, element.as_ref());
             match &element {
-                Some(ty) => checked.push(self.coerce(value, ty)),
+                Some(ty) => {
+                    // The first element sets the type, unless the context already did.
+                    let first = checked
+                        .first()
+                        .map(|first: &Expr| first.span)
+                        .filter(|_| expected.is_none());
+                    let why = format!(
+                        "the first element is {}, and a list has one type of element",
+                        super::a(&self.ty_name(ty))
+                    );
+                    checked.push(self.coerce_for(value, ty, first, &why));
+                }
                 None => {
                     if !value.ty.is_unknown() && value.ty != Ty::Never {
                         element = Some(value.ty.clone());
@@ -874,6 +1059,10 @@ impl<'a> Checker<'a> {
                             .is_some_and(|(generic, _)| *generic == name.name)
                     {
                         return Some(expected.clone());
+                    }
+                    // The expected type was wrong, and that was reported.
+                    if expected.is_some_and(|ty| ty.is_unknown()) {
+                        return None;
                     }
                     let params = self.generic_types[&name.name].params.join(", ");
                     self.error_help(
@@ -1030,12 +1219,20 @@ impl<'a> Checker<'a> {
                 }
                 continue;
             };
+            let base = type_name.split('<').next().unwrap_or("").to_string();
+            let declared = self.field_at.get(&(base, field.name.name.clone())).copied();
+            let why = format!("the field `{}` is declared here", field.name.name);
+            let reported = self.diags.len();
             let value = match &field.value {
-                Some(value) => self.expr_as(value, &defs[index].ty),
+                Some(value) => {
+                    let checked = self.expr_as(value, &defs[index].ty);
+                    self.explain_mismatch(reported, value.span, declared, why);
+                    checked
+                }
                 None => {
                     // The shorthand `Order { id }` names a variable of the field's name.
                     let name = self.name(&field.name, Some(&defs[index].ty));
-                    self.coerce(name, &defs[index].ty)
+                    self.coerce_for(name, &defs[index].ty, declared, &why)
                 }
             };
             if given.insert(index, value).is_some() {
@@ -1043,6 +1240,9 @@ impl<'a> Checker<'a> {
                     field.name.span,
                     format!("the field `{}` is given twice", field.name.name),
                 );
+                self.label("given again here");
+                let first = fields.iter().find(|f| f.name.name == field.name.name);
+                self.related(first.map(|f| f.name.span), "first given here");
             }
         }
         let mut values = Vec::new();
@@ -1060,11 +1260,15 @@ impl<'a> Checker<'a> {
             }
         }
         if !missing.is_empty() {
-            self.error_help(
-                span,
-                format!("`{type_name}` is missing {}", list_fields(&missing)),
-                "every field without a default must be given (Section 4.6)",
-            );
+            self.error(span, format!("`{type_name}` is missing {}", list_fields(&missing)));
+            let quoted: Vec<String> = missing.iter().map(|name| format!("`{name}: ...`")).collect();
+            self.label(format!("add {}", quoted.join(", ")));
+            let base = type_name.split('<').next().unwrap_or("").to_string();
+            for name in missing.iter().take(3) {
+                let at = self.field_at.get(&(base.clone(), name.clone())).copied();
+                self.related(at, format!("`{name}` has no default"));
+            }
+            self.note("every field without a default must be given (Section 4.6)");
             return self.unknown(span);
         }
         match target {
@@ -1083,20 +1287,26 @@ impl<'a> Checker<'a> {
         expected: Option<&Ty>,
     ) -> Expr {
         // The operand of `else` is a `T?` or a `T ! E`, so the hint for it is not the hint
-        // for the whole expression.
-        let _ = expected;
-        let value = self.expr(inner, None);
+        // for the whole expression, except to a generic call, which takes from it what
+        // it succeeds with.
+        let hint = expected.filter(|_| matches!(inner.kind, ast::ExprKind::Call { .. }));
+        let value = self.expr(inner, hint);
         let (ok, set) = match value.ty.clone() {
             Ty::Optional(inner) => (*inner, None),
             Ty::Result(ok, set) => (*ok, Some(set)),
             Ty::Unknown | Ty::Never => (Ty::Unknown, None),
             other => {
                 let found = self.ty_name(&other);
-                self.error_help(
+                self.error(
                     inner.span,
                     format!("`else` needs a result or an optional before it, found `{found}`"),
-                    "the value is always present, so the alternative would never be used",
                 );
+                self.label(format!("this is {}: it is always there", super::a(&found)));
+                let rest = Span {
+                    start: inner.span.end,
+                    end: span.end,
+                };
+                self.fix("the alternative would never be used: remove it", rest, "");
                 (Ty::Unknown, None)
             }
         };
@@ -1139,7 +1349,12 @@ impl<'a> Checker<'a> {
         if !diverges(&alt)
             && let Some(alt_value) = alt.value.take()
         {
-            alt.value = Some(Box::new(self.coerce(*alt_value, &ok)));
+            let why = format!(
+                "this is {}, so the alternative is {}",
+                super::a(&self.ty_name(&value.ty)),
+                super::a(&self.ty_name(&ok))
+            );
+            alt.value = Some(Box::new(self.coerce_for(*alt_value, &ok, Some(inner.span), &why)));
         }
         self.mk(
             ExprKind::Else {
@@ -1224,11 +1439,23 @@ impl<'a> Checker<'a> {
                 .find(|ty| *ty != first && **ty != Ty::Never && !ty.is_unknown())
                 .unwrap();
             let (a, b) = (self.ty_name(first), self.ty_name(other));
-            self.error_help(
-                span,
+            // The mistake is shown at the branch that departs from the first.
+            let value_at = |wanted: &Ty| {
+                branches
+                    .iter()
+                    .find(|branch| block_ty(branch) == *wanted)
+                    .and_then(|branch| branch.value.as_ref().map(|value| value.span))
+            };
+            let (first_at, other_at) = (value_at(first), value_at(other));
+            self.error(
+                other_at.unwrap_or(span),
                 format!("the branches have different types: `{a}` and `{b}`"),
-                "every branch of an `if` or `match` used for its value has the same type (Section 6.6)",
             );
+            if other_at.is_some() {
+                self.label(format!("this branch is {}", super::a(&b)));
+                self.related(first_at, format!("this branch is {}", super::a(&a)));
+            }
+            self.note("every branch of an `if` or `match` used for its value has the same type (Section 6.6)");
             return Ty::Unknown;
         };
         for branch in branches.iter_mut() {

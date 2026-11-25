@@ -1,0 +1,1642 @@
+=== bind mismatch
+fn main() {
+    count: int = "three"
+    print("{count}")
+}
+---
+error: expected `int`, found `string`
+ --> main.koo:2:18
+  |
+2 |     count: int = "three"
+  |            ---   ^^^^^^^ this is a `string`
+  |            |
+  |            the binding declares this type
+
+1 error
+
+=== arg mismatch
+fn area(width: int, height: int) -> int {
+    return width * height
+}
+
+fn main() {
+    print("{area("3", 4)}")
+}
+---
+error: expected `int`, found `string`
+ --> main.koo:6:18
+  |
+1 | fn area(width: int, height: int) -> int {
+  |         ---------- the parameter `width` is declared here
+...
+6 |     print("{area("3", 4)}")
+  |                  ^^^ this is a `string`
+
+1 error
+
+=== return mismatch
+fn name(id: int) -> string {
+    if id == 0 {
+        return "root"
+    }
+    return id
+}
+
+fn main() {
+    print(name(1))
+}
+---
+error: expected `string`, found `int`
+ --> main.koo:5:12
+  |
+1 | fn name(id: int) -> string {
+  |                     ------ the function returns `string`
+...
+5 |     return id
+  |            ^^ this is an `int`
+  |
+help: make it text
+  |
+5 |     return "{id}"
+  |            ++  ++
+
+1 error
+
+=== arg count
+fn area(width: int, height: int) -> int {
+    return width * height
+}
+
+fn main() {
+    print("{area(3)}")
+}
+---
+error: this call of `area` is missing `height`
+ --> main.koo:6:13
+  |
+1 | fn area(width: int, height: int) -> int {
+  |                     ----------- the parameter `height` is declared here
+...
+6 |     print("{area(3)}")
+  |             ^^^^^^^ no value for `height`
+
+1 error
+
+=== missing var
+fn fill(names: var [string], n: int) {
+    for i in 0..n {
+        names.push("item {i}")
+    }
+}
+
+fn main() {
+    var names: [string] = []
+    fill(names, 3)
+    print("{names}")
+}
+---
+error: `fill` changes this argument, so it is passed with `var`
+ --> main.koo:9:10
+  |
+1 | fn fill(names: var [string], n: int) {
+  |         ------------------- the parameter `names` is `var`
+...
+9 |     fill(names, 3)
+  |          ^^^^^
+  |
+  = note: `var` at the call shows the reader that the argument may change (Section 5.3)
+help: write `var` before the argument
+  |
+9 |     fill(var names, 3)
+  |          ++++
+
+1 error
+
+=== assign immutable
+fn main() {
+    total := 0
+    for i in 0..3 {
+        total += i
+    }
+    print("{total}")
+}
+---
+error: cannot assign to `total`, which is not `var`
+ --> main.koo:4:9
+  |
+2 |     total := 0
+  |     ----- `total` is declared here, without `var`
+3 |     for i in 0..3 {
+4 |         total += i
+  |         ^^^^^
+  |
+help: declare it with `var`
+  |
+2 |     var total := 0
+  |     ++++
+
+1 error
+
+=== unknown name
+fn main() {
+    count := 3
+    print("{coutn}")
+}
+---
+error: unknown name `coutn`
+ --> main.koo:3:13
+  |
+3 |     print("{coutn}")
+  |             ^^^^^ nothing of this name is in scope
+  |
+help: did you mean `count`?
+  |
+3 -     print("{coutn}")
+3 +     print("{count}")
+
+1 error
+
+=== unknown field
+type User = { name: string, email: string }
+
+fn main() {
+    u := User { name: "a", email: "b" }
+    print(u.emial)
+}
+---
+error: `User` has no field `emial`
+ --> main.koo:5:13
+  |
+5 |     print(u.emial)
+  |             ^^^^^
+  |
+help: did you mean `email`?
+  |
+5 -     print(u.emial)
+5 +     print(u.email)
+
+1 error
+
+=== method habit
+fn main() {
+    var xs := [1, 2]
+    xs.append(3)
+    print("{xs.length()}")
+}
+---
+error: `[int]` has no method `append`
+ --> main.koo:3:8
+  |
+3 |     xs.append(3)
+  |        ^^^^^^
+  |
+help: in Koo that is `.push`
+  |
+3 -     xs.append(3)
+3 +     xs.push(3)
+
+error: `[int]` has no method `length`
+ --> main.koo:4:16
+  |
+4 |     print("{xs.length()}")
+  |                ^^^^^^
+  |
+  = note: the number of elements is a field, not a method
+help: write `.len`
+  |
+4 -     print("{xs.length()}")
+4 +     print("{xs.len}")
+
+2 errors
+
+=== unhandled
+error NotFound { id: int }
+
+fn find(id: int) -> string ! NotFound {
+    if id == 0 { fail NotFound { id } }
+    return "x"
+}
+
+fn main() {
+    name := find(1)
+    print(name)
+}
+---
+error: unhandled result: NotFound
+  --> main.koo:10:11
+   |
+ 9 |     name := find(1)
+   |     ---- `name` is bound to the result here
+10 |     print(name)
+   |           ^^^^ this is a `string ! NotFound`, which may be an error
+   |
+   = note: a result is a value or an error, and the error may not be ignored (Section 6.4)
+   = help: handle the error where `name` is bound: end the value with `?` to pass the error on, or with `else` to give a value in its place
+
+1 error
+
+=== question no set
+error NotFound { id: int }
+
+fn find(id: int) -> string ! NotFound {
+    if id == 0 { fail NotFound { id } }
+    return "x"
+}
+
+fn show(id: int) {
+    name := find(id)?
+    print(name)
+}
+
+fn main() {
+    show(1)
+}
+---
+error: `?` in a function that cannot fail
+ --> main.koo:9:13
+  |
+8 | fn show(id: int) {
+  |    ---- no error is declared after a `!`
+9 |     name := find(id)?
+  |             ^^^^^^^^^ this passes `NotFound` on to the caller
+  |
+  = help: to handle the error here, give a value in its place with `else`, or inspect it with `match`
+help: or pass it on: let `show` fail with `NotFound`
+  |
+8 | fn show(id: int) ! NotFound {
+  |                 +++++++++++
+
+1 error
+
+=== match
+enum Shape {
+    Circle { r: float }
+    Square { side: float }
+    Dot
+}
+
+fn area(s: Shape) -> float {
+    match s {
+        Circle { r } => return 3.14 * r * r
+    }
+}
+
+fn main() {
+    print("{area(Shape.Dot)}")
+}
+---
+error: this `match` does not cover `Square`, `Dot`
+ --> main.koo:8:11
+  |
+8 |     match s {
+  |           ^ this is a `Shape`
+  |
+  = note: a `match` covers every case (Section 6.6)
+  = help: add an arm for each, or a last arm `_ => ...` for every case not named
+
+1 error
+
+=== missing return
+fn sign(n: int) -> int {
+    if n > 0 {
+        return 1
+    }
+}
+
+fn main() {
+    print("{sign(1)}")
+}
+---
+error: `sign` can reach its end without returning a value
+ --> main.koo:5:1
+  |
+1 | fn sign(n: int) -> int {
+  |                    --- it returns `int`
+...
+5 | }
+  | ^ the function ends here
+  |
+  = help: end every path with `return` or `fail`
+
+1 error
+
+=== optional
+fn main() {
+    xs := [1, 2, 3]
+    first: int = xs.get(0)
+    print("{first}")
+}
+---
+error: expected `int`, found `int?`
+ --> main.koo:3:18
+  |
+3 |     first: int = xs.get(0)
+  |            ---   ^^^^^^^^^ this is an `int?`
+  |            |
+  |            the binding declares this type
+  |
+  = help: the value may be absent: give one to use when there is none, `x else fallback`, or test for it, `if value := x { ... }` (Section 4.8)
+
+1 error
+
+=== int float
+fn main() {
+    n := 3
+    half := n * 0.5
+    print("{half}")
+}
+---
+error: `*` cannot be applied to `int` and `float`
+ --> main.koo:3:17
+  |
+3 |     half := n * 0.5
+  |             -   ^^^ this is a `float`
+  |             |
+  |             this is an `int`
+  |
+  = note: an `int` never becomes a `float` by itself (Section 4.2)
+help: convert the `int` to a `float`
+  |
+3 |     half := float.from(n) * 0.5
+  |             +++++++++++ +
+
+1 error
+
+=== str int
+fn main() {
+    n := 3
+    s := "count: " + n
+    print(s)
+}
+---
+error: `+` cannot be applied to `string` and `int`
+ --> main.koo:3:22
+  |
+3 |     s := "count: " + n
+  |          ---------   ^ this is an `int`
+  |          |
+  |          this is a `string`
+  |
+  = help: put the value inside the string, as in `"total: {n}"`, or make it text with `n.to_string()`
+
+1 error
+
+=== if value
+fn main() {
+    n := 3
+    label := if n > 2 { "big" }
+    print(label)
+}
+---
+error: an `if` used for its value needs an `else`
+ --> main.koo:3:14
+  |
+3 |     label := if n > 2 { "big" }
+  |              ^^^^^^^^^^^^^^^^^^
+  |
+  = help: add `else { ... }` with a value of the same type (Section 6.6)
+
+1 error
+
+=== dup fn
+fn area(w: int) -> int {
+    return w
+}
+
+fn area(w: int, h: int) -> int {
+    return w * h
+}
+
+fn main() {
+}
+---
+error: `area` is already declared
+ --> main.koo:5:4
+  |
+1 | fn area(w: int) -> int {
+  |    ---- `area` is first declared here
+...
+5 | fn area(w: int, h: int) -> int {
+  |    ^^^^ declared a second time
+  |
+  = note: there is no overloading: one name, one function (Section 6.1)
+  = help: give this function another name, or one function both jobs with a default value for a parameter
+
+1 error
+
+=== dup local
+fn main() {
+    x := 1
+    x := 2
+    print("{x}")
+}
+---
+error: `x` is already declared in this scope
+ --> main.koo:3:5
+  |
+2 |     x := 1
+  |     - `x` is first declared here
+3 |     x := 2
+  |     ^ declared a second time
+  |
+  = help: use another name, or declare the first as `var x` and assign to it with `=`
+
+1 error
+
+=== missing field
+type User = { name: string, email: string, age: int }
+
+fn main() {
+    u := User { name: "a" }
+    print(u.name)
+}
+---
+error: `User` is missing the fields `email`, `age`
+ --> main.koo:4:10
+  |
+1 | type User = { name: string, email: string, age: int }
+  |                             -------------  -------- `age` has no default
+  |                             |
+  |                             `email` has no default
+...
+4 |     u := User { name: "a" }
+  |          ^^^^^^^^^^^^^^^^^^ add `email: ...`, `age: ...`
+  |
+  = note: every field without a default must be given (Section 4.6)
+
+1 error
+
+=== push immutable
+fn main() {
+    xs := [1, 2]
+    xs.push(3)
+    print("{xs}")
+}
+---
+error: cannot change `xs`, which is not `var`
+ --> main.koo:3:5
+  |
+2 |     xs := [1, 2]
+  |     -- `xs` is declared here, without `var`
+3 |     xs.push(3)
+  |     ^^
+  |
+help: declare it with `var`
+  |
+2 |     var xs := [1, 2]
+  |     ++++
+
+1 error
+
+=== undeclared assign
+fn main() {
+    x = 5
+    print("{x}")
+}
+---
+error: unknown name `x`
+ --> main.koo:2:5
+  |
+2 |     x = 5
+  |     ^ no variable of this name is declared
+  |
+  = note: `=` changes a variable that exists; `:=` declares one
+help: to declare `x`, write `:=`
+  |
+2 -     x = 5
+2 +     x := 5
+
+1 error
+
+=== compare
+fn main() {
+    n := 3
+    if n == "3" {
+        print("a")
+    }
+}
+---
+error: `==` cannot be applied to `int` and `string`
+ --> main.koo:3:13
+  |
+3 |     if n == "3" {
+  |        -    ^^^ this is a `string`
+  |        |
+  |        this is an `int`
+  |
+help: compare with the number
+  |
+3 -     if n == "3" {
+3 +     if n == 3 {
+
+1 error
+
+=== lambda params
+fn main() {
+    xs := [1, 2, 3]
+    ys := xs.map((a, b) -> a + b)
+    print("{ys}")
+}
+---
+error: this lambda takes 2 parameters, but 1 is expected
+ --> main.koo:3:18
+  |
+3 |     ys := xs.map((a, b) -> a + b)
+  |                  ^^^^^^^^^^^^^^^ a `fn(int) -> _` is expected here
+  |
+  = help: a function of one parameter is written `x -> ...`; if the one value is a pair, take it apart inside: `pair -> { (a, b) := pair ... }`
+
+1 error
+
+=== unused import
+import std/io
+
+fn main() {
+    print("a")
+}
+---
+error: the import `io` is not used
+ --> main.koo:1:1
+  |
+1 | import std/io
+  | ^^^^^^^^^^^^^
+  |
+  = note: an unused import is an error (Section 8.2)
+help: remove it
+  |
+1 - import std/io
+
+1 error
+
+=== fail not in set
+error NotFound {}
+error Denied {}
+
+fn find(id: int) -> int ! NotFound {
+    if id < 0 { fail Denied {} }
+    return id
+}
+
+fn main() {
+}
+---
+error: `Denied` is not in this function's error set
+ --> main.koo:5:22
+  |
+5 |     if id < 0 { fail Denied {} }
+  |                      ^^^^^^^^^ the function may fail only with `NotFound`
+  |
+help: or pass it on: add `Denied` to the errors of `find`
+  |
+4 | fn find(id: int) -> int ! NotFound | Denied {
+  |                                   +++++++++
+
+1 error
+
+=== cond int
+fn main() {
+    n := 3
+    if n {
+        print("a")
+    }
+}
+---
+error: expected `bool`, found `int`
+ --> main.koo:3:8
+  |
+3 |     if n {
+  |        ^ this is an `int`
+  |
+  = help: a condition is a `bool`: compare the value, as in `n != 0` or `name != ""`
+
+1 error
+
+=== unknown type
+fn total(xs: Vec<i32>) -> String {
+    return "a"
+}
+
+fn main() {
+}
+---
+error: unknown generic type `Vec`
+ --> main.koo:1:14
+  |
+1 | fn total(xs: Vec<i32>) -> String {
+  |              ^^^^^^^^
+  |
+  = help: in Koo that is a list, written `[T]`
+
+error: unknown type `String`
+ --> main.koo:1:27
+  |
+1 | fn total(xs: Vec<i32>) -> String {
+  |                           ^^^^^^
+  |
+help: in Koo that is `string`
+  |
+1 - fn total(xs: Vec<i32>) -> String {
+1 + fn total(xs: Vec<i32>) -> string {
+
+2 errors
+
+=== borrow mutate
+fn add_one(xs: [int]) {
+    xs.push(1)
+}
+
+fn main() {
+    var xs := [1]
+    add_one(xs)
+}
+---
+error: cannot change `xs`, which is not `var`
+ --> main.koo:2:5
+  |
+1 | fn add_one(xs: [int]) {
+  |            --------- the parameter `xs` is declared here
+2 |     xs.push(1)
+  |     ^^
+  |
+  = note: a parameter is lent to the function: it reads the caller's value and cannot change it (Section 5.3)
+  = help: to change the caller's value, declare the parameter as `xs: var [int]` and pass `var xs`
+  = help: to change a copy, make one: `var copy := xs`
+
+1 error
+
+=== named arg
+fn area(width: int, height: int) -> int {
+    return width * height
+}
+
+fn main() {
+    print("{area(width: 3, hieght: 4)}")
+}
+---
+error: `area` has no parameter `hieght`
+ --> main.koo:6:28
+  |
+1 | fn area(width: int, height: int) -> int {
+  |    ---- `area` is declared here
+...
+6 |     print("{area(width: 3, hieght: 4)}")
+  |                            ^^^^^^
+  |
+help: did you mean `height`?
+  |
+6 -     print("{area(width: 3, hieght: 4)}")
+6 +     print("{area(width: 3, height: 4)}")
+
+1 error
+
+=== return value unit
+fn greet(name: string) {
+    return "hi {name}"
+}
+
+fn main() {
+    greet("a")
+}
+---
+error: `greet` returns nothing, but this `return` has a value
+ --> main.koo:2:12
+  |
+1 | fn greet(name: string) {
+  |    ----- no return type is declared
+2 |     return "hi {name}"
+  |            ^^^^^^^^^^^ this is a `string`
+  |
+help: declare the return type
+  |
+1 | fn greet(name: string) -> string {
+  |                       ++++++++++
+
+1 error
+
+=== no main
+fn helper() {
+}
+---
+error: the program has no `main` function
+ --> main.koo:1:1
+  |
+1 | fn helper() {
+  | ^
+  |
+  = help: add `fn main() { ... }`
+
+1 error
+
+=== call non fn
+fn main() {
+    n := 3
+    n(4)
+}
+---
+error: `int` is not a function and cannot be called
+ --> main.koo:3:5
+  |
+3 |     n(4)
+  |     ^ this is an `int`
+
+1 error
+
+=== var not needed
+fn show(xs: [int]) {
+    print("{xs}")
+}
+
+fn main() {
+    var xs := [1]
+    show(var xs)
+}
+---
+error: the parameter `xs` is not `var`
+ --> main.koo:7:14
+  |
+1 | fn show(xs: [int]) {
+  |         --------- the parameter `xs` is declared here
+...
+7 |     show(var xs)
+  |              ^^ `show` does not change this argument
+  |
+help: remove `var`
+  |
+7 -     show(var xs)
+7 +     show(xs)
+
+1 error
+
+=== index type
+fn main() {
+    xs := [1, 2]
+    print("{xs["a"]}")
+}
+---
+error: expected `int`, found `string`
+ --> main.koo:3:16
+  |
+3 |     print("{xs["a"]}")
+  |                ^^^ this is a `string`
+
+1 error
+
+=== unknown method
+type User = { name: string }
+
+fn (self: User) greeting() -> string {
+    return "hi {self.name}"
+}
+
+fn main() {
+    u := User { name: "a" }
+    print(u.greting())
+}
+---
+error: `User` has no method `greting`
+ --> main.koo:9:13
+  |
+9 |     print(u.greting())
+  |             ^^^^^^^
+  |
+help: did you mean `greeting`?
+  |
+9 -     print(u.greting())
+9 +     print(u.greeting())
+
+1 error
+
+=== method as field
+fn main() {
+    s := "abc"
+    print(s.to_upper)
+}
+---
+error: `string` has no field `to_upper`
+ --> main.koo:3:13
+  |
+3 |     print(s.to_upper)
+  |             ^^^^^^^^
+  |
+  = help: `to_upper` is a method: call it, `.to_upper()`
+
+1 error
+
+=== branch types
+fn main() {
+    n := 3
+    label := if n > 2 { "big" } else { 0 }
+    print("{label}")
+}
+---
+error: the branches have different types: `string` and `int`
+ --> main.koo:3:40
+  |
+3 |     label := if n > 2 { "big" } else { 0 }
+  |                         -----          ^ this branch is an `int`
+  |                         |
+  |                         this branch is a `string`
+  |
+  = note: every branch of an `if` or `match` used for its value has the same type (Section 6.6)
+
+1 error
+
+=== unknown fn
+fn main() {
+    println("hello")
+    pritn("a")
+}
+---
+error: unknown function `println`
+ --> main.koo:2:5
+  |
+2 |     println("hello")
+  |     ^^^^^^^
+  |
+  = help: printing a line is `print(...)`; values go inside the string: `print("total: {n}")`
+
+error: unknown function `pritn`
+ --> main.koo:3:5
+  |
+3 |     pritn("a")
+  |     ^^^^^
+  |
+help: did you mean `print`?
+  |
+3 -     pritn("a")
+3 +     print("a")
+
+2 errors
+
+=== optional field
+type User = { name: string }
+
+fn main() {
+    users := [User { name: "a" }]
+    print(users.get(0).name)
+}
+---
+error: the value may be absent, so `.name` cannot be used on it
+ --> main.koo:5:11
+  |
+5 |     print(users.get(0).name)
+  |           ^^^^^^^^^^^^ this is a `User?`: it may be `none`
+  |
+  = help: give a value to use when there is none, `(x else fallback).name`, or use it only when it is there, `if value := x { ... value.name ... }` (Section 4.8)
+
+1 error
+
+=== overlap
+fn swap(a: var int, b: var int) {
+    t := a
+    a = b
+    b = t
+}
+
+fn main() {
+    var x := 1
+    swap(var x, var x)
+}
+---
+error: this argument overlaps another `var` argument of the same call
+ --> main.koo:9:21
+  |
+9 |     swap(var x, var x)
+  |              -      ^ the same thing, lent to be changed a second time
+  |              |
+  |              first lent to be changed here
+  |
+  = note: one thing cannot be changed through two names at once (Section 5.4)
+  = help: pass a copy as one of the two: `var copy := x`
+
+1 error
+
+=== param assign
+fn bump(n: int) -> int {
+    n += 1
+    return n
+}
+
+fn main() {
+    print("{bump(1)}")
+}
+---
+error: cannot assign to `n`, which is not `var`
+ --> main.koo:2:5
+  |
+1 | fn bump(n: int) -> int {
+  |         ------ the parameter `n` is declared here
+2 |     n += 1
+  |     ^
+  |
+  = note: a parameter is lent to the function: it reads the caller's value and cannot change it (Section 5.3)
+  = help: to change the caller's value, declare the parameter as `n: var int` and pass `var n`
+  = help: to change a copy, make one: `var copy := n`
+
+1 error
+
+=== multi
+fn main() {
+    a := 1
+    b := "x"
+    c := a + b
+    d := c * 2
+    e := d + undefined_name
+    print("{e}")
+}
+---
+error: `+` cannot be applied to `int` and `string`
+ --> main.koo:4:14
+  |
+4 |     c := a + b
+  |          -   ^ this is a `string`
+  |          |
+  |          this is an `int`
+  |
+  = help: put the value inside the string, as in `"total: {a}"`, or make it text with `a.to_string()`
+
+error: unknown name `undefined_name`
+ --> main.koo:6:14
+  |
+6 |     e := d + undefined_name
+  |              ^^^^^^^^^^^^^^ nothing of this name is in scope
+
+2 errors
+
+=== error set missing
+error NotFound {}
+error Denied {}
+
+fn find(id: int) -> int ! NotFound | Denied {
+    if id < 0 { fail Denied {} }
+    return id
+}
+
+fn load(id: int) -> int ! NotFound {
+    return find(id)?
+}
+
+fn main() {
+}
+---
+error: `?` propagates `Denied`, which is not in this function's error set
+  --> main.koo:10:12
+   |
+10 |     return find(id)?
+   |            ^^^^^^^^^ the function may fail only with `NotFound`
+   |
+   = help: to handle it here, give a value in its place with `else`, or inspect it with `match`
+help: or pass it on: add `Denied` to the errors of `load`
+   |
+ 9 | fn load(id: int) -> int ! NotFound | Denied {
+   |                                   +++++++++
+
+1 error
+
+=== struct field type
+type User = { name: string, age: int }
+
+fn main() {
+    u := User { name: "a", age: "ten" }
+    print(u.name)
+}
+---
+error: expected `int`, found `string`
+ --> main.koo:4:33
+  |
+1 | type User = { name: string, age: int }
+  |                             -------- the field `age` is declared here
+...
+4 |     u := User { name: "a", age: "ten" }
+  |                                 ^^^^^ this is a `string`
+
+1 error
+
+=== wrong main
+fn main(args: [string]) -> int {
+    return 0
+}
+---
+error: `main` has the wrong signature
+ --> main.koo:1:1
+  |
+1 | fn main(args: [string]) -> int {
+  | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  |                            --- `main` returns nothing
+  |
+  = note: `main` is `fn main()` or `fn main() ! E`: it takes nothing and returns nothing (Section 6.1)
+  = help: the program's arguments come from `std/os`: `import std/os`, then `os.args()`
+  = help: to end with a status, `import std/os` and call `os.exit(1)`; an error that `main` fails with ends the program with status 1
+
+1 error
+
+=== string index
+fn main() {
+    s := "abc"
+    print("{s[0]}")
+}
+---
+error: a string cannot be indexed
+ --> main.koo:3:13
+  |
+3 |     print("{s[0]}")
+  |             ^^^^
+  |
+  = help: use `s.chars()`, `s.bytes()` or `s.slice(from, to)` (Section 4.4)
+
+1 error
+
+=== list types
+fn main() {
+    xs := [1, "two", 3]
+    print("{xs}")
+}
+---
+error: expected `int`, found `string`
+ --> main.koo:2:15
+  |
+2 |     xs := [1, "two", 3]
+  |            -  ^^^^^ this is a `string`
+  |            |
+  |            the first element is an `int`, and a list has one type of element
+
+1 error
+
+=== wrong method type
+fn main() {
+    n := 3
+    print(n.to_upper())
+}
+---
+error: `int` has no method `to_upper`
+ --> main.koo:3:13
+  |
+3 |     print(n.to_upper())
+  |             ^^^^^^^^
+  |
+  = help: it has `abs`, `clamp`, `compare`, `max`, `min`, `pow`, `to_json`, `to_string`
+
+1 error
+
+=== optional arith
+fn main() {
+    xs := [1, 2]
+    total := xs.get(0) + 1
+    print("{total}")
+}
+---
+error: `+` cannot be applied to `int?` and `int`
+ --> main.koo:3:26
+  |
+3 |     total := xs.get(0) + 1
+  |              ---------   ^ this is an `int`
+  |              |
+  |              this is an `int?`
+  |
+  = help: one side may be absent: give it a value with `else`, as in `(x else 0)`, or unwrap it with `if value := x { ... }`
+
+1 error
+
+=== result as value
+error Bad {}
+
+fn load() -> int ! Bad {
+    return 1
+}
+
+fn main() {
+    total := load() + 1
+    print("{total}")
+}
+---
+error: `+` cannot be applied to `int ! Bad` and `int`
+ --> main.koo:8:23
+  |
+8 |     total := load() + 1
+  |              ------   ^ this is an `int`
+  |              |
+  |              this is an `int ! Bad`
+  |
+  = help: one side may be an error: `x?` passes the error on to the caller, and `(x else 0)` gives a value in its place (Section 6.4)
+
+1 error
+
+=== unused result stmt
+error Bad {}
+
+fn save() ! Bad {
+}
+
+fn main() {
+    save()
+}
+---
+error: unhandled result: Bad
+ --> main.koo:7:5
+  |
+7 |     save()
+  |     ^^^^^^ this is a `() ! Bad`, which may be an error
+  |
+  = note: a result is a value or an error, and the error may not be ignored (Section 6.4)
+  = help: to handle it here, give a value in its place with `else`, or inspect it with `match`
+help: or pass the error on to the caller: write `?`, and let `main` fail with `Bad`
+  |
+6 | fn main() ! Bad {
+  |          ++++++
+7 |     save()?
+  |           +
+
+1 error
+
+=== else types
+fn main() {
+    xs := [1, 2]
+    first := xs.get(0) else "none"
+    print("{first}")
+}
+---
+error: expected `int`, found `string`
+ --> main.koo:3:29
+  |
+3 |     first := xs.get(0) else "none"
+  |              ---------      ^^^^^^ this is a `string`
+  |              |
+  |              this is an `int?`, so the alternative is an `int`
+
+1 error
+
+=== too many args
+fn area(w: int, h: int) -> int {
+    return w * h
+}
+
+fn main() {
+    print("{area(1, 2, 3, 4)}")
+}
+---
+error: `area` takes 2 arguments, found 4
+ --> main.koo:6:24
+  |
+1 | fn area(w: int, h: int) -> int {
+  |    ---- `area` is declared here
+...
+6 |     print("{area(1, 2, 3, 4)}")
+  |                        ^^^^ these arguments are too many
+
+1 error
+
+=== struct as fn
+type Point = { x: int, y: int }
+
+fn main() {
+    p := Point(1, 2)
+    print("{p.x}")
+}
+---
+error: `Point` is a type, not a function
+ --> main.koo:4:10
+  |
+4 |     p := Point(1, 2)
+  |          ^^^^^
+  |
+  = note: a value of a type is made by naming its fields
+help: name the fields
+  |
+4 -     p := Point(1, 2)
+4 +     p := Point { x: 1, y: 2 }
+
+1 error
+
+=== variant bare
+enum Color { Red, Green }
+
+fn main() {
+    c := Red
+    print("{c}")
+}
+---
+error: `Red` is not known here
+ --> main.koo:4:10
+  |
+4 |     c := Red
+  |          ^^^
+  |
+  = help: a variant is written bare only where its enum is expected; write `Color.Red` (Section 4.7)
+
+1 error
+
+=== match missing
+enum Color { Red, Green, Blue }
+
+fn name(c: Color) -> string {
+    match c {
+        Red => return "red"
+        Green => return "green"
+    }
+}
+
+fn main() {
+    print(name(Color.Red))
+}
+---
+error: this `match` does not cover `Blue`
+ --> main.koo:4:11
+  |
+4 |     match c {
+  |           ^ this is a `Color`
+  |
+  = note: a `match` covers every case (Section 6.6)
+  = help: add an arm for each, or a last arm `_ => ...` for every case not named
+
+1 error
+
+=== break outside
+fn main() {
+    break
+}
+---
+error: `break` and `continue` appear only inside a loop
+ --> main.koo:2:5
+  |
+2 |     break
+  |     ^^^^^
+
+1 error
+
+=== var arg literal
+fn bump(n: var int) {
+    n += 1
+}
+
+fn main() {
+    bump(var 5)
+}
+---
+error: this value cannot be passed as `var`
+ --> main.koo:6:14
+  |
+6 |     bump(var 5)
+  |              ^ not a variable
+  |
+  = note: a `var` argument is a variable that the function may change, or a field or element of one (Section 5.3)
+  = help: put the value in a variable first: `var n := ...`, then pass `var n`
+
+1 error
+
+=== field assign immutable
+type Point = { x: int, y: int }
+
+fn main() {
+    p := Point { x: 1, y: 2 }
+    p.x = 5
+    print("{p.x}")
+}
+---
+error: cannot assign to `p`, which is not `var`
+ --> main.koo:5:5
+  |
+4 |     p := Point { x: 1, y: 2 }
+  |     - `p` is declared here, without `var`
+5 |     p.x = 5
+  |     ^^^
+  |
+help: declare it with `var`
+  |
+4 |     var p := Point { x: 1, y: 2 }
+  |     ++++
+
+1 error
+
+=== loop var assign
+fn main() {
+    xs := [1, 2]
+    for x in xs {
+        x = 5
+    }
+}
+---
+error: cannot assign to `x`, which is not `var`
+ --> main.koo:4:9
+  |
+3 |     for x in xs {
+  |         - `x` is the loop's variable
+4 |         x = 5
+  |         ^
+  |
+  = help: a loop variable names an element as it was; change the list through an index: `for i in 0..xs.len { xs[i] = ... }`
+
+1 error
+
+=== none no type
+fn main() {
+    x := none
+    xs := []
+}
+---
+error: the type of `none` is not known here
+ --> main.koo:2:10
+  |
+2 |     x := none
+  |          ^^^^
+  |
+  = help: give the binding a type: `x: int? = none`
+
+error: the element type of `[]` is not known here
+ --> main.koo:3:11
+  |
+3 |     xs := []
+  |           ^^
+  |
+  = help: give the binding a type: `xs: [int] = []`
+
+2 errors
+
+=== float eq int
+fn main() {
+    x: float = 3
+    print("{x}")
+}
+---
+error: expected `float`, found `int`
+ --> main.koo:2:16
+  |
+2 |     x: float = 3
+  |        -----   ^ this is an `int`
+  |        |
+  |        the binding declares this type
+  |
+  = help: an `int` never becomes a `float` by itself (Section 4.2)
+help: write the number as a `float`
+  |
+2 |     x: float = 3.0
+  |                 ++
+
+1 error
+
+=== negate string
+fn main() {
+    s := "a"
+    print("{-s}")
+}
+---
+error: `-` is not defined for `string`
+ --> main.koo:3:13
+  |
+3 |     print("{-s}")
+  |             ^^
+
+1 error
+
+=== not int
+fn main() {
+    n := 1
+    if not n {
+        print("a")
+    }
+}
+---
+error: expected `bool`, found `int`
+ --> main.koo:3:12
+  |
+3 |     if not n {
+  |            ^ this is an `int`
+  |
+  = help: `not` takes a `bool`: compare the value first, as in `n == 0` or `name == ""`
+
+1 error
+
+=== method on type
+type Point = { x: int }
+
+fn (self: Point) show() -> string {
+    return "{self.x}"
+}
+
+fn main() {
+    print(Point.show())
+}
+---
+error: `Point` has no function `show`
+ --> main.koo:8:17
+  |
+8 |     print(Point.show())
+  |                 ^^^^
+  |
+  = help: `show` is a method: call it on a value, as `x.show(...)`
+
+1 error
+
+=== call missing parens
+fn greet() -> string {
+    return "hi"
+}
+
+fn main() {
+    s: string = greet
+    print(s)
+}
+---
+error: expected `string`, found `fn() -> string`
+ --> main.koo:6:17
+  |
+6 |     s: string = greet
+  |        ------   ^^^^^ this is a `fn() -> string`
+  |        |
+  |        the binding declares this type
+  |
+  = help: this names the function; to use its result, call it
+help: call the function
+  |
+6 |     s: string = greet()
+  |                      ++
+
+1 error
+
+=== dup type
+type Point = { x: int }
+type Point = { y: int }
+
+fn main() {
+}
+---
+error: `Point` is already declared
+ --> main.koo:2:6
+  |
+1 | type Point = { x: int }
+  |      ----- `Point` is first declared here
+2 | type Point = { y: int }
+  |      ^^^^^ declared a second time
+
+1 error
+
+=== generic missing arg
+type Box<T> = { value: T }
+
+fn main() {
+    b: Box = Box { value: 1 }
+}
+---
+error: `Box` takes 1 type argument, found 0
+ --> main.koo:4:8
+  |
+4 |     b: Box = Box { value: 1 }
+  |        ^^^
+  |
+  = help: write `Box<T>` with a type for each: for example `Box<int>`
+
+1 error
+
+=== wrong error handler
+fn main() {
+    n := 3
+    m := n else 0
+    k := n?
+}
+---
+error: `else` needs a result or an optional before it, found `int`
+ --> main.koo:3:10
+  |
+3 |     m := n else 0
+  |          ^ this is an `int`: it is always there
+  |
+help: the alternative would never be used: remove it
+  |
+3 -     m := n else 0
+3 +     m := n
+
+error: `?` needs a result or an optional, found `int`
+ --> main.koo:4:10
+  |
+4 |     k := n?
+  |          ^^ this is an `int`: it is always there
+  |
+help: there is nothing to pass on: remove the `?`
+  |
+4 -     k := n?
+4 +     k := n
+
+2 errors
+
+=== test missing
+fn helper() {
+}
+
+fn main() {
+    helper(1)
+}
+---
+error: `helper` takes no arguments, found 1
+ --> main.koo:5:12
+  |
+1 | fn helper() {
+  |    ------ `helper` is declared here
+...
+5 |     helper(1)
+  |            ^ this argument is one too many
+
+1 error
+
+=== string method typo
+fn main() {
+    s := "abc"
+    print(s.toUpperCase())
+    print(s.lenght)
+}
+---
+error: `string` has no method `toUpperCase`
+ --> main.koo:3:13
+  |
+3 |     print(s.toUpperCase())
+  |             ^^^^^^^^^^^
+  |
+help: in Koo that is `.to_upper`
+  |
+3 -     print(s.toUpperCase())
+3 +     print(s.to_upper())
+
+error: `string` has no field `lenght`
+ --> main.koo:4:13
+  |
+4 |     print(s.lenght)
+  |             ^^^^^^
+  |
+  = help: the number of elements is `.len`
+
+2 errors
+
+=== map missing key
+fn main() {
+    m := ["a": 1]
+    n: int = m["a"]
+    print("{n}")
+}
+---
+error: expected `int`, found `int?`
+ --> main.koo:3:14
+  |
+3 |     n: int = m["a"]
+  |        ---   ^^^^^^ this is an `int?`
+  |        |
+  |        the binding declares this type
+  |
+  = help: the value may be absent: give one to use when there is none, `x else fallback`, or test for it, `if value := x { ... }` (Section 4.8)
+
+1 error
+
+=== import unknown
+import std/sql
+import std/strings
+
+fn main() {
+}
+---
+error: the package `std/sql` is not part of this compiler yet
+ --> main.koo:1:1
+  |
+1 | import std/sql
+  | ^^^^^^^^^^^^^^
+  |
+  = help: the standard packages so far are `std/os`, `std/io`, `std/http` and `std/test`
+
+error: the package `std/strings` is not part of this compiler yet
+ --> main.koo:2:1
+  |
+2 | import std/strings
+  | ^^^^^^^^^^^^^^^^^^
+  |
+  = help: the standard packages so far are `std/os`, `std/io`, `std/http` and `std/test`
+
+2 errors
+
+=== io no import
+fn main() {
+    text := io.read_file("a.txt") else ""
+    print(text)
+}
+---
+error: unknown name `io`
+ --> main.koo:2:13
+  |
+2 |     text := io.read_file("a.txt") else ""
+  |             ^^
+  |
+  = help: this file does not import the package: add `import std/io` at the top of the file
+
+1 error
+
+=== interp unit
+fn nothing() {
+}
+
+fn main() {
+    print("{nothing()}")
+}
+---
+error: this expression has no value to print
+ --> main.koo:5:13
+  |
+5 |     print("{nothing()}")
+  |             ^^^^^^^^^ this gives nothing back
+
+1 error
+

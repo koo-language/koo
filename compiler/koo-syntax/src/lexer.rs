@@ -29,6 +29,7 @@ pub fn lex(src: &str) -> Lexed {
         diags: Vec::new(),
         docs: Vec::new(),
         interp_depth: 0,
+        extra: None,
     };
     let mut tokens: Vec<Token> = Vec::new();
     loop {
@@ -38,6 +39,9 @@ pub fn lex(src: &str) -> Lexed {
         // so the word `import` at the start of a line switches the lexer to path mode.
         let import = token.kind == Tok::Kw(Kw::Import) && (token.nl_before || tokens.is_empty());
         tokens.push(token);
+        if let Some(extra) = lexer.extra.take() {
+            tokens.push(extra);
+        }
         if import && let Some(path) = lexer.import_path() {
             tokens.push(path);
         }
@@ -61,9 +65,10 @@ pub fn lex_at(src: &str, base: u32) -> Lexed {
         for doc in &mut lexed.docs {
             doc.offset += base;
         }
-        for diagnostic in &mut lexed.diagnostics {
-            diagnostic.span = diagnostic.span.shifted(base);
-        }
+        lexed.diagnostics = std::mem::take(&mut lexed.diagnostics)
+            .into_iter()
+            .map(|diagnostic| diagnostic.shifted(base))
+            .collect();
     }
     lexed
 }
@@ -90,6 +95,9 @@ struct Lexer<'a> {
     docs: Vec<DocComment>,
     /// How many interpolations enclose the current position.
     interp_depth: u32,
+    /// A token to add after the one just read: `x++` is read as `x += 1`, so that the
+    /// one mistake is the only one reported.
+    extra: Option<Token>,
 }
 
 /// How deeply string literals may nest inside interpolations.
@@ -123,6 +131,13 @@ impl<'a> Lexer<'a> {
             .push(Diagnostic::new(Span::new(start, end), message).with_help(help));
     }
 
+    /// Reports text that Koo writes another way, with the way it is written.
+    fn error_fix(&mut self, start: usize, end: usize, message: impl Into<String>, fix: &str, text: &str) {
+        let span = Span::new(start, end);
+        self.diags
+            .push(Diagnostic::new(span, message).with_fix(fix, span, text));
+    }
+
     /// Consumes one character and returns it.
     fn next_char(&mut self) -> Option<char> {
         let c = self.rest().chars().next()?;
@@ -152,6 +167,14 @@ impl<'a> Lexer<'a> {
                             text: text.to_string(),
                         });
                     }
+                    self.pos = end;
+                }
+                // `#` begins nothing in Koo; where it begins a line or follows a space
+                // it was meant as a comment, and the rest of the line is skipped as one.
+                Some(b'#') => {
+                    let start = self.pos;
+                    let end = self.rest().find('\n').map(|i| self.pos + i).unwrap_or(self.src.len());
+                    self.error_fix(start, start + 1, "a comment begins with `//`", "write `//`", "//");
                     self.pos = end;
                 }
                 _ => return newline,
@@ -636,15 +659,76 @@ impl<'a> Lexer<'a> {
         };
         if self.peek() == Some(b'\'') {
             self.pos += 1;
+            return Tok::Char(c);
+        }
+        // `'hello'`: a string in the quotes of another language. It is read as the
+        // string it was meant to be.
+        let line_end = self.rest().find('\n').map(|i| self.pos + i).unwrap_or(self.src.len());
+        if let Some(close) = self.src[self.pos..line_end].find('\'').map(|i| self.pos + i) {
+            let text = &self.src[start + 1..close];
+            if !text.contains('"') && !text.contains('\\') {
+                let quotes = vec![
+                    (Span::new(start, start + 1), "\"".to_string()),
+                    (Span::new(close, close + 1), "\"".to_string()),
+                ];
+                self.diags.push(
+                    Diagnostic::new(Span::new(start, close + 1), "a string is written in double quotes")
+                        .with_note("single quotes hold one character: `'a'`")
+                        .with_edits("write it in double quotes", quotes),
+                );
+                self.pos = close + 1;
+                return Tok::Str(if text.is_empty() {
+                    Vec::new()
+                } else {
+                    vec![StrPiece::Lit(text.to_string())]
+                });
+            }
+        }
+        self.error_help(
+            start,
+            self.pos,
+            "this character literal is not closed",
+            "a character literal holds one character; strings are written with double quotes",
+        );
+        Tok::Char(c)
+    }
+
+    /// Whether the text before `at` ends an operand: `x++`, `xs[i]--`, `count()--`.
+    fn ends_operand(&self, at: usize) -> bool {
+        at > 0 && (is_word_byte(self.bytes[at - 1]) || matches!(self.bytes[at - 1], b')' | b']'))
+    }
+
+    /// Reports `x++` or `x--`. Where it is a statement of its own, the statement Koo has
+    /// for it is shown in its place.
+    fn step_by_one(&mut self, start: usize, found: &str, koo: &str) {
+        let rest = &self.src[start + 2..];
+        let rest = rest[..rest.find('\n').unwrap_or(rest.len())].trim();
+        let message = format!("`{found}` does not exist");
+        if rest.is_empty() || rest.starts_with('}') || rest.starts_with("//") {
+            self.error_fix(
+                start,
+                start + 2,
+                message,
+                &format!("write `{koo} 1`"),
+                &format!(" {koo} 1"),
+            );
         } else {
             self.error_help(
                 start,
-                self.pos,
-                "this character literal is not closed",
-                "a character literal holds one character; strings are written with double quotes",
+                start + 2,
+                message,
+                format!("change the variable in a statement of its own, `x {koo} 1`, before or after this line"),
             );
         }
-        Tok::Char(c)
+    }
+
+    /// Queues the `1` of `x++`, read as `x += 1`.
+    fn one_after(&mut self, start: usize) {
+        self.extra = Some(Token {
+            kind: Tok::Int("1".to_string()),
+            span: Span::new(start, start + 2),
+            nl_before: false,
+        });
     }
 
     /// Reads punctuation. Returns `None` after reporting a character that is not part of Koo,
@@ -671,18 +755,36 @@ impl<'a> Lexer<'a> {
             b'.' if next == Some(b'.') => (Tok::DotDot, 2),
             b'.' => (Tok::Dot, 1),
             b':' if next == Some(b'=') => (Tok::ColonEq, 2),
+            b':' if next == Some(b':') => {
+                self.diags.push(
+                    Diagnostic::new(Span::new(start, start + 2), "`::` does not exist")
+                        .with_note("a member of a type or a package is reached with `.`, as a field is")
+                        .with_fix("write `.`", Span::new(start, start + 2), "."),
+                );
+                (Tok::Dot, 2)
+            }
             b':' => (Tok::Colon, 1),
+            b'=' if next == Some(b'=') && third == Some(b'=') => {
+                self.error_fix(start, start + 3, "`===` does not exist", "write `==`", "==");
+                (Tok::EqEq, 3)
+            }
             b'=' if next == Some(b'=') => (Tok::EqEq, 2),
             b'=' if next == Some(b'>') => (Tok::FatArrow, 2),
             b'=' => (Tok::Eq, 1),
             b'+' if next == Some(b'=') => (Tok::PlusEq, 2),
             b'+' if next == Some(b'+') => {
-                self.error_help(start, start + 2, "`++` does not exist", "write `x += 1`");
-                (Tok::Plus, 2)
+                self.step_by_one(start, "++", "+=");
+                self.one_after(start);
+                (Tok::PlusEq, 2)
             }
             b'+' => (Tok::Plus, 1),
             b'-' if next == Some(b'>') => (Tok::Arrow, 2),
             b'-' if next == Some(b'=') => (Tok::MinusEq, 2),
+            b'-' if next == Some(b'-') && self.ends_operand(start) => {
+                self.step_by_one(start, "--", "-=");
+                self.one_after(start);
+                (Tok::MinusEq, 2)
+            }
             b'-' if next == Some(b'-') => {
                 self.error_help(
                     start,
@@ -710,15 +812,19 @@ impl<'a> Lexer<'a> {
             b'<' => (Tok::Lt, 1),
             b'>' if next == Some(b'=') => (Tok::Ge, 2),
             b'>' => (Tok::Gt, 1),
+            b'!' if next == Some(b'=') && third == Some(b'=') => {
+                self.error_fix(start, start + 3, "`!==` does not exist", "write `!=`", "!=");
+                (Tok::NotEq, 3)
+            }
             b'!' if next == Some(b'=') => (Tok::NotEq, 2),
             b'!' => (Tok::Bang, 1),
             b'|' if next == Some(b'|') => {
-                self.error_help(start, start + 2, "`||` does not exist", "write `or`");
+                self.error_fix(start, start + 2, "`||` does not exist", "write `or`", "or");
                 (Tok::Kw(Kw::Or), 2)
             }
             b'|' => (Tok::Pipe, 1),
             b'&' if next == Some(b'&') => {
-                self.error_help(start, start + 2, "`&&` does not exist", "write `and`");
+                self.error_fix(start, start + 2, "`&&` does not exist", "write `and`", "and");
                 (Tok::Kw(Kw::And), 2)
             }
             b'&' | b'^' | b'~' => {

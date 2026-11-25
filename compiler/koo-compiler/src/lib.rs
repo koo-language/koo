@@ -4,6 +4,7 @@
 //! `koo` command hands the IR to the system's `clang`, with the support library `koo-rt`.
 
 pub mod check;
+pub mod derive;
 pub mod hir;
 pub mod intrinsics;
 pub mod llvm;
@@ -51,7 +52,32 @@ pub fn compile_sources(sources: &SourceMap, tests: bool) -> Result<String, Vec<D
     }
     let bases: Vec<u32> = sources.files().iter().map(|file| file.base).collect();
     let extra = std::cell::OnceCell::new();
-    let (program, mut diagnostics) = check::check(&prelude.file, &package, &extra, &bases, tests);
+    // What the compiler writes for the program (`derive.rs`): the JSON functions of its
+    // types, if it says `json`, and what carries messages to its actors.
+    let json = sources.files().iter().any(|file| file.src.contains("json"));
+    let written = derive::derive(&package, json);
+    let derived = koo_syntax::parse_file(&written.source);
+    assert!(
+        derived.diagnostics.is_empty(),
+        "what was written for the program does not parse: {:?}\n{}",
+        derived.diagnostics,
+        written.source
+    );
+    let unwritten = written.unwritten;
+    let problems = written
+        .problems
+        .into_iter()
+        .map(|(span, message, help)| Diagnostic::new(span, message).with_help(help))
+        .collect();
+    let (program, mut diagnostics) =
+        check::check(&prelude.file, &package, &derived.file, problems, &extra, &bases, tests);
+    // An actor that could not be written has no `start`, and a method that could not be
+    // carried is not one of its handle's, which the place that uses it need not also be told.
+    diagnostics.retain(|diagnostic| {
+        !unwritten
+            .iter()
+            .any(|missing| diagnostic.message.ends_with(missing.as_str()))
+    });
     if !diagnostics.is_empty() {
         diagnostics.sort_by_key(|d| d.span.start);
         return Err(diagnostics);

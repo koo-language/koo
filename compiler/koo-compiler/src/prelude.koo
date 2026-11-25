@@ -476,6 +476,21 @@ fn (self: string) count() -> int { return __str_count(self) }
 
 fn (self: string) bytes() -> [byte] { return __str_bytes(self) }
 
+/// The characters of the string, each as a string of its own. A character is one or
+/// more bytes: a byte that continues a character has `10` as its two highest bits.
+fn (self: string) chars() -> [string] {
+    bytes := self.bytes()
+    var out: [string] = []
+    var start := 0
+    for i in 1..=bytes.len {
+        if i == bytes.len or int.from(bytes[i]).bit_and(192) != 128 {
+            out.push(self.slice(start, i))
+            start = i
+        }
+    }
+    return out
+}
+
 /// The text that the bytes are in UTF-8.
 fn string.from_bytes(bytes: [byte]) -> string ! ParseError {
     if not __bytes_valid_utf8(bytes) { fail ParseError { input: "bytes that are not UTF-8" } }
@@ -743,6 +758,497 @@ fn io__write(text: string) { __write(text) }
 
 /// Writes a line to standard error.
 fn io__eprint(text: string) { __eprint(text) }
+
+// ---- JSON -------------------------------------------------------------------------------
+//
+// Every type made of numbers, strings, booleans, lists, optionals, maps with string keys
+// and other such types has `value.to_json()` and `Type.from_json(text)`. Those of the
+// built-in types are here. Those of a program's own types are written by the compiler
+// (`derive.rs`), as Koo, out of the functions below: `_json_write` appends a value to a
+// text, and a reader takes the text and the place in it, and moves the place on.
+
+/// What is wrong with a JSON text. `path` leads to the place, as a JSON Pointer:
+/// `/items/3/qty`.
+error JsonError { message: string, path: string }
+
+fn j__found(text: string, at: int) -> string {
+    b := __str_byte(text, at)
+    if b < 0 { return "the end of the text" }
+    if b == 34 { return "a string" }
+    if b == 123 { return "an object" }
+    if b == 91 { return "an array" }
+    if __json_word(text, at, "true") >= 0 or __json_word(text, at, "false") >= 0 { return "a boolean" }
+    if __json_word(text, at, "null") >= 0 { return "null" }
+    if b == 45 or (b >= 48 and b <= 57) { return "a number" }
+    return "something that is not JSON"
+}
+
+fn j__expected(text: string, at: int, what: string) -> JsonError {
+    return JsonError { message: "expected {what}, found {j__found(text, at)}", path: "" }
+}
+
+/// An error from inside a value, as an error of the value around it.
+fn j__in(e: JsonError, prefix: string) -> JsonError {
+    return JsonError { message: e.message, path: "{prefix}{e.path}" }
+}
+
+fn j__missing(name: string) -> JsonError {
+    return JsonError { message: "`{name}` is missing", path: "/{name}" }
+}
+
+fn j__int(text: string, at: var int) -> int ! JsonError {
+    at = __json_ws(text, at)
+    end := __json_number(text, at)
+    if end < 0 or not __json_is_int() { fail j__expected(text, at, "a whole number") }
+    at = end
+    return __json_int()
+}
+
+fn j__float(text: string, at: var int) -> float ! JsonError {
+    at = __json_ws(text, at)
+    end := __json_number(text, at)
+    if end < 0 { fail j__expected(text, at, "a number") }
+    at = end
+    return __json_float()
+}
+
+fn j__bool(text: string, at: var int) -> bool ! JsonError {
+    at = __json_ws(text, at)
+    yes := __json_word(text, at, "true")
+    if yes >= 0 {
+        at = yes
+        return true
+    }
+    no := __json_word(text, at, "false")
+    if no < 0 { fail j__expected(text, at, "`true` or `false`") }
+    at = no
+    return false
+}
+
+fn j__str(text: string, at: var int) -> string ! JsonError {
+    at = __json_ws(text, at)
+    if __str_byte(text, at) != 34 { fail j__expected(text, at, "a string") }
+    end := __json_string(text, at)
+    if end < 0 { fail JsonError { message: "this string is not well formed", path: "" } }
+    at = end
+    return __json_text()
+}
+
+/// Whether `null` is next. If it is, it is passed.
+fn j__null(text: string, at: var int) -> bool {
+    at = __json_ws(text, at)
+    end := __json_word(text, at, "null")
+    if end < 0 { return false }
+    at = end
+    return true
+}
+
+/// Passes the `\{` or `[` that begins a value. A text nested too deeply is refused
+/// here, so that reading it cannot run out of stack.
+fn j__open(text: string, at: var int, opener: int) ! JsonError {
+    at = __json_ws(text, at)
+    if __str_byte(text, at) != opener {
+        fail j__expected(text, at, if opener == 123 { "an object" } else { "an array" })
+    }
+    if not __json_enter() { fail JsonError { message: "the text is nested too deeply", path: "" } }
+    at += 1
+}
+
+/// In an object or an array: whether another member follows. The comma before it is
+/// passed, or the bracket that ends the value.
+fn j__more(text: string, at: var int, closer: int, first: var bool) -> bool ! JsonError {
+    at = __json_ws(text, at)
+    b := __str_byte(text, at)
+    if b == closer {
+        at += 1
+        __json_leave()
+        return false
+    }
+    if first {
+        first = false
+        return true
+    }
+    if b != 44 { fail j__expected(text, at, "`,` or the end of the value") }
+    at += 1
+    return true
+}
+
+/// A key of an object, and the colon after it.
+fn j__key(text: string, at: var int) -> string ! JsonError {
+    key := j__str(text, var at)?
+    at = __json_ws(text, at)
+    if __str_byte(text, at) != 58 { fail j__expected(text, at, "`:`") }
+    at += 1
+    return key
+}
+
+/// Passes a value, whatever it is.
+fn j__skip(text: string, at: var int) ! JsonError {
+    at = __json_ws(text, at)
+    end := __json_skip(text, at)
+    if end < 0 { fail j__expected(text, at, "a value") }
+    at = end
+}
+
+/// Nothing but white space may follow a value.
+fn j__end(text: string, at: int) ! JsonError {
+    end := __json_ws(text, at)
+    if __str_byte(text, end) >= 0 { fail JsonError { message: "there is more text after the value", path: "" } }
+}
+
+fn (self: int) _json_write(out: var string) { out += "{self}" }
+
+fn (self: int) to_json() -> string { return "{self}" }
+
+fn int.from_json(text: string) -> int ! JsonError {
+    __json_begin()
+    var at := 0
+    value := j__int(text, var at)?
+    j__end(text, at)?
+    return value
+}
+
+/// JSON has no number for what is not one, or is without end: those are `null`.
+fn (self: float) _json_write(out: var string) {
+    if self - self == 0.0 { out += "{self}" } else { out += "null" }
+}
+
+fn (self: float) to_json() -> string {
+    var out := ""
+    self._json_write(var out)
+    return out
+}
+
+fn (self: bool) _json_write(out: var string) {
+    if self { out += "true" } else { out += "false" }
+}
+
+fn (self: bool) to_json() -> string {
+    if self { return "true" }
+    return "false"
+}
+
+fn (self: string) _json_write(out: var string) { out += __json_quote(self) }
+
+fn (self: string) to_json() -> string { return __json_quote(self) }
+
+fn (self: [T]) _json_write(out: var string) {
+    out += "["
+    for i in 0..self.len {
+        if i > 0 { out += "," }
+        self[i]._json_write(var out)
+    }
+    out += "]"
+}
+
+fn (self: [T]) to_json() -> string {
+    var out := ""
+    self._json_write(var out)
+    return out
+}
+
+fn (self: T?) _json_write(out: var string) {
+    if value := self { value._json_write(var out) } else { out += "null" }
+}
+
+fn (self: T?) to_json() -> string {
+    var out := ""
+    self._json_write(var out)
+    return out
+}
+
+/// A map is an object, in the order its keys were put in.
+fn (self: Map<K, V>) _json_write(out: var string) {
+    out += "\{"
+    var count := 0
+    for i in 0..self._keys.len {
+        if self._live[i] {
+            if count > 0 { out += "," }
+            count += 1
+            out += __json_quote("{self._keys[i]}")
+            out += ":"
+            self._values[i]._json_write(var out)
+        }
+    }
+    out += "}"
+}
+
+fn (self: Map<K, V>) to_json() -> string {
+    var out := ""
+    self._json_write(var out)
+    return out
+}
+
+// ---- actors -----------------------------------------------------------------------------
+//
+// What the compiler writes for an actor (`derive.rs`) asks it by taking its state from
+// the support library, calling the method and putting the state back. What is told and
+// not asked is a function that does the same, which the support library keeps as a
+// letter and hands to `a__job` on one of its threads (`koo-rt/src/actor.rs`).
+
+/// Runs a letter. A panic in it ends the letter and not the program: the actors it was
+/// in the middle of start again.
+fn a__job(job: take fn()) {
+    if __guard() {
+        job()
+        __guard_done()
+    } else {
+        __actor_recover()
+    }
+}
+
+/// Answers a message that another process has for an actor of this one.
+fn a__serve_remote() {
+    message := __actor_message()
+    text := __actor_body()
+    if __guard() {
+        a__dispatch(message, text)
+        __guard_done()
+    } else {
+        __actor_recover()
+        __actor_hang_up()
+    }
+}
+
+// ---- std/http ---------------------------------------------------------------------------
+//
+// A type of a standard package is declared here as the package's name and its own, and is
+// reached as `package.Name`: `http.Request` is `HttpRequest`.
+//
+// The server itself is in the support library. It reads and routes requests, and hands
+// them over one at a time: `serve` below is the whole of what runs for each.
+
+/// What can go wrong with a server itself, such as a port that is taken.
+error HttpError { message: string }
+
+/// A request, as its handler sees it.
+type HttpRequest = { id: int, method: string, path: string }
+
+/// What a `:name` in the route's path stands for in this request.
+fn (self: HttpRequest) param(name: string) -> string { return __http_param(self.id, name) }
+
+/// The value of a name in the query: `page` in `/orders?page=2`.
+fn (self: HttpRequest) query(name: string) -> string? {
+    if not __http_query_has(self.id, name) { return none }
+    return __http_query(self.id, name)
+}
+
+/// The value of a header. The name is matched whatever its case.
+fn (self: HttpRequest) header(name: string) -> string? {
+    if not __http_header_has(self.id, name) { return none }
+    return __http_header(self.id, name)
+}
+
+/// The body of the request, as text.
+fn (self: HttpRequest) body() -> string { return __http_body(self.id) }
+
+/// A field of a form that a page sent as the body.
+fn (self: HttpRequest) form(name: string) -> string? {
+    if not __http_form_has(self.id, name) { return none }
+    return __http_form(self.id, name)
+}
+
+/// A cookie the client sent back.
+fn (self: HttpRequest) cookie(name: string) -> string? {
+    if not __http_cookie_has(self.id, name) { return none }
+    return __http_cookie(self.id, name)
+}
+
+/// What the `*` at the end of the route stands for, or `none` for a path that climbs
+/// out of where it is with `..`: what is not `none` is safe to look for as a file.
+fn (self: HttpRequest) rest() -> string? {
+    rest := __http_rest(self.id)
+    if rest == "/" { return none }
+    return rest
+}
+
+/// The body of the request, read as JSON into the type that is expected:
+/// `input: NewOrder = req.json()?`.
+fn (self: HttpRequest) json<T>() -> T ! JsonError {
+    return T.from_json(__http_body(self.id))?
+}
+
+/// A response. `headers` holds whole header lines. If `file` names a file, the file is
+/// the body.
+type HttpResponse = { status: int, content_type: string, headers: string, body: string, file: string = "" }
+
+/// The response with one more header. A line break in a name or a value would begin
+/// another header, so there is none in what is sent.
+fn (self: HttpResponse) header(name: string, value: string) -> HttpResponse {
+    name_sent := name.replace("\r", "").replace("\n", "").replace(":", "")
+    value_sent := value.replace("\r", "").replace("\n", "")
+    return HttpResponse {
+        status: self.status,
+        content_type: self.content_type,
+        headers: "{self.headers}{name_sent}: {value_sent}\r\n",
+        body: self.body,
+        file: self.file,
+    }
+}
+
+/// The response with a cookie for the client to keep. It is kept for `max_age` seconds,
+/// or until the browser closes if that is negative; pages' scripts cannot read it.
+fn (self: HttpResponse) cookie(name: string, value: string, max_age: int = -1) -> HttpResponse {
+    name_sent := name.replace(";", "").replace("=", "").replace(" ", "")
+    value_sent := value.replace(";", "%3B").replace(" ", "%20").replace(",", "%2C")
+    age := if max_age < 0 { "" } else { "; Max-Age={max_age}" }
+    return self.header("Set-Cookie", "{name_sent}={value_sent}; Path=/; HttpOnly; SameSite=Lax{age}")
+}
+
+/// The response with another status.
+fn (self: HttpResponse) with_status(status: int) -> HttpResponse {
+    return HttpResponse {
+        status,
+        content_type: self.content_type,
+        headers: self.headers,
+        body: self.body,
+        file: self.file,
+    }
+}
+
+/// A response of plain text.
+fn http__text(body: string, status: int = 200) -> HttpResponse {
+    return HttpResponse { status, content_type: "text/plain; charset=utf-8", headers: "", body }
+}
+
+/// A response that is a page.
+fn http__html(body: string, status: int = 200) -> HttpResponse {
+    return HttpResponse { status, content_type: "text/html; charset=utf-8", headers: "", body }
+}
+
+/// A response of a given type, for what the other functions do not make.
+fn http__send(body: string, content_type: string, status: int = 200) -> HttpResponse {
+    return HttpResponse { status, content_type, headers: "", body }
+}
+
+/// A response that is a value as JSON.
+fn http__json<T>(value: T, status: int = 200) -> HttpResponse {
+    return HttpResponse { status, content_type: "application/json", headers: "", body: value.to_json() }
+}
+
+/// A response that is a status and a line of text about it: `http.status(404, "no such order")`.
+fn http__status(status: int, message: string = "") -> HttpResponse {
+    body := if message == "" { "" } else { "{message}\n" }
+    return HttpResponse { status, content_type: "text/plain; charset=utf-8", headers: "", body }
+}
+
+/// A response that is a file, sent as it is. Its type is told by its name: `.html`,
+/// `.css`, `.png` and the rest. A file that is not there is answered with 404.
+fn http__file(path: string, status: int = 200) -> HttpResponse {
+    return HttpResponse { status, content_type: "", headers: "", body: "", file: path }
+}
+
+/// A response that sends the client elsewhere.
+fn http__redirect(to: string, status: int = 302) -> HttpResponse {
+    return http__status(status).header("Location", to)
+}
+
+/// A server: its routes, and the function that answers each.
+type HttpApp = {
+    methods: [string],
+    paths: [string],
+    handlers: [fn(HttpRequest) -> HttpResponse ! Failure],
+}
+
+fn HttpApp.new() -> HttpApp {
+    return HttpApp { methods: [], paths: [], handlers: [] }
+}
+
+/// Answers requests of one method for a path with a function. A segment `:name` of the
+/// path matches any one segment, which the handler reads with `req.param("name")`, and
+/// `*` at the end matches whatever is left. The first route that matches answers.
+fn (self: var HttpApp) route(method: string, path: string, handler: take fn(HttpRequest) -> HttpResponse ! Failure) {
+    self.methods.push(method)
+    self.paths.push(path)
+    self.handlers.push(handler)
+}
+
+fn (self: var HttpApp) get(path: string, handler: take fn(HttpRequest) -> HttpResponse ! Failure) {
+    self.route("GET", path, handler)
+}
+
+fn (self: var HttpApp) post(path: string, handler: take fn(HttpRequest) -> HttpResponse ! Failure) {
+    self.route("POST", path, handler)
+}
+
+fn (self: var HttpApp) put(path: string, handler: take fn(HttpRequest) -> HttpResponse ! Failure) {
+    self.route("PUT", path, handler)
+}
+
+fn (self: var HttpApp) patch(path: string, handler: take fn(HttpRequest) -> HttpResponse ! Failure) {
+    self.route("PATCH", path, handler)
+}
+
+fn (self: var HttpApp) delete(path: string, handler: take fn(HttpRequest) -> HttpResponse ! Failure) {
+    self.route("DELETE", path, handler)
+}
+
+/// Serves the files of a directory under a path: with `app.files("/static", "public")`,
+/// `/static/css/site.css` is the file `public/css/site.css`, and `/static` itself is
+/// `public/index.html`. A path cannot climb out of the directory.
+fn (self: var HttpApp) files(path: string, directory: string) {
+    self.route("GET", "{path}/*", req -> {
+        rest := req.rest() else return http__status(404, "Not Found")
+        if rest == "" or rest.ends_with("/") { return http__file("{directory}/{rest}index.html") }
+        return http__file("{directory}/{rest}")
+    })
+}
+
+/// Answers requests of every method for a path.
+fn (self: var HttpApp) any(path: string, handler: take fn(HttpRequest) -> HttpResponse ! Failure) {
+    self.route("*", path, handler)
+}
+
+/// Serves until the program is told to stop (Ctrl-C, or a request to terminate), then
+/// returns. `workers` is the number of processes that answer requests, each on a core
+/// of its own; 0 is one for every core.
+///
+/// A request's body may be `max_body` bytes, 1 MB unless more is asked for. With `log`,
+/// a line is written to standard error for each request: its method and path, the
+/// status of the answer, the size of it and the time it took.
+fn (self: HttpApp) serve(port: int = 8080, workers: int = 0, max_body: int = 1048576, log: bool = false) ! HttpError {
+    __http_reset()
+    for i in 0..self.paths.len {
+        __http_route(self.methods[i], self.paths[i])
+    }
+    logged := if log { 1 } else { 0 }
+    if __http_listen(port, workers, max_body, logged) < 0 { fail HttpError { message: __last_error() } }
+    while true {
+        route := __http_next()
+        if route == -3 {
+            // A worker has a message for an actor, and the actors live in this process.
+            a__serve_remote()
+            continue
+        }
+        if route < 0 { break }
+        id := __http_id()
+        request := HttpRequest { id, method: __http_method(id), path: __http_path(id) }
+        match self.handlers[route](request) {
+            response => {
+                if response.file == "" {
+                    __http_respond(id, response.status, response.content_type, response.headers, response.body)
+                } else {
+                    __http_respond_file(id, response.status, response.content_type, response.headers, response.file)
+                }
+            }
+            // What a client sent that cannot be read is the client's mistake, and it is
+            // told which.
+            ! e: JsonError => {
+                var body := "\{\"error\":"
+                e.message._json_write(var body)
+                body += ",\"path\":"
+                e.path._json_write(var body)
+                body += "}"
+                __http_respond(id, 400, "application/json", "", body)
+            }
+            ! e => {
+                // What else went wrong is for the log, not for the client.
+                __eprint("{request.method} {request.path}: {e}")
+                __http_respond(id, 500, "text/plain; charset=utf-8", "", "Internal Server Error\n")
+            }
+        }
+    }
+}
 
 // ---- std/test ---------------------------------------------------------------------------
 

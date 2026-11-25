@@ -1,0 +1,67 @@
+// The server that `compiler/koo/tests/programs.rs` starts and sends requests to.
+import std/http
+import std/os
+
+error NotFound { id: int }
+
+type Item = { sku: string, qty: int = 1, note: string? }
+type NewOrder = { customer: string, items: [Item] }
+type Order = { id: int, customer: string, items: [Item] }
+
+fn find(id: int) -> string ! NotFound {
+    if id > 3 { fail NotFound { id } }
+    return "order {id}"
+}
+
+// What every worker of the server counts in: there is one of it, whatever their number.
+actor Hits {
+    var count: int = 0
+
+    fn next() -> int {
+        count += 1
+        return count
+    }
+}
+
+fn home(req: http.Request) -> http.Response {
+    return http.html("<h1>Koo</h1>")
+}
+
+fn main() ! http.Error {
+    port := int.parse(os.env("PORT") else "8080") else 8080
+    hits := Hits.start()
+    var app := http.App.new()
+    app.get("/count", req -> http.text("count {hits.next()}"))
+    app.get("/", req -> http.text("Hello, world!"))
+    app.get("/home", home)
+    app.get("/hello/:name", req -> http.text("Hello, {req.param("name")}!"))
+    app.get("/search", req -> {
+        term := req.query("q") else "nothing"
+        agent := req.header("user-agent") else "unknown"
+        return http.text("you searched for {term} with {agent}")
+    })
+    app.get("/orders/:id", req -> {
+        id := int.parse(req.param("id")) else return http.status(400, "an order's id is a number")
+        return http.text(find(id)?)
+    })
+    app.post("/echo", req -> http.text(req.body(), status: 201).header("X-Length", "{req.body().len}"))
+    app.get("/old", req -> http.redirect("/"))
+    app.post("/orders", req -> {
+        input: NewOrder = req.json()?
+        return http.json(Order { id: 8, customer: input.customer, items: input.items }, status: 201)
+    })
+    app.get("/files/*", req -> http.text("file {req.path}"))
+    app.any("/any", req -> http.text(req.method))
+    app.files("/static", os.env("STATIC") else "public")
+    app.post("/form", req -> http.text("name is {req.form("name") else "missing"}, age is {req.form("age") else "missing"}"))
+    app.get("/cookie", req -> {
+        seen := req.cookie("visit") else "never"
+        return http.text("seen {seen}").cookie("visit", "once more", max_age: 60)
+    })
+    app.get("/panic", req -> {
+        xs: [int] = []
+        return http.text("{xs[3]}")
+    })
+    workers := int.parse(os.env("WORKERS") else "1") else 1
+    app.serve(port: port, workers: workers, log: (os.env("LOG") else "") == "1")?
+}

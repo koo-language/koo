@@ -10,6 +10,21 @@
 //! //! error some text       (tests/fail) text that a compile error contains
 //! ```
 //!
+//! The files in `tests/diag` hold what the compiler says about common mistakes, word for
+//! word. Each case is a title, a program and the errors it gets:
+//!
+//! ```text
+//! === a title
+//! fn main() {
+//!     ...
+//! }
+//! ---
+//! error: ...
+//! ```
+//!
+//! Run the tests with `KOO_BLESS=1` to write what the compiler says now into the files,
+//! and read the difference before keeping it: these messages are what a programmer sees.
+//!
 //! Programs in `tests/run` are built twice, unoptimized and with `--release`, and run with
 //! `KOO_LEAKS` set, so a program that ends normally with memory still allocated fails.
 //! The tests need `clang`, as `koo build` does.
@@ -128,6 +143,58 @@ fn chains_print_the_same_unfused() {
             ));
         }
     }
+    assert!(failures.is_empty(), "\n{}", failures.join("\n\n"));
+}
+
+/// Actors run on several threads, and what they hand each other is shared between those
+/// threads. Built with ThreadSanitizer, each program with actors runs without a report:
+/// nothing is reached from two threads that is not frozen or handed over. Where clang
+/// has no ThreadSanitizer the test says so and checks nothing.
+#[test]
+fn actors_share_only_what_is_frozen() {
+    let dir = std::env::temp_dir().join(format!("koo-threads-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let mut failures = Vec::new();
+    for path in programs("tests/run") {
+        let name = path.file_stem().unwrap().to_string_lossy().to_string();
+        if !name.starts_with("actor") {
+            continue;
+        }
+        let executable = dir.join(&name);
+        let built = Command::new(env!("CARGO_BIN_EXE_koo"))
+            .arg("build")
+            .arg("--sanitize=thread")
+            .arg(&path)
+            .arg("-o")
+            .arg(&executable)
+            .output()
+            .expect("koo runs");
+        if !built.status.success() {
+            let said = String::from_utf8_lossy(&built.stderr);
+            if said.contains("tsan") || said.contains("sanitizer") {
+                eprintln!("no ThreadSanitizer here: actors were not checked for races");
+                return;
+            }
+            failures.push(format!("{}: does not build\n{said}", path.display()));
+            continue;
+        }
+        // More than once: what goes wrong between threads goes wrong now and then.
+        for _ in 0..3 {
+            let output = Command::new(&executable).output().expect("the program runs");
+            let said = String::from_utf8_lossy(&output.stderr);
+            if said.contains("WARNING: ThreadSanitizer") {
+                failures.push(format!("{}: a race\n{said}", path.display()));
+                break;
+            }
+            // The sanitizer itself may be unable to run, as in a container that does not
+            // let it arrange the memory of the process: then nothing was checked.
+            if said.contains("ThreadSanitizer: CHECK failed") || said.contains("FATAL: ThreadSanitizer") {
+                eprintln!("ThreadSanitizer cannot run here: actors were not checked for races");
+                return;
+            }
+        }
+    }
+    let _ = std::fs::remove_dir_all(&dir);
     assert!(failures.is_empty(), "\n{}", failures.join("\n\n"));
 }
 
@@ -258,6 +325,360 @@ fn packages_build_as_one_program() {
     assert!(failures.is_empty(), "\n{}", failures.join("\n\n"));
 }
 
+/// A fenced block of a page of the book: what it is tagged as, and the lines it is on.
+struct Block {
+    tag: String,
+    /// The first line inside the fence, and the line of the closing fence.
+    first: usize,
+    end: usize,
+}
+
+/// A program in the book, and the blocks after it that say what it does.
+struct Listing {
+    page: usize,
+    program: usize,
+    told: Vec<usize>,
+}
+
+/// What a program of the book did when it was built and run.
+struct Outcome {
+    /// For each block that says what the program does, by tag: what the block should hold.
+    found: Vec<(String, String)>,
+    /// What is wrong besides a block that holds something else.
+    wrong: Vec<String>,
+}
+
+fn run_listing(dir: &Path, source: &str, tags: &[(String, String)]) -> Outcome {
+    std::fs::create_dir_all(dir).unwrap();
+    std::fs::write(dir.join("main.koo"), source).unwrap();
+    // The files the book says are there when the program runs.
+    for (tag, text) in tags {
+        if let Some(name) = tag.strip_prefix("file ") {
+            let path = dir.join(name.trim());
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(path, text).unwrap();
+        }
+    }
+    let has = |tag: &str| tags.iter().any(|(found, _)| found == tag);
+    let told = |tag: &str| {
+        tags.iter()
+            .find(|(found, _)| found == tag)
+            .map(|(_, text)| text.clone())
+    };
+    let koo = |args: &[&str], input: Option<String>| {
+        let mut command = Command::new(env!("CARGO_BIN_EXE_koo"));
+        command
+            .args(args)
+            .current_dir(dir)
+            .env("KOO_LEAKS", "1")
+            .env("NO_COLOR", "1")
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped());
+        let mut child = command.spawn().expect("koo runs");
+        {
+            use std::io::Write;
+            let mut stdin = child.stdin.take().unwrap();
+            let _ = stdin.write_all(input.unwrap_or_default().as_bytes());
+        }
+        let output = child.wait_with_output().expect("koo ends");
+        (
+            String::from_utf8_lossy(&output.stdout).to_string(),
+            String::from_utf8_lossy(&output.stderr).to_string(),
+            output.status.code(),
+        )
+    };
+    let mut outcome = Outcome {
+        found: Vec::new(),
+        wrong: Vec::new(),
+    };
+    if let Some(asked) = told("http") {
+        // A server: it is started, sent the requests the book lists, each a line that
+        // begins with `> `, and what it answers is written after each: the status, then
+        // the body. The book says port 8080; the test uses one that is free.
+        let port = std::net::TcpListener::bind("127.0.0.1:0")
+            .and_then(|listener| listener.local_addr())
+            .expect("a free port")
+            .port();
+        std::fs::write(
+            dir.join("main.koo"),
+            source.replace("port: 8080", &format!("port: {port}")),
+        )
+        .unwrap();
+        let (_, stderr, status) = koo(&["build", "main.koo", "-o", "server"], None);
+        if status != Some(0) {
+            outcome.wrong.push(format!("the compiler refuses it:\n{stderr}"));
+            return outcome;
+        }
+        let server = Command::new(dir.join("server"))
+            .current_dir(dir)
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .expect("the server starts");
+        let _server = Server(server);
+        let started = std::time::Instant::now();
+        while std::net::TcpStream::connect(("127.0.0.1", port)).is_err() {
+            if started.elapsed() > std::time::Duration::from_secs(10) {
+                outcome.wrong.push("the server does not listen".to_string());
+                return outcome;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        let mut found = String::new();
+        for line in asked.lines() {
+            let Some(request) = line.strip_prefix("> ") else {
+                continue;
+            };
+            let mut parts = request.splitn(3, ' ');
+            let (method, path, body) = (
+                parts.next().unwrap_or(""),
+                parts.next().unwrap_or("/"),
+                parts.next().unwrap_or(""),
+            );
+            // The body says what it is, as a client would: JSON, a form, or text.
+            let kind = if body.starts_with('{') || body.starts_with('[') {
+                "application/json"
+            } else if body.contains('=') && !body.contains(' ') {
+                "application/x-www-form-urlencoded"
+            } else {
+                "text/plain"
+            };
+            let answer = http(
+                port,
+                &format!(
+                    "{method} {path} HTTP/1.1\r\nHost: test\r\nConnection: close\r\nContent-Type: {kind}\r\nContent-Length: {}\r\n\r\n{body}",
+                    body.len()
+                ),
+            );
+            let status = answer.split(' ').nth(1).unwrap_or("?");
+            let said = answer.split_once("\r\n\r\n").map_or("", |(_, said)| said);
+            found.push_str(&format!("> {request}\n{status}\n{said}"));
+            if !said.is_empty() && !said.ends_with('\n') {
+                found.push('\n');
+            }
+        }
+        outcome.found.push(("http".to_string(), found));
+    } else if has("error") {
+        // A program the compiler refuses, and what it says.
+        let (_, stderr, status) = koo(&["check", "main.koo"], None);
+        if status == Some(0) {
+            outcome.wrong.push("the compiler accepts it".to_string());
+        }
+        outcome.found.push(("error".to_string(), stderr));
+    } else if has("test") {
+        let (stdout, _, _) = koo(&["test", "main.koo"], None);
+        outcome.found.push(("test".to_string(), stdout));
+    } else if has("text") || has("panic") || has("stderr") || has("log") {
+        let mut args = vec!["run".to_string(), "main.koo".to_string()];
+        if let Some(given) = told("args") {
+            args.push("--".to_string());
+            args.extend(given.lines().map(str::to_string));
+        }
+        let args: Vec<&str> = args.iter().map(String::as_str).collect();
+        let (stdout, stderr, status) = koo(&args, told("input"));
+        let wanted = if has("panic") {
+            101
+        } else if has("stderr") {
+            1
+        } else {
+            0
+        };
+        if status != Some(wanted) {
+            outcome
+                .wrong
+                .push(format!("it ends with status {status:?}, not {wanted}\n{stderr}"));
+        }
+        if has("text") {
+            outcome.found.push(("text".to_string(), stdout));
+        } else if !stdout.is_empty() {
+            outcome
+                .wrong
+                .push(format!("it prints, and the book does not say what:\n{stdout}"));
+        }
+        if has("panic") {
+            outcome.found.push(("panic".to_string(), stderr));
+        } else if has("stderr") {
+            outcome.found.push(("stderr".to_string(), stderr));
+        } else if has("log") {
+            outcome.found.push(("log".to_string(), stderr));
+        } else if !stderr.is_empty() {
+            outcome.wrong.push(format!(
+                "it writes to standard error, and the book does not say what:\n{stderr}"
+            ));
+        }
+    } else {
+        // A program that is only shown, such as a server: it must at least be a program.
+        let (_, stderr, status) = koo(&["check", "main.koo"], None);
+        if status != Some(0) {
+            outcome.wrong.push(format!("the compiler refuses it:\n{stderr}"));
+        }
+    }
+    outcome
+}
+
+/// Every program in the book is a whole program, and does what the book says it does.
+///
+/// A block tagged `koo` is a program. The blocks after it, up to the next program, say
+/// what it does: `input` is what it reads, `args` its arguments, one to a line, `file
+/// name` a file that is beside it when it runs, `text`
+/// what it prints, `panic` what a panic writes (the program then ends with status 101),
+/// `stderr` what it writes when `main` fails (status 1), `log` what it writes to standard
+/// error when it ends well all the same, `error` what the compiler says
+/// when it refuses the program, `test` what `koo test` prints, and `http` what a server
+/// answers to the requests listed in it. A program with none of these is checked and not
+/// run. Each is compared to the letter.
+///
+/// With `KOO_BLESS=1` the blocks are written from what the programs do, which is how the
+/// output in the book is put there in the first place: by the programs, not by hand.
+#[test]
+fn the_book_is_true() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../docs/book");
+    let mut pages: Vec<PathBuf> = std::fs::read_dir(&root)
+        .unwrap_or_else(|err| panic!("cannot read {}: {err}", root.display()))
+        .map(|entry| entry.unwrap().path())
+        .filter(|path| path.extension().is_some_and(|ext| ext == "md"))
+        .collect();
+    pages.sort();
+    let mut texts: Vec<Vec<String>> = Vec::new();
+    let mut blocks: Vec<Vec<Block>> = Vec::new();
+    let mut listings: Vec<Listing> = Vec::new();
+    const TOLD: [&str; 9] = [
+        "input", "args", "text", "panic", "stderr", "log", "error", "test", "http",
+    ];
+    for (page, path) in pages.iter().enumerate() {
+        let lines: Vec<String> = std::fs::read_to_string(path)
+            .unwrap()
+            .lines()
+            .map(str::to_string)
+            .collect();
+        let mut found: Vec<Block> = Vec::new();
+        let mut open: Option<(String, usize)> = None;
+        for (number, line) in lines.iter().enumerate() {
+            let Some(tag) = line.strip_prefix("```") else { continue };
+            match open.take() {
+                Some((tag, first)) => found.push(Block {
+                    tag,
+                    first,
+                    end: number,
+                }),
+                None => open = Some((tag.trim().to_string(), number + 1)),
+            }
+        }
+        assert!(open.is_none(), "{}: a block is not closed", path.display());
+        for (index, block) in found.iter().enumerate() {
+            if block.tag == "koo" {
+                listings.push(Listing {
+                    page,
+                    program: index,
+                    told: Vec::new(),
+                });
+            } else if TOLD.contains(&block.tag.as_str()) || block.tag.starts_with("file ") {
+                match listings.last_mut() {
+                    Some(listing) if listing.page == page => listing.told.push(index),
+                    _ => panic!(
+                        "{}:{}: a `{}` block with no program before it",
+                        path.display(),
+                        block.first,
+                        block.tag
+                    ),
+                }
+            }
+        }
+        texts.push(lines);
+        blocks.push(found);
+    }
+    assert!(!listings.is_empty(), "the book has no programs");
+
+    let inside = |page: usize, block: &Block| {
+        let mut text = texts[page][block.first..block.end].join("\n");
+        if !text.is_empty() {
+            text.push('\n');
+        }
+        text
+    };
+    let dir = std::env::temp_dir().join(format!("koo-book-{}", std::process::id()));
+    let workers = std::thread::available_parallelism().map_or(4, |n| n.get()).min(8);
+    let next = std::sync::atomic::AtomicUsize::new(0);
+    let outcomes: std::sync::Mutex<Vec<(usize, Outcome)>> = std::sync::Mutex::new(Vec::new());
+    std::thread::scope(|scope| {
+        for _ in 0..workers {
+            scope.spawn(|| {
+                loop {
+                    let index = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    let Some(listing) = listings.get(index) else { break };
+                    let source = inside(listing.page, &blocks[listing.page][listing.program]);
+                    let tags: Vec<(String, String)> = listing
+                        .told
+                        .iter()
+                        .map(|told| {
+                            let block = &blocks[listing.page][*told];
+                            (block.tag.clone(), inside(listing.page, block))
+                        })
+                        .collect();
+                    let outcome = run_listing(&dir.join(format!("p{index}")), &source, &tags);
+                    outcomes.lock().unwrap().push((index, outcome));
+                }
+            });
+        }
+    });
+    let _ = std::fs::remove_dir_all(&dir);
+
+    let bless = std::env::var_os("KOO_BLESS").is_some();
+    let mut failures = Vec::new();
+    // What to put in a block, by page and by the block's place on it.
+    let mut rewrites: Vec<(usize, usize, String)> = Vec::new();
+    let mut outcomes = outcomes.into_inner().unwrap();
+    outcomes.sort_by_key(|(index, _)| *index);
+    for (index, outcome) in outcomes {
+        let listing = &listings[index];
+        let page = &pages[listing.page];
+        let place = format!(
+            "{}:{}",
+            page.file_name().unwrap().to_string_lossy(),
+            blocks[listing.page][listing.program].first
+        );
+        for wrong in outcome.wrong {
+            failures.push(format!("{place}: {wrong}"));
+        }
+        for (tag, found) in outcome.found {
+            let told = listing
+                .told
+                .iter()
+                .find(|told| blocks[listing.page][**told].tag == tag)
+                .expect("a block of the tag");
+            let block = &blocks[listing.page][*told];
+            let expected = inside(listing.page, block);
+            if expected != found {
+                if bless {
+                    rewrites.push((listing.page, *told, found));
+                } else {
+                    failures.push(format!(
+                        "{place}: the `{tag}` block is not what the program does\n--- the book\n{expected}--- the program\n{found}"
+                    ));
+                }
+            }
+        }
+    }
+    if bless {
+        for (page, path) in pages.iter().enumerate() {
+            let mut mine: Vec<&(usize, usize, String)> = rewrites.iter().filter(|(of, _, _)| *of == page).collect();
+            if mine.is_empty() {
+                continue;
+            }
+            // From the last block to the first, so that the lines before keep their numbers.
+            mine.sort_by_key(|(_, block, _)| std::cmp::Reverse(*block));
+            let mut lines = texts[page].clone();
+            for (_, block, found) in mine {
+                let block = &blocks[page][*block];
+                lines.splice(block.first..block.end, found.lines().map(str::to_string));
+            }
+            std::fs::write(path, lines.join("\n") + "\n").unwrap();
+        }
+    }
+    assert!(failures.is_empty(), "\n{}", failures.join("\n\n"));
+}
+
 /// Every program in the language tour runs and prints what the tour says it prints: a
 /// `koo` block followed by a `text` block is a program and its output.
 #[test]
@@ -341,4 +762,403 @@ fn bad_programs_are_rejected() {
         }
     }
     assert!(failures.is_empty(), "\n{}", failures.join("\n\n"));
+}
+
+/// One case of a file in `tests/diag`: its title, its program and the errors expected.
+struct Case {
+    title: String,
+    program: String,
+    expected: String,
+}
+
+fn cases(text: &str) -> Vec<Case> {
+    let mut cases: Vec<Case> = Vec::new();
+    let mut in_program = false;
+    for line in text.lines() {
+        if let Some(title) = line.strip_prefix("=== ") {
+            cases.push(Case {
+                title: title.to_string(),
+                program: String::new(),
+                expected: String::new(),
+            });
+            in_program = true;
+        } else if let Some(case) = cases.last_mut() {
+            if in_program && line == "---" {
+                in_program = false;
+            } else if in_program {
+                case.program.push_str(line);
+                case.program.push('\n');
+            } else {
+                case.expected.push_str(line);
+                case.expected.push('\n');
+            }
+        }
+    }
+    for case in &mut cases {
+        case.expected = format!("{}\n", case.expected.trim_end());
+    }
+    cases
+}
+
+#[test]
+fn mistakes_are_explained_as_expected() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/diag");
+    let mut files: Vec<PathBuf> = std::fs::read_dir(&root)
+        .unwrap_or_else(|err| panic!("cannot read {}: {err}", root.display()))
+        .map(|entry| entry.unwrap().path())
+        .filter(|path| path.extension().is_some_and(|ext| ext == "txt"))
+        .collect();
+    files.sort();
+    assert!(!files.is_empty(), "no files in {}", root.display());
+    let bless = std::env::var_os("KOO_BLESS").is_some();
+    let dir = std::env::temp_dir().join(format!("koo-diag-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let mut failures = Vec::new();
+    let mut count = 0;
+    for file in files {
+        let name = file.file_name().unwrap().to_string_lossy().to_string();
+        let text = std::fs::read_to_string(&file).unwrap();
+        let mut blessed = String::new();
+        for case in cases(&text) {
+            count += 1;
+            std::fs::write(dir.join("main.koo"), &case.program).unwrap();
+            let output = Command::new(env!("CARGO_BIN_EXE_koo"))
+                .args(["check", "main.koo"])
+                .current_dir(&dir)
+                .env("NO_COLOR", "1")
+                .output()
+                .expect("koo runs");
+            let found = format!("{}\n", String::from_utf8_lossy(&output.stderr).trim_end());
+            if output.status.success() {
+                failures.push(format!("{name}: `{}` is accepted", case.title));
+            } else if found != case.expected && !bless {
+                failures.push(format!(
+                    "{name}: `{}`\n--- expected\n{}--- found\n{found}",
+                    case.title, case.expected
+                ));
+            }
+            blessed.push_str(&format!("=== {}\n{}---\n{found}\n", case.title, case.program));
+        }
+        if bless && blessed != text {
+            std::fs::write(&file, blessed).unwrap();
+        }
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+    assert!(count >= 100, "tests/diag has cases: found {count}");
+    assert!(
+        failures.is_empty(),
+        "\n{}\n\nIf the new messages are the better ones, run the tests with KOO_BLESS=1.",
+        failures.join("\n\n")
+    );
+}
+
+/// One request on a connection of its own. The request asks for the connection to be
+/// closed, so the answer is everything the server sends.
+fn http(port: u16, request: &str) -> String {
+    use std::io::{Read, Write};
+    let mut stream = std::net::TcpStream::connect(("127.0.0.1", port)).expect("the server accepts");
+    stream
+        .set_read_timeout(Some(std::time::Duration::from_secs(5)))
+        .unwrap();
+    stream.write_all(request.as_bytes()).unwrap();
+    let mut answer = Vec::new();
+    let _ = stream.read_to_end(&mut answer);
+    String::from_utf8_lossy(&answer).to_string()
+}
+
+fn get(port: u16, path: &str) -> String {
+    http(
+        port,
+        &format!("GET {path} HTTP/1.1\r\nHost: test\r\nConnection: close\r\n\r\n"),
+    )
+}
+
+fn post(port: u16, path: &str, body: &str) -> String {
+    http(
+        port,
+        &format!(
+            "POST {path} HTTP/1.1\r\nHost: test\r\nConnection: close\r\nContent-Length: {}\r\n\r\n{body}",
+            body.len()
+        ),
+    )
+}
+
+/// A server that is running. It is ended when the test is done with it, however the
+/// test ends.
+struct Server(std::process::Child);
+
+impl Drop for Server {
+    fn drop(&mut self) {
+        let _ = self.0.kill();
+        let _ = self.0.wait();
+    }
+}
+
+/// Starts `tests/http/server.koo` on a free port, with a number of worker processes.
+fn serve(executable: &Path, workers: usize, files: &Path) -> (Server, u16) {
+    let port = std::net::TcpListener::bind("127.0.0.1:0")
+        .unwrap()
+        .local_addr()
+        .unwrap()
+        .port();
+    let mut child = Command::new(executable)
+        .env("PORT", port.to_string())
+        .env("WORKERS", workers.to_string())
+        .env("STATIC", files)
+        .stdout(std::process::Stdio::null())
+        .env("KOO_LEAKS", "1")
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .expect("the server starts");
+    for _ in 0..200 {
+        if std::net::TcpStream::connect(("127.0.0.1", port)).is_ok() {
+            return (Server(child), port);
+        }
+        std::thread::sleep(std::time::Duration::from_millis(25));
+    }
+    let _ = child.kill();
+    let _ = child.wait();
+    panic!("the server did not start listening on port {port}");
+}
+
+/// Asks the server to stop, as Ctrl-C or a process manager would, and checks that it
+/// does: with status 0, which under `KOO_LEAKS` also says that it freed what it allocated.
+fn stop(mut server: Server, port: u16) {
+    let child = &mut server.0;
+    Command::new("kill")
+        .args(["-TERM", &child.id().to_string()])
+        .status()
+        .unwrap();
+    let status = child.wait().unwrap();
+    assert!(status.success(), "the server ended with {status}");
+    std::thread::sleep(std::time::Duration::from_millis(100));
+    assert!(
+        std::net::TcpStream::connect(("127.0.0.1", port)).is_err(),
+        "something still listens on port {port}"
+    );
+}
+
+#[test]
+fn a_server_answers_requests() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let dir = std::env::temp_dir().join(format!("koo-http-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let executable = dir.join("server");
+    let built = Command::new(env!("CARGO_BIN_EXE_koo"))
+        .arg("build")
+        .arg(root.join("tests/http/server.koo"))
+        .arg("-o")
+        .arg(&executable)
+        .output()
+        .expect("koo runs");
+    assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
+
+    // What the server has to serve as files.
+    let files = dir.join("public");
+    std::fs::create_dir_all(files.join("css")).unwrap();
+    std::fs::write(files.join("index.html"), "<h1>index</h1>").unwrap();
+    std::fs::write(files.join("css/site.css"), "body { margin: 0 }").unwrap();
+    std::fs::write(files.join("blob.bin"), [0u8, 159, 146, 150]).unwrap();
+    std::fs::write(dir.join("secret.txt"), "not to be served").unwrap();
+
+    let (child, port) = serve(&executable, 1, &files);
+    let has = |answer: &str, parts: &[&str]| {
+        for part in parts {
+            assert!(answer.contains(part), "no {part:?} in:\n{answer}");
+        }
+    };
+    // Routes, parameters, queries, headers and bodies.
+    has(
+        &get(port, "/"),
+        &["HTTP/1.1 200 OK", "Content-Length: 13", "\r\n\r\nHello, world!"],
+    );
+    has(&get(port, "/home"), &["text/html", "<h1>Koo</h1>"]);
+    has(&get(port, "/hello/Ada%20L"), &["Hello, Ada L!"]);
+    has(&get(port, "/hello/Ada/"), &["Hello, Ada!"]);
+    has(&get(port, "/search?q=a+b%21"), &["you searched for a b! with unknown"]);
+    has(&get(port, "/orders/2"), &["200 OK", "order 2"]);
+    has(
+        &get(port, "/orders/x"),
+        &["400 Bad Request", "an order's id is a number"],
+    );
+    has(&get(port, "/old"), &["302 Found", "Location: /\r\n"]);
+    has(&get(port, "/files/a/b.txt"), &["file /files/a/b.txt"]);
+    has(
+        &http(port, "DELETE /any HTTP/1.1\r\nConnection: close\r\n\r\n"),
+        &["200 OK", "DELETE"],
+    );
+    has(
+        &post(port, "/echo", "some body"),
+        &["201 Created", "X-Length: 9", "\r\n\r\nsome body"],
+    );
+    // No route, and a handler that fails: the client is not told why.
+    has(&get(port, "/missing"), &["404 Not Found"]);
+    let failed = get(port, "/orders/9");
+    has(&failed, &["500 Internal Server Error"]);
+    assert!(!failed.contains("NotFound"), "{failed}");
+    // JSON in and out, and a body that does not fit its type.
+    has(
+        &post(
+            port,
+            "/orders",
+            r#"{"customer": "Bob", "items": [{"sku": "x"}, {"sku": "y", "qty": 3, "note": "n"}]}"#,
+        ),
+        &[
+            "201 Created",
+            "Content-Type: application/json",
+            r#"{"id":8,"customer":"Bob","items":[{"sku":"x","qty":1},{"sku":"y","qty":3,"note":"n"}]}"#,
+        ],
+    );
+    has(
+        &post(
+            port,
+            "/orders",
+            r#"{"customer": "Bob", "items": [{"sku": "x", "qty": "many"}]}"#,
+        ),
+        &[
+            "400 Bad Request",
+            r#""path":"/items/0/qty""#,
+            "expected a whole number, found a string",
+        ],
+    );
+    has(
+        &post(port, "/orders", "not json"),
+        &["400 Bad Request", "expected an object"],
+    );
+    // A response to HEAD has the headers of the response to GET, and no body.
+    let head = http(port, "HEAD / HTTP/1.1\r\nConnection: close\r\n\r\n");
+    has(&head, &["200 OK", "Content-Length: 13"]);
+    assert!(head.ends_with("\r\n\r\n"), "{head}");
+    // Two requests sent at once on one connection are both answered, in order.
+    let both = http(
+        port,
+        "GET /hello/a HTTP/1.1\r\n\r\nGET /hello/b HTTP/1.1\r\nConnection: close\r\n\r\n",
+    );
+    has(&both, &["Hello, a!", "Hello, b!"]);
+    assert_eq!(both.matches("HTTP/1.1 200 OK").count(), 2, "{both}");
+    // What cannot be trusted is refused.
+    has(&http(port, "GARBAGE\r\n\r\n"), &["400 Bad Request"]);
+    has(&http(port, "GET / HTTP/1.1\r\nHost : a\r\n\r\n"), &["400 Bad Request"]);
+    has(
+        &http(
+            port,
+            "POST /echo HTTP/1.1\r\nContent-Length: 3\r\nContent-Length: 5\r\n\r\nabcde",
+        ),
+        &["400 Bad Request"],
+    );
+    has(
+        &http(
+            port,
+            "POST /echo HTTP/1.1\r\nContent-Length: 3\r\nTransfer-Encoding: chunked\r\n\r\nabc",
+        ),
+        &["400 Bad Request"],
+    );
+    has(
+        &http(port, "POST /echo HTTP/1.1\r\nTransfer-Encoding: gzip\r\n\r\nabc"),
+        &["501 Not Implemented"],
+    );
+    // A body sent in chunks is put together, whatever the pieces it arrives in.
+    let chunked = "POST /echo HTTP/1.1\r\nConnection: close\r\nTransfer-Encoding: chunked\r\n\r\n\
+                   5\r\nhello\r\n1;note=x\r\n,\r\nA\r\n chunked b\r\n3\r\nody\r\n0\r\nTrailer: x\r\n\r\n";
+    has(
+        &http(port, chunked),
+        &["201 Created", "X-Length: 19", "\r\n\r\nhello, chunked body"],
+    );
+    {
+        use std::io::{Read, Write};
+        let mut stream = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
+        stream
+            .set_read_timeout(Some(std::time::Duration::from_secs(5)))
+            .unwrap();
+        for piece in chunked.as_bytes().chunks(3) {
+            stream.write_all(piece).unwrap();
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+        let mut answer = String::new();
+        let _ = stream.read_to_string(&mut answer);
+        has(&answer, &["201 Created", "hello, chunked body"]);
+    }
+    has(
+        &http(
+            port,
+            "POST /echo HTTP/1.1\r\nTransfer-Encoding: chunked\r\n\r\nzz\r\nab\r\n0\r\n\r\n",
+        ),
+        &["400 Bad Request"],
+    );
+    // A path that has a route, but not for the method.
+    has(&post(port, "/", "x"), &["405 Method Not Allowed", "Allow: GET\r\n"]);
+    // Files: the type by the name, the index of a directory, and nothing outside it.
+    has(&get(port, "/static"), &["200 OK", "text/html", "<h1>index</h1>"]);
+    has(&get(port, "/static/css/site.css"), &["text/css", "body { margin: 0 }"]);
+    has(
+        &get(port, "/static/blob.bin"),
+        &["application/octet-stream", "Content-Length: 4\r\n"],
+    );
+    has(&get(port, "/static/missing.txt"), &["404 Not Found"]);
+    for climbing in [
+        "/static/../secret.txt",
+        "/static/%2e%2e/secret.txt",
+        "/static/css/..%2f..%2fsecret.txt",
+    ] {
+        let answer = get(port, climbing);
+        assert!(!answer.contains("not to be served"), "{climbing}:\n{answer}");
+        has(&answer, &["404 Not Found"]);
+    }
+    // A form and a cookie.
+    has(
+        &http(
+            port,
+            "POST /form HTTP/1.1\r\nConnection: close\r\nContent-Type: application/x-www-form-urlencoded\r\n\
+             Content-Length: 20\r\n\r\nname=Ada+L%21&age=36",
+        ),
+        &["name is Ada L!, age is 36"],
+    );
+    has(
+        &get(port, "/cookie"),
+        &[
+            "seen never",
+            "Set-Cookie: visit=once%20more; Path=/; HttpOnly; SameSite=Lax; Max-Age=60",
+        ],
+    );
+    has(
+        &http(
+            port,
+            "GET /cookie HTTP/1.1\r\nConnection: close\r\nCookie: a=1; visit=twice\r\n\r\n",
+        ),
+        &["seen twice"],
+    );
+    has(
+        &http(port, "POST /echo HTTP/1.1\r\nContent-Length: 99999999\r\n\r\n"),
+        &["413 Content Too Large"],
+    );
+    has(
+        &http(port, &format!("GET / HTTP/1.1\r\nX: {}\r\n\r\n", "a".repeat(20000))),
+        &["431 Request Header Fields Too Large"],
+    );
+    has(
+        &http(port, "GET /hello/%ff%fe HTTP/1.1\r\nConnection: close\r\n\r\n"),
+        &["200 OK", "\u{fffd}"],
+    );
+    stop(child, port);
+
+    // The same server on three processes answers the same, and all three stop with it.
+    let (child, port) = serve(&executable, 3, &files);
+    for i in 0..60 {
+        has(&get(port, &format!("/hello/{i}")), &[&format!("Hello, {i}!")]);
+    }
+    // An actor is one, however many processes ask it: the count misses nothing.
+    for i in 1..=40 {
+        has(&get(port, "/count"), &[&format!("\r\n\r\ncount {i}")]);
+    }
+    // A handler that panics ends its worker, which is replaced: the server goes on.
+    for _ in 0..4 {
+        let answer = get(port, "/panic");
+        assert!(!answer.contains("200 OK"), "{answer}");
+    }
+    std::thread::sleep(std::time::Duration::from_millis(2500));
+    for i in 0..60 {
+        has(&get(port, &format!("/hello/{i}")), &[&format!("Hello, {i}!")]);
+    }
+    stop(child, port);
+    let _ = std::fs::remove_dir_all(&dir);
 }

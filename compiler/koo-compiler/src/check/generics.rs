@@ -12,7 +12,7 @@ use std::collections::HashMap;
 use koo_syntax::Span;
 use koo_syntax::ast;
 
-use super::{Checker, FnSig, Owner, ParamSig, TypeName, param_kind};
+use super::{Checker, FnAt, FnSig, Owner, ParamSig, TypeName, param_kind};
 use crate::hir::*;
 
 pub(super) enum GenericDecl<'a> {
@@ -101,7 +101,7 @@ fn mentions_unbound(ty: &ast::Type, params: &[String], env: &HashMap<String, Ty>
 }
 
 impl<'a> Checker<'a> {
-    fn is_type_name(&self, name: &str) -> bool {
+    pub(super) fn is_type_name(&self, name: &str) -> bool {
         self.type_names.contains_key(name)
             || self.generic_types.contains_key(name)
             || self.interfaces.contains_key(name)
@@ -118,7 +118,7 @@ impl<'a> Checker<'a> {
             self.is_type_name(&name.name)
         };
         if taken {
-            self.error(name.span, format!("`{}` is already declared", name.name));
+            self.already_declared(name.span, &name.name, &format!("type {}", name.name));
             return;
         }
         for param in params {
@@ -157,6 +157,7 @@ impl<'a> Checker<'a> {
         let generic = &self.generic_types[name];
         if generic.params.len() != args.len() {
             let expected = generic.params.len();
+            let params = generic.params.join(", ");
             self.error(
                 span,
                 format!(
@@ -165,6 +166,10 @@ impl<'a> Checker<'a> {
                     args.len()
                 ),
             );
+            self.help(format!(
+                "write `{name}<{params}>` with a type for each: for example `{name}<{}>`",
+                vec!["int"; expected].join(", ")
+            ));
             return Ty::Unknown;
         }
         if args.iter().any(|arg| arg.is_unknown()) {
@@ -446,11 +451,8 @@ impl<'a> Checker<'a> {
             }
         };
         if duplicate {
-            self.error_help(
-                sig.name.span,
-                format!("`{display}` is already declared"),
-                "there is no overloading: one name, one function (Section 6.1)",
-            );
+            self.already_declared(sig.name.span, &display, &super::fn_key(sig));
+            self.note("there is no overloading: one name, one function (Section 6.1)");
         }
         self.templates.push(Template {
             decl,
@@ -621,7 +623,10 @@ impl<'a> Checker<'a> {
         let display = format!("{base}<{}>", shown.join(", "));
 
         let saved = std::mem::replace(&mut self.type_env, env.clone());
-        let (params, ret) = self.params_and_ret(decl, &implicit);
+        let (mut params, ret) = self.params_and_ret(decl, &implicit);
+        if prelude {
+            params.iter_mut().for_each(|param| param.at = None);
+        }
         let receiver = match &decl.sig.target {
             ast::FnTarget::Method { kind, ty: Some(ty) } => Some(ParamSig {
                 name: "self".to_string(),
@@ -629,6 +634,7 @@ impl<'a> Checker<'a> {
                 ty: self.resolve_type(ty),
                 default: None,
                 lent: false,
+                at: None,
             }),
             _ => None,
         };
@@ -640,6 +646,7 @@ impl<'a> Checker<'a> {
             receiver,
             params,
             ret: ret.clone(),
+            at: (!prelude).then(|| FnAt::of(&decl.sig)),
         });
         self.program.functions.push(Function {
             name: display.clone(),
