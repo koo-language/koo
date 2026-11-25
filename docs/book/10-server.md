@@ -267,6 +267,42 @@ Internal Server Error
 
 The second route passes every failure of `open` straight on, with `?`, and so its client gets a bare 500 where the first route's client gets an explanation.
 
+What several handlers must all do first, such as asking who the client is, is written once, in a function that takes a handler and returns another. Its parameter is `take`, because the handler it is given is kept inside the one it returns (Section 4.6):
+
+```koo
+import std/http
+
+fn members_only(handler: take fn(http.Request) -> http.Response ! Failure) -> fn(http.Request) -> http.Response ! Failure {
+    return req -> {
+        if (req.query("key") else "") != "s3cret" {
+            return http.status(401, "members only")
+        }
+        return handler(req)?
+    }
+}
+
+fn main() ! http.Error {
+    var app := http.App.new()
+    app.get("/", req -> http.text("welcome\n"))
+    app.get("/accounts", members_only(req -> http.text("the accounts\n")))
+    app.serve(port: 8080)?
+}
+```
+
+```http
+> GET /
+200
+welcome
+> GET /accounts
+401
+members only
+> GET /accounts?key=s3cret
+200
+the accounts
+```
+
+The handler that `members_only` returns answers for itself where it must, and otherwise passes the request on, and whatever the handler inside answers or fails with comes back through it. What is done after a handler, such as adding a header to every response or writing how long the answer took, is written the same way, around the call.
+
 A handler can also panic, if it has a bug. Section 10.7 says what happens then.
 
 ## 10.6 State
