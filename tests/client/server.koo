@@ -24,6 +24,34 @@ actor Visits {
     }
 }
 
+// Actors that handlers start: one for each name that is asked for, kept by another
+// so that every worker finds the one there is.
+actor Rooms {
+    var rooms: [string: Visits] = [:]
+
+    fn find(name: string) -> Visits? {
+        return rooms[name]
+    }
+
+    fn keep(name: string, room: Visits) -> Visits {
+        if there := rooms[name] {
+            return there
+        }
+        rooms[name] = room
+        return room
+    }
+}
+
+// What it is started with cannot go from one process to another.
+actor Pinned {
+    at: (int, int)
+
+    fn sum() -> int {
+        (a, b) := at
+        return a + b
+    }
+}
+
 // An actor that takes its time, and lets four messages wait.
 @mailbox(4)
 actor Printer {
@@ -89,6 +117,13 @@ fn main() ! http.Error {
         }
         return http.text("{after - before}\n")
     })
+    rooms := Rooms.start()
+    app.get("/room/:name", req -> {
+        name := req.param("name")
+        room := rooms.find(name) else rooms.keep(name, Visits.start())
+        return http.text("{room.one_more()}\n")
+    })
+    app.get("/pinned", req -> http.text("{Pinned.start(at: (1, 2)).sum()}\n"))
     app.get("/bytes", req -> http.text("{visits.same_bytes("a\u{ff}".bytes())}\n"))
     app.get("/ratio", req -> {
         done := float.parse(req.query("done") else "0") else 0.0

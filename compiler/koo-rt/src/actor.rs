@@ -1453,6 +1453,15 @@ mod alone {
     pub unsafe extern "C" fn koo_actor_home() -> *mut Header {
         unsafe { new_str(b"here") }
     }
+    pub unsafe fn before_fork() {}
+    #[unsafe(no_mangle)]
+    pub unsafe extern "C" fn koo_actor_parent() -> *mut Header {
+        unsafe { new_str(b"") }
+    }
+    #[unsafe(no_mangle)]
+    pub unsafe extern "C" fn koo_actor_elsewhere() -> bool {
+        false
+    }
     #[unsafe(no_mangle)]
     pub unsafe extern "C" fn koo_actor_local(_: *const Header) -> bool {
         true
@@ -1744,10 +1753,41 @@ mod remote {
         }
     }
 
+    /// Where the actors of a server are kept, in a process that is one of its workers:
+    /// the home of the process that started it.
+    static PARENT: AtomicPtr<Header> = AtomicPtr::new(core::ptr::null_mut());
+
+    /// In a process about to start workers: if the program has actors at all, this
+    /// process has a home, where its workers find them and start more.
+    pub unsafe fn before_fork() {
+        unsafe {
+            if super::runner() != 0 {
+                koo_actor_home();
+            }
+        }
+    }
+
+    /// The home of the process whose worker this one is, or nothing.
+    #[unsafe(no_mangle)]
+    pub unsafe extern "C" fn koo_actor_parent() -> *mut Header {
+        unsafe {
+            let parent = PARENT.load(Acquire);
+            if parent.is_null() { new_str(b"") } else { parent }
+        }
+    }
+
+    /// Whether the actors a program starts here live in another process: this one is
+    /// a worker of a server, and an actor is of the whole server.
+    #[unsafe(no_mangle)]
+    pub unsafe extern "C" fn koo_actor_elsewhere() -> bool {
+        !PARENT.load(Acquire).is_null()
+    }
+
     /// In a process just forked: the actors are its parent's, and so is their socket.
     #[allow(static_mut_refs)]
     pub unsafe fn after_fork() {
         unsafe {
+            PARENT.store(HOME.load(Acquire), Release);
             if LISTENER >= 0 {
                 close(LISTENER);
                 LISTENER = -1;

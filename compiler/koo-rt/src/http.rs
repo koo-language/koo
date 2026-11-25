@@ -2030,6 +2030,8 @@ mod imp {
             let workers = if workers <= 0 { cores } else { workers }.min(MAX_WORKERS as i64);
             // What is waiting to be printed is printed once, not once by every worker.
             koo_flush();
+            // The actors of the program are kept here, by the process that watches.
+            super::super::actor::before_fork();
             for _ in 0..workers {
                 let child = fork();
                 if child == 0 {

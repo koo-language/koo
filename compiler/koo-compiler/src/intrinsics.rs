@@ -583,6 +583,16 @@ pub const INTRINSICS: &[Intrinsic] = &[
         ret: I::Unit,
     },
     Intrinsic {
+        name: "actor_parent",
+        params: &[],
+        ret: I::Str,
+    },
+    Intrinsic {
+        name: "actor_elsewhere",
+        params: &[],
+        ret: I::Bool,
+    },
+    Intrinsic {
         name: "actor_home",
         params: &[],
         ret: I::Str,

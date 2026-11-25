@@ -827,7 +827,33 @@ impl<'a> Deriver<'a> {
         let mut set = Vec::new();
         // What the actor is started with came from another actor, or from none.
         let mut kept = String::new();
+        // An actor of a server is kept by the process that watches, whichever process
+        // starts it: a worker sends what the actor is started with there (`elsewhere`),
+        // and has a handle back. What cannot be sent cannot be started with from a
+        // worker, and the first such field is named when one tries.
+        let mut pack = String::from("        __json_wire(true)\n        var out__ := \"[\"\n");
+        let mut unpack =
+            format!("                __json_wire(true)\n                j__open(text, var at, 91) {UNREADABLE}\n");
+        let mut passed = Vec::new();
+        let mut unsendable: Option<&str> = None;
         for field in actor.fields.iter().filter(|field| field.default.is_none()) {
+            let started = field.name.name.as_str();
+            if !self.holds(&field.ty) {
+                unsendable = unsendable.or(Some(started));
+            } else if unsendable.is_none() {
+                if !passed.is_empty() {
+                    pack.push_str("        out__ += \",\"\n");
+                }
+                let _ = writeln!(pack, "        {started}._json_write(var out__)");
+                let reader = self.reader(&field.ty);
+                let _ = write!(
+                    unpack,
+                    "                j__more(text, var at, 93, var first) {UNREADABLE}\n                \
+                     s{} := {reader} {UNREADABLE}\n",
+                    passed.len()
+                );
+                passed.push(format!("{started}: s{}", passed.len()));
+            }
             match self.spelled(&field.ty) {
                 Some(_) if self.has_function(&field.ty, &mut Vec::new()) => self.problems.push((
                     field.ty.span,
@@ -854,6 +880,26 @@ impl<'a> Deriver<'a> {
             self.unwritten.push("has no function `start`".to_string());
             return false;
         }
+        let elsewhere = match unsendable {
+            Some(field) => format!(
+                "    if __actor_elsewhere() {{\n        panic(\"an actor `{name}` cannot be started by a handler of a server \
+                 with several workers: its `{field}` cannot be sent to the process that keeps the server's actors. \
+                 Start it in `main`, before `serve`\")\n    }}\n"
+            ),
+            None => format!(
+                "    if __actor_elsewhere() {{\n{pack}        out__ += \"]\"\n        __json_wire(false)\n        \
+                 id__ := int.parse(__actor_ask(__actor_parent(), \"{name} 0 .start\", out__)) else -1\n        \
+                 return {lower}___handle(id__, __actor_parent())\n    }}\n"
+            ),
+        };
+        let started = match unsendable {
+            Some(_) => String::new(),
+            None => format!(
+                "            \".start\" => {{\n{unpack}                __json_wire(false)\n                \
+                 started := {name}.start({})\n                __actor_reply(\"\", \"{{started.id}}\")\n            }}\n",
+                passed.join(", ")
+            ),
+        };
         let _ = write!(
             self.out,
             "fn {lower}___handle(id: int, home: string) -> {name} {{\n    \
@@ -869,7 +915,7 @@ impl<'a> Deriver<'a> {
              _ => j__skip(text, var at)?\n        }}\n    }}\n    \
              the_id := id else fail j__missing(\"id\")\n    the_home := home else fail j__missing(\"home\")\n    \
              return {lower}___handle(the_id, the_home)\n}}\n\n\
-             fn {name}.start({given}) -> {name} {{\n{kept}    cell__: [{state}] = [{state} {{ {set} }}]\n    \
+             fn {name}.start({given}) -> {name} {{\n{elsewhere}{kept}    cell__: [{state}] = [{state} {{ {set} }}]\n    \
              return {lower}___handle(__actor_new(\"{name}\", cell__, {mailbox}), __actor_home())\n}}\n\n\
              fn (self: {name}) stop() {{\n    if not __actor_local(self.home) {{\n        \
              __actor_ask(self.home, \"{name} {{self.id}} stop\", \"[]\")\n        return\n    }}\n    \
@@ -879,7 +925,7 @@ impl<'a> Deriver<'a> {
              id := __actor_any(\"{name}\")\n        if id < 0 {{ break }}\n        \
              {lower}___handle(id, __actor_home()).stop()\n    }}\n}}\n\n\
              fn {lower}___remote(self: {name}, method: string, text: string) {{\n    __json_begin()\n    \
-             var at := 0\n    var first := true\n    match method {{\n{arms}            \
+             var at := 0\n    var first := true\n    match method {{\n{arms}{started}            \
              \"stop\" => {{\n                self.stop()\n                __actor_reply(\"\", \"null\")\n            }}\n            \
              _ => panic(\"the actor `{name}` has no method `{{method}}`\")\n    }}\n}}\n\n{stubs}",
             given = given.join(", "),

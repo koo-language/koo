@@ -1563,6 +1563,25 @@ fn a_stopping_server_answers_what_it_has_in_hand() {
         std::thread::sleep(std::time::Duration::from_millis(700));
         let got = get(port, "/send");
         assert!(got.ends_with("\r\n\r\n6\n"), "with {workers} workers: {got}");
+        // An actor that a handler starts is the whole server's, as one that `main`
+        // starts is: whichever worker answers finds it, and its count is one count.
+        let counts: Vec<String> = ["a", "a", "b", "a", "a", "b", "a"]
+            .iter()
+            .map(|name| {
+                let got = get(port, &format!("/room/{name}"));
+                got.rsplit("\r\n\r\n").next().unwrap().trim().to_string()
+            })
+            .collect();
+        assert_eq!(counts, ["1", "2", "1", "3", "4", "2", "5"], "with {workers} workers");
+        // One that is started with what cannot be sent to the process that keeps the
+        // actors can be started where there is one process, and is refused in a word
+        // where there are several.
+        let got = get(port, "/pinned");
+        if workers == 1 {
+            assert!(got.ends_with("\r\n\r\n3\n"), "{got}");
+        } else {
+            assert!(got.starts_with("HTTP/1.1 500"), "with {workers} workers: {got}");
+        }
         let got = get(port, "/bytes");
         assert!(
             got.ends_with("\r\n\r\n[97, 195, 191]\n"),
