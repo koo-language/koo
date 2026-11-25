@@ -66,14 +66,14 @@ fn gone(code: &[u8]) -> bool {
 }
 
 /// Bytes that grow.
-struct Buf {
-    ptr: *mut u8,
-    len: usize,
-    cap: usize,
+pub(crate) struct Buf {
+    pub(crate) ptr: *mut u8,
+    pub(crate) len: usize,
+    pub(crate) cap: usize,
 }
 
 impl Buf {
-    const fn new() -> Buf {
+    pub(crate) const fn new() -> Buf {
         Buf {
             ptr: core::ptr::null_mut(),
             len: 0,
@@ -81,7 +81,7 @@ impl Buf {
         }
     }
 
-    unsafe fn room(&mut self, more: usize) {
+    pub(crate) unsafe fn room(&mut self, more: usize) {
         unsafe {
             if self.len + more > self.cap {
                 let cap = (self.len + more).max(self.cap * 2).max(256);
@@ -94,7 +94,7 @@ impl Buf {
         }
     }
 
-    unsafe fn push(&mut self, bytes: &[u8]) {
+    pub(crate) unsafe fn push(&mut self, bytes: &[u8]) {
         unsafe {
             self.room(bytes.len());
             core::ptr::copy_nonoverlapping(bytes.as_ptr(), self.ptr.add(self.len), bytes.len());
@@ -102,7 +102,7 @@ impl Buf {
         self.len += bytes.len();
     }
 
-    fn bytes(&self) -> &[u8] {
+    pub(crate) fn bytes(&self) -> &[u8] {
         if self.ptr.is_null() {
             &[]
         } else {
@@ -110,7 +110,7 @@ impl Buf {
         }
     }
 
-    unsafe fn release(&mut self) {
+    pub(crate) unsafe fn release(&mut self) {
         unsafe { free(self.ptr) };
         *self = Buf::new();
     }
@@ -520,7 +520,7 @@ fn socket_address(address: [u8; 4], port: u16) -> ([u8; 16], u32) {
 /// Writes to a connection. A server that has gone must be an error here and not a
 /// signal that ends the program: on Linux that is said with each write, and on macOS
 /// once, when the socket is made.
-unsafe fn send_all(fd: i32, mut data: &[u8]) -> bool {
+pub(crate) unsafe fn send_all(fd: i32, mut data: &[u8]) -> bool {
     let quietly = if cfg!(target_os = "linux") { 0x4000 } else { 0 };
     while !data.is_empty() {
         let n = unsafe { sendto(fd, data.as_ptr(), data.len(), quietly, core::ptr::null(), 0) };
@@ -782,20 +782,20 @@ unsafe fn authenticate(conn: &mut Conn, db: &Db) -> bool {
     }
 }
 
-/// Connects to a database and waits until it is ready for a query.
-unsafe fn establish(conn: &mut Conn, db: &Db) -> bool {
+/// Connects to a host, giving it so many seconds to answer and not the minutes the
+/// system would wait. Returns the socket, or -1 with the reason written into `why`.
+pub(crate) unsafe fn dial(host: &[u8], port: u16, seconds: i32, why: &mut Buffer) -> i32 {
     unsafe {
-        let host = db.host.bytes();
         let Some(address) = resolve(host) else {
-            failed(CONNECTION, &[b"there is no address for the host `", host, b"`"]);
-            return false;
+            why.push(b"there is no address for the host `");
+            why.push(host);
+            why.push(b"`");
+            return -1;
         };
         let fd = socket(AF_INET, SOCK_STREAM, 0);
-        let (target, target_len) = socket_address(address, db.port);
-        // A server that does not answer is given ten seconds, not the minutes the
-        // system would wait.
-        let patience: [i64; 2] = [10, 0];
-        let seconds = 10i32;
+        let (target, target_len) = socket_address(address, port);
+        let seconds = seconds.max(1);
+        let patience: [i64; 2] = [seconds as i64, 0];
         if fd >= 0 {
             if cfg!(target_os = "macos") {
                 setsockopt(fd, IPPROTO_TCP, 0x20, &seconds, 4);
@@ -809,33 +809,40 @@ unsafe fn establish(conn: &mut Conn, db: &Db) -> bool {
             setsockopt(fd, 1, 21, forever.as_ptr() as *const i32, 16);
         }
         if !connected {
-            let mut port = Buffer::new();
-            let _ = write!(port, "{}", db.port);
-            failed(
-                CONNECTION,
-                &[
-                    b"cannot connect to ",
-                    host,
-                    b":",
-                    &port.data[..port.len],
-                    b": ",
-                    if *errno_location() == 115 && !cfg!(target_os = "macos") {
-                        b"the server did not answer in ten seconds"
-                    } else {
-                        system_error()
-                    },
-                ],
-            );
+            // What the system calls a connection that was not answered in its time.
+            let slow = *errno_location() == if cfg!(target_os = "macos") { 60 } else { 115 };
+            why.push(b"cannot connect to ");
+            why.push(host);
+            let _ = write!(why, ":{port}: ");
+            if slow {
+                let _ = write!(why, "the server did not answer in {seconds} seconds");
+            } else {
+                why.push(system_error());
+            }
             if fd >= 0 {
                 close(fd);
             }
-            return false;
+            return -1;
         }
         let on = 1i32;
         setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &on, 4);
         if cfg!(target_os = "macos") {
             // No signal for a write to a server that has gone.
             setsockopt(fd, 0xffff, 0x1022, &on, 4);
+        }
+        fd
+    }
+}
+
+/// Connects to a database and waits until it is ready for a query.
+unsafe fn establish(conn: &mut Conn, db: &Db) -> bool {
+    unsafe {
+        let host = db.host.bytes();
+        let mut why = Buffer::new();
+        let fd = dial(host, db.port, 10, &mut why);
+        if fd < 0 {
+            failed(CONNECTION, &[&why.data[..why.len]]);
+            return false;
         }
         conn.fd = fd;
         conn.at = 0;

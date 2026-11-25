@@ -417,11 +417,95 @@ On Linux, a server can be built so that the executable needs nothing else to be 
 koo build --release --static server.koo
 ```
 
-## 10.8 What Is Not There
+## 10.8 Asking Other Servers
+
+A service is seldom alone. To answer its own requests it asks other services, over the same protocol, and `std/http` is a client as well as a server. `http.get(url)` makes a request and returns the answer, a `http.Reply`, which has the fields `status`, `headers` and `body`, and three methods: `reply.header(name)` is a header, if the answer has it, however its name is written; `reply.ok()` says whether the status is one of success, 200 to 299; and `reply.json()` reads the body into the type that is expected, like `req.json()`.
+
+This program is two services in one, so that it can be run by itself: one that knows what things cost, and one, for people, that asks it.
+
+```koo
+import std/encoding
+import std/http
+
+type Price = { sku: string, cents: int }
+type Quote = { sku: string, qty: int, total: string }
+
+// What an item costs, by the price service; `none` if it has no such item.
+fn price(sku: string) -> Price? ! http.Error | JsonError {
+    reply := http.get("http://localhost:8080/prices/{encoding.url(sku)}", timeout: 2s)?
+    if reply.status == 404 {
+        return none
+    }
+    found: Price = reply.json()?
+    return found
+}
+
+fn main() ! http.Error {
+    var app := http.App.new()
+
+    // The price service.
+    app.get("/prices/:sku", req -> {
+        sku := req.param("sku")
+        cents := ["hammer": 1250, "nails": 300][sku] else {
+            return http.status(404, "no such item\n")
+        }
+        return http.json(Price { sku, cents })
+    })
+
+    // The service that people use.
+    app.get("/quote/:sku", req -> {
+        qty := int.parse(req.query("qty") else "1") else 1
+        match price(req.param("sku")) {
+            found => {
+                item := found else {
+                    return http.status(404, "we do not sell that\n")
+                }
+                total := "{float.from(item.cents * qty) / 100.0:.2}"
+                return http.json(Quote { sku: item.sku, qty, total })
+            }
+            ! e: http.Error => {
+                if e.kind == http.ErrorKind.Timeout {
+                    return http.status(504, "the price service is slow today\n")
+                }
+                return http.status(502, "the price service cannot be reached\n")
+            }
+            ! e: JsonError => return http.status(502, "the price service made no sense\n")
+        }
+    })
+    app.serve(port: 8080, workers: 2)?
+}
+```
+
+```http
+> GET /quote/hammer?qty=3
+200
+{"sku":"hammer","qty":3,"total":"37.50"}
+> GET /quote/nails
+200
+{"sku":"nails","qty":1,"total":"3.00"}
+> GET /quote/saw
+404
+we do not sell that
+
+```
+
+An answer with a status of failure is still an answer. `http.get` fails, with a `http.Error`, only when there is no answer to return, and the error's `kind` says why: `Address`, for a URL that is not one; `Connection`, for a server that could not be found or reached, or whose certificate is not to be trusted; `Timeout`, for one that did not answer in time; and `Protocol`, for an answer that is not HTTP. What to make of a 404 or a 500 is left to the program, which here turns a 404 of the price service into `none`.
+
+A request is given a time to finish in, with `timeout:`, which is thirty seconds unless it is said. The time covers everything, from finding the server to the last byte of its answer. A service that waits without limit on another is a service that hangs when the other does, so the time should be chosen, and should be short.
+
+There is a function for each of the usual methods: `http.get` and `http.delete`, which send no body, and `http.post`, `http.put` and `http.patch`, which take one after the URL, as a string. The body is taken to be JSON unless `content_type:` says otherwise, so that a value is sent with
+
+    http.post("https://api.example.com/orders", order.to_json())
+
+Headers go in a map, `headers: ["Authorization": "Bearer {token}"]`, and `http.fetch(method, url)` is the general form, for any method.
+
+A URL that begins `https` is asked over TLS, and the server's certificate must be one that the system's authorities vouch for and must name the host: there is no way to ask for less. The TLS is the one that the database package uses, with what Section 11.7 says of it.
+
+## 10.9 What Is Not There
 
 The server speaks HTTP/1.1. It does not speak HTTPS or HTTP/2; where those are needed, it runs behind a proxy that does, which is how most services are deployed in any case. A body, of a request or a response, is handled whole, and cannot yet be read or written a piece at a time. And while a handler waits for something slow, the other requests that its worker has accepted wait with it.
 
-There is no HTTP client in the library yet. The specification describes all of these; this book will describe them when they can be run.
+The client makes a connection for each request and closes it after the answer. It does not follow a redirection: an answer with a status of 301 or 302 is returned like any other, with the new place in its `location` header. The specification describes more; this book will describe it when it can be run.
 
 What a server keeps for longer than it runs, it keeps in a database, and that is the subject of the next chapter.
 

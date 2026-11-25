@@ -14,6 +14,7 @@ fn main() {
         "actor.rs",
         "digest.rs",
         "codec.rs",
+        "client.rs",
         "log.rs",
         "pg.rs",
         "thread.rs",

@@ -35,6 +35,7 @@
 use core::fmt::Write;
 
 pub mod actor;
+pub mod client;
 pub mod codec;
 pub mod digest;
 pub mod http;
@@ -203,6 +204,7 @@ pub unsafe extern "C" fn koo_exit_main() {
         // connections to its databases are closed.
         actor::at_exit();
         pg::at_exit();
+        client::at_exit();
         // The message of the last input or output error is the library's own, and so is a
         // string that was read from JSON and never collected: each thread's.
         thread::every(|thread| {
@@ -429,6 +431,45 @@ impl Write for Buffer {
     fn write_str(&mut self, s: &str) -> core::fmt::Result {
         self.push(s.as_bytes());
         Ok(())
+    }
+}
+
+/// Appends a string as it would be written in a program: between quotes, with a
+/// backslash before a quote, a backslash and an opening brace, and with the characters
+/// that cannot be seen written as their escapes. This is the form of a string inside a
+/// list, a struct or another value, where it must be told from what is around it.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn koo_str_append_quoted(slot: *mut *mut Header, value: *const Header) {
+    unsafe {
+        let text = bytes(value);
+        let plain = |byte: &u8| *byte >= b' ' && !matches!(*byte, b'"' | b'\\' | b'{' | 127);
+        koo_str_append_bytes(slot, b"\"".as_ptr(), 1);
+        let mut rest = text;
+        while !rest.is_empty() {
+            // What needs nothing is appended in one piece.
+            let run = rest.iter().position(|byte| !plain(byte)).unwrap_or(rest.len());
+            koo_str_append_bytes(slot, rest.as_ptr(), run as i64);
+            rest = &rest[run..];
+            let Some((&byte, after)) = rest.split_first() else {
+                break;
+            };
+            let mut escape = Buffer::new();
+            match byte {
+                b'"' => escape.push(b"\\\""),
+                b'\\' => escape.push(b"\\\\"),
+                b'{' => escape.push(b"\\{"),
+                b'\n' => escape.push(b"\\n"),
+                b'\r' => escape.push(b"\\r"),
+                b'\t' => escape.push(b"\\t"),
+                0 => escape.push(b"\\0"),
+                other => {
+                    let _ = write!(escape, "\\u{{{other:x}}}");
+                }
+            }
+            koo_str_append_bytes(slot, escape.data.as_ptr(), escape.len as i64);
+            rest = after;
+        }
+        koo_str_append_bytes(slot, b"\"".as_ptr(), 1);
     }
 }
 

@@ -1,0 +1,16 @@
+// A string inside another value is shown as a program would write it.
+
+type Note = { text: string }
+
+fn main() {
+    print(["say \"hi\"", "tab\there", "line\nbreak", "back\\slash", "brace \{x}"])
+    print(Note { text: "a \"quoted\" word" })
+    maybe: string? = "it's \"so\""
+    print(maybe)
+    print(("pair", "with \"quotes\""))
+}
+
+//= ["say \"hi\"", "tab\there", "line\nbreak", "back\\slash", "brace \{x}"]
+//= Note { text: "a \"quoted\" word" }
+//= it's "so"
+//= ("pair", "with \"quotes\"")

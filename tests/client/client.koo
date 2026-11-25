@@ -1,0 +1,60 @@
+// Requests of another server: `server.koo`, at the port that PORT says.
+
+import std/http
+import std/os
+
+type Echo = { method: string, path: string, body: string, agent: string, kind: string, token: string }
+type Order = { id: int, sku: string }
+
+fn show(what: string, got: http.Reply ! http.Error) {
+    match got {
+        reply => print("{what}: {reply.status} {reply.ok()} {reply.body.len} bytes, {reply.header("Content-Type") else "no type"}")
+        ! e => print("{what}: {e.kind}: {e}")
+    }
+}
+
+fn main() ! http.Error | JsonError {
+    base := "http://localhost:" + (os.env("PORT") else "8080")
+    reply := http.get(base + "/echo?x=1")?
+    echo: Echo = reply.json()?
+    print(echo)
+    posted: Echo = http.post(base + "/echo", Order { id: 7, sku: "nails" }.to_json(), headers: ["X-Token": "s3cret"])?.json()?
+    print(posted)
+    put: Echo = http.put(base + "/echo", "plain", content_type: "text/plain")?.json()?
+    print("{put.method} {put.kind} {put.body}")
+    deleted: Echo = http.delete(base + "/echo")?.json()?
+    patched: Echo = http.patch(base + "/echo", "")?.json()?
+    print("{deleted.method} {patched.method}")
+    print(http.fetch("OPTIONS", base + "/echo")?.status)
+    show("big", http.get(base + "/big"))
+    show("none", http.get(base + "/none"))
+    show("missing", http.get(base + "/missing"))
+    show("head", http.fetch("HEAD", base + "/big"))
+    print(http.get(base + "/cookie")?.header("set-cookie"))
+    show("slow", http.get(base + "/slow", timeout: 500ms))
+    show("slow enough", http.get(base + "/slow", timeout: 5s))
+    show("refused", http.get("http://localhost:1/"))
+    show("bad", http.get("ftp://example.com/"))
+    show("bad port", http.get("http://example.com:99999/"))
+    show("space", http.get("http://example.com/a b"))
+    show("header", http.get(base + "/echo", headers: ["X-Bad": "a\r\nInjected: 1"]))
+    show("method", http.fetch("get it", base + "/echo"))
+}
+//= Echo { method: "GET", path: "/echo", body: "", agent: "koo", kind: "", token: "" }
+//= Echo { method: "POST", path: "/echo", body: "\{\"id\":7,\"sku\":\"nails\"}", agent: "koo", kind: "application/json", token: "s3cret" }
+//= PUT text/plain plain
+//= DELETE PATCH
+//= 200
+//= big: 200 true 3000000 bytes, text/plain; charset=utf-8
+//= none: 204 true 0 bytes, no type
+//= missing: 404 false 14 bytes, text/plain; charset=utf-8
+//= head: 200 true 0 bytes, text/plain; charset=utf-8
+//= a=1; Path=/; HttpOnly; SameSite=Lax, b=2; Path=/; HttpOnly; SameSite=Lax
+//= slow: Timeout: localhost did not answer in the time it was given
+//= slow enough: 200 true 5 bytes, text/plain; charset=utf-8
+//= refused: Connection: cannot connect to localhost:1: Connection refused
+//= bad: Address: `ftp://example.com/` is not an address that can be asked: one is `http://host/path` or `https://host:port/path?query`
+//= bad port: Address: `http://example.com:99999/` is not an address that can be asked: one is `http://host/path` or `https://host:port/path?query`
+//= space: Address: `http://example.com/a b` is not an address that can be asked: one is `http://host/path` or `https://host:port/path?query`
+//= header: Address: the header `X-Bad` cannot be sent: it has a line end in it, or no name
+//= method: Address: `get it` is not a method: one is `GET`, `POST`, and so on

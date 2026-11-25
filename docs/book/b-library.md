@@ -407,7 +407,21 @@ A handler is a `fn(http.Request) -> http.Response ! Failure`.
 | `response.cookie(name: string, value: string, max_age: int = -1) -> http.Response` | the response with a cookie set |
 | `response.with_status(status: int) -> http.Response` | the response with another status |
 
-`http.Error` has the field `message: string`. Chapter 10 has programs that use these.
+A request of another server returns a `http.Reply`:
+
+| | |
+| --- | --- |
+| `http.get(url: string, headers: [string: string] = [:], timeout: Duration = 30s) -> http.Reply ! http.Error` | asks for what is at a URL |
+| `http.delete(url, headers, timeout)` | the same, with the method `DELETE` |
+| `http.post(url: string, body: string, content_type: string = "application/json", headers: [string: string] = [:], timeout: Duration = 30s) -> http.Reply ! http.Error` | sends a body |
+| `http.put(url, body, content_type, headers, timeout)`, `http.patch(...)` | the same, with those methods |
+| `http.fetch(method: string, url: string, body: string = "", headers: [string: string] = [:], timeout: Duration = 30s) -> http.Reply ! http.Error` | a request with any method |
+| `reply.status`, `reply.headers`, `reply.body` | fields: the status, the headers by their names in lower case, and the body |
+| `reply.header(name: string) -> string?` | a header, however its name is written |
+| `reply.ok() -> bool` | whether the status is from 200 to 299 |
+| `reply.json() -> T ! JsonError` | the body, as the type that the context expects |
+
+`http.Error` has the fields `kind: http.ErrorKind` and `message: string`, and `http.ErrorKind` is an enumeration: `Listen`, `Address`, `Connection`, `Timeout`, `Protocol`. Chapter 10 has programs that use these.
 
 ## B.14 `std/sql`
 

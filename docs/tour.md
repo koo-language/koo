@@ -830,6 +830,24 @@ It runs on macOS and Linux alike. On Linux, `koo build --release --static` makes
 
 What it does not do yet: HTTPS and HTTP/2 (put it behind a proxy or a platform that speaks them), streaming a body in either direction, and waiting on something slow without holding up the other requests of the same worker. Working servers are in [`examples/http`](../examples/http).
 
+## Asking other servers
+
+`std/http` is a client too. `http.get(url)` returns the answer, with its `status`, `headers` and `body`; `http.post(url, body)` sends one. An address that begins `https` is asked over TLS, with the server's certificate checked.
+
+    reply := http.get("https://api.example.com/users/{id}", timeout: 2s)?
+    if reply.ok() {
+        user: User = reply.json()?
+    }
+
+    created := http.post("https://api.example.com/users", user.to_json(),
+        headers: ["Authorization": "Bearer {token}"])?
+
+- A request fails, with a `http.Error`, only when no answer came: its `kind` is `Address`, `Connection`, `Timeout` or `Protocol`. A 404 or a 500 is an answer, and the program decides what it means.
+- `timeout:` is thirty seconds unless it is said, and covers the whole request.
+- The body is sent as JSON unless `content_type:` says otherwise. `http.put`, `http.patch`, `http.delete` and `http.fetch(method, url)` are the rest.
+
+[Section 10.8 of the book](book/10-server.md) has a program that asks, and what it answers.
+
 ## A database
 
 `std/sql` talks to PostgreSQL. A query is written like a string with values in braces, but it is not a string: the values are sent to the database beside the statement, as parameters, and never become part of the SQL. There is nothing to escape, and nothing to inject.
@@ -1167,4 +1185,4 @@ None of them can corrupt memory. Errors you expect, such as a missing file or ba
 
 ## What is not here yet
 
-The compiler does not build these parts of the specification yet, and says so if you use them: importing one package of your own from another, parts of the standard library (an HTTP client, HTTPS in the server), tasks, channels and `select`, interface values (a list of different shapes), `Decimal`, resources and `defer`, and the WebAssembly targets. The [README](../README.md) keeps the current list.
+The compiler does not build these parts of the specification yet, and says so if you use them: importing one package of your own from another, parts of the standard library (HTTPS in the server, sockets, dates and time zones), tasks, channels and `select`, interface values (a list of different shapes), `Decimal`, resources and `defer`, and the WebAssembly targets. The [README](../README.md) keeps the current list.

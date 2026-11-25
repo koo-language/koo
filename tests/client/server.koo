@@ -1,0 +1,30 @@
+// The server that `client.koo` asks (`a_program_asks_another_server` in
+// compiler/koo/tests/programs.rs). It listens where PORT says.
+
+import std/http
+import std/os
+import std/time
+
+type Echo = { method: string, path: string, body: string, agent: string, kind: string, token: string }
+
+fn main() ! http.Error {
+    var app := http.App.new()
+    app.any("/echo", req -> http.json(Echo {
+        method: req.method,
+        path: req.path,
+        body: req.body(),
+        agent: req.header("User-Agent") else "",
+        kind: req.header("Content-Type") else "",
+        token: req.header("X-Token") else "",
+    }))
+    app.get("/slow", req -> {
+        time.sleep(2s)
+        return http.text("late\n")
+    })
+    app.get("/big", req -> http.text("0123456789".repeat(300000)))
+    app.get("/none", req -> http.status(204))
+    app.get("/missing", req -> http.status(404, "nothing here\n"))
+    app.get("/cookie", req -> http.text("ok").cookie("a", "1").cookie("b", "2"))
+    port := int.parse(os.env("PORT") else "") else 8080
+    app.serve(port: port, workers: 2)?
+}

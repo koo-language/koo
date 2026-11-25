@@ -577,7 +577,9 @@ fn run_listing(dir: &Path, source: &str, tags: &[(String, String)]) -> Outcome {
             .port();
         std::fs::write(
             dir.join("main.koo"),
-            source.replace("port: 8080", &format!("port: {port}")),
+            source
+                .replace("port: 8080", &format!("port: {port}"))
+                .replace("localhost:8080", &format!("localhost:{port}")),
         )
         .unwrap();
         let (_, stderr, status) = koo(&["build", "main.koo", "-o", "server"], None);
@@ -1153,6 +1155,53 @@ fn stop(mut server: Server, port: u16) {
         std::net::TcpStream::connect(("127.0.0.1", port)).is_err(),
         "something still listens on port {port}"
     );
+}
+
+/// `http.get` and the rest ask a real server, which is `tests/client/server.koo`, and
+/// `tests/client/client.koo` prints what it says it prints.
+#[test]
+fn a_program_asks_another_server() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let dir = std::env::temp_dir().join(format!("koo-client-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let executable = dir.join("server");
+    let built = Command::new(env!("CARGO_BIN_EXE_koo"))
+        .arg("build")
+        .arg(root.join("tests/client/server.koo"))
+        .arg("-o")
+        .arg(&executable)
+        .output()
+        .expect("koo runs");
+    assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
+    let (server, port) = serve(&executable, 2, &dir);
+    let client = root.join("tests/client/client.koo");
+    let expected = expectation(&std::fs::read_to_string(&client).unwrap());
+    let mut failures = Vec::new();
+    for release in [false, true] {
+        let mut command = Command::new(env!("CARGO_BIN_EXE_koo"));
+        command
+            .arg("run")
+            .arg(&client)
+            .env("KOO_LEAKS", "1")
+            .env("PORT", port.to_string());
+        if release {
+            command.arg("--release");
+        }
+        let output = command.output().expect("koo runs");
+        // The port is different every time, and is not what is being tested.
+        let stdout = String::from_utf8_lossy(&output.stdout).replace(&format!(":{port}"), ":PORT");
+        if stdout != expected.stdout || !output.status.success() {
+            failures.push(format!(
+                "release {release}: {}\n--- expected\n{}--- found\n{stdout}--- stderr\n{}",
+                output.status,
+                expected.stdout,
+                String::from_utf8_lossy(&output.stderr)
+            ));
+        }
+    }
+    stop(server, port);
+    let _ = std::fs::remove_dir_all(&dir);
+    assert!(failures.is_empty(), "\n{}", failures.join("\n\n"));
 }
 
 #[test]

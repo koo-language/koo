@@ -205,6 +205,8 @@ pub struct Thread {
     pub spare_guard: *mut Guard,
     /// What the thread keeps of its last query of a database (`pg.rs`).
     pub sql: *mut u8,
+    /// What the thread keeps of the last answer to a request it made (`client.rs`).
+    pub reply: *mut u8,
     /// Bytes from the system's source of randomness that have not been handed out yet
     /// (`codec.rs`).
     pub random: [u8; 256],

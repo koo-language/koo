@@ -274,6 +274,32 @@ pub const INTRINSICS: &[Intrinsic] = &[
         params: &[],
         ret: I::Float,
     },
+    // Requests to other servers (`std/http`, `koo-rt/src/client.rs`).
+    Intrinsic {
+        name: "http_fetch",
+        params: &[I::Str, I::Str, I::Strs, I::Str, I::Int],
+        ret: I::Bool,
+    },
+    Intrinsic {
+        name: "http_reply_status",
+        params: &[],
+        ret: I::Int,
+    },
+    Intrinsic {
+        name: "http_reply_kind",
+        params: &[],
+        ret: I::Int,
+    },
+    Intrinsic {
+        name: "http_reply_headers",
+        params: &[],
+        ret: I::Str,
+    },
+    Intrinsic {
+        name: "http_reply_body",
+        params: &[],
+        ret: I::Str,
+    },
     // Logging (`std/log`, `koo-rt/src/log.rs`).
     Intrinsic {
         name: "log_on",

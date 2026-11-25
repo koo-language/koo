@@ -518,9 +518,7 @@ impl Gen<'_> {
             }
             Ty::Str => {
                 let value = self.value("load ptr, ptr %p");
-                self.append_text("%b", "\"");
-                self.emit(format!("call void @koo_str_append(ptr %b, ptr {value})"));
-                self.append_text("%b", "\"");
+                self.emit(format!("call void @koo_str_append_quoted(ptr %b, ptr {value})"));
             }
             Ty::Unit | Ty::Never | Ty::Unknown => self.append_text("%b", "()"),
             Ty::Fn(_) => self.append_text("%b", "fn"),

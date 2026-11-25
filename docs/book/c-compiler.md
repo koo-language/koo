@@ -147,7 +147,7 @@ The [specification](../../SPEC.md) describes more than the compiler builds. For 
 
 *Packages.* A program is one package. One package of your own cannot yet import another, and there is no package manager. The standard packages are `std/io`, `std/os`, `std/time`, `std/http`, `std/sql`, `std/sql/postgres`, `std/hash`, `std/encoding`, `std/crypto`, `std/random`, `std/log` and `std/test`.
 
-*The library.* There is no network client except the one that speaks to PostgreSQL, no digest but SHA-256, no encryption except of the connection to a database, and no way to read a file except whole. Section 11.8 lists what `std/sql` leaves out.
+*The library.* There are no sockets for a program's own use, only the clients for HTTP and PostgreSQL; no digest but SHA-256; no encryption except of those clients' connections; and no way to read a file except whole. Section 11.8 lists what `std/sql` leaves out.
 
 *Targets.* The compiler builds for the machine it runs on: macOS on arm64, and Linux on x86-64 and arm64. It does not build for another machine than its own, or for WebAssembly.
 

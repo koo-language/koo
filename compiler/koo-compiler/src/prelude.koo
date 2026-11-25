@@ -1325,7 +1325,16 @@ fn a__serve_remote() {
 // them over one at a time: `serve` below is the whole of what runs for each.
 
 /// What can go wrong with a server itself, such as a port that is taken.
-error HttpError { message: string }
+/// What went wrong: the server of this program could not listen (`Listen`); a request
+/// was to an address that is not one (`Address`), could not reach its server
+/// (`Connection`), was not answered in its time (`Timeout`), or was answered with
+/// something that is not HTTP (`Protocol`).
+enum HttpErrorKind { Listen, Address, Connection, Timeout, Protocol }
+
+error HttpError { kind: HttpErrorKind, message: string }
+
+/// An error of the network as a person would be told of it.
+fn (self: HttpError) to_string() -> string { return self.message }
 
 /// A request, as its handler sees it.
 type HttpRequest = { id: int, method: string, path: string }
@@ -1518,7 +1527,9 @@ fn (self: HttpApp) serve(port: int = 8080, workers: int = 0, max_body: int = 104
         __http_route(self.methods[i], self.paths[i])
     }
     logged := if log { 1 } else { 0 }
-    if __http_listen(port, workers, max_body, logged) < 0 { fail HttpError { message: __last_error() } }
+    if __http_listen(port, workers, max_body, logged) < 0 {
+        fail HttpError { kind: HttpErrorKind.Listen, message: __last_error() }
+    }
     while true {
         route := __http_next()
         if route == -3 {
@@ -1661,6 +1672,86 @@ fn (self: var [T]) shuffle() {
         self[j] = held
         i -= 1
     }
+}
+
+// ---- std/http, as a client ---------------------------------------------------------------
+
+/// The answer of another server to a request that this program made. The names of the
+/// headers are in lower case.
+type HttpReply = { status: int, headers: [string: string], body: string }
+
+/// A header of the answer, however its name is written.
+fn (self: HttpReply) header(name: string) -> string? {
+    return self.headers[name.to_lower()]
+}
+
+/// Whether the status says that the request was done: 200 to 299.
+fn (self: HttpReply) ok() -> bool {
+    return self.status >= 200 and self.status < 300
+}
+
+/// The body, read as JSON into the type that is expected.
+fn (self: HttpReply) json<T>() -> T ! JsonError {
+    return T.from_json(self.body)?
+}
+
+/// Makes a request of another server, and returns its answer, whatever its status. The
+/// whole of it, from finding the server to the last of the body, has `timeout` to take.
+fn http__fetch(method: string, url: string, body: string = "", headers: [string: string] = [:], timeout: Duration = 30s) -> HttpReply ! HttpError {
+    var pairs: [string] = []
+    for (name, value) in headers {
+        pairs.push(name)
+        pairs.push(value)
+    }
+    if not __http_fetch(method, url, pairs, body, timeout.nanos()) {
+        kind := match __http_reply_kind() {
+            1 => HttpErrorKind.Address
+            3 => HttpErrorKind.Timeout
+            4 => HttpErrorKind.Protocol
+            _ => HttpErrorKind.Connection
+        }
+        fail HttpError { kind, message: __last_error() }
+    }
+    var found: [string: string] = [:]
+    for line in __http_reply_headers().split("\n") {
+        if (name, value) := line.cut(": ") {
+            // A header that comes twice is one header with both values.
+            if before := found[name] {
+                found[name] = before + ", " + value
+            } else {
+                found[name] = value
+            }
+        }
+    }
+    return HttpReply { status: __http_reply_status(), headers: found, body: __http_reply_body() }
+}
+
+fn h__typed(headers: [string: string], content_type: string) -> [string: string] {
+    var all := headers
+    if all["Content-Type"].is_none() and all["content-type"].is_none() {
+        all["Content-Type"] = content_type
+    }
+    return all
+}
+
+fn http__get(url: string, headers: [string: string] = [:], timeout: Duration = 30s) -> HttpReply ! HttpError {
+    return http__fetch("GET", url, "", headers, timeout)?
+}
+
+fn http__delete(url: string, headers: [string: string] = [:], timeout: Duration = 30s) -> HttpReply ! HttpError {
+    return http__fetch("DELETE", url, "", headers, timeout)?
+}
+
+fn http__post(url: string, body: string, content_type: string = "application/json", headers: [string: string] = [:], timeout: Duration = 30s) -> HttpReply ! HttpError {
+    return http__fetch("POST", url, body, h__typed(headers, content_type), timeout)?
+}
+
+fn http__put(url: string, body: string, content_type: string = "application/json", headers: [string: string] = [:], timeout: Duration = 30s) -> HttpReply ! HttpError {
+    return http__fetch("PUT", url, body, h__typed(headers, content_type), timeout)?
+}
+
+fn http__patch(url: string, body: string, content_type: string = "application/json", headers: [string: string] = [:], timeout: Duration = 30s) -> HttpReply ! HttpError {
+    return http__fetch("PATCH", url, body, h__typed(headers, content_type), timeout)?
 }
 
 // ---- std/log ----------------------------------------------------------------------------
@@ -2091,12 +2182,19 @@ fn JsonError._json_read(text: string, at: var int) -> JsonError ! JsonError {
 }
 
 fn (self: HttpError) _json_write(out: var string) {
-    out += "\{\"message\":" + __json_quote(self.message) + "}"
+    out += "\{\"kind\":\"{self.kind}\",\"message\":" + __json_quote(self.message) + "}"
 }
 
 fn HttpError._json_read(text: string, at: var int) -> HttpError ! JsonError {
-    fields := j__strings(text, var at, ["message"])?
-    return HttpError { message: fields[0] }
+    fields := j__strings(text, var at, ["kind", "message"])?
+    kind := match fields[0] {
+        "Listen" => HttpErrorKind.Listen
+        "Address" => HttpErrorKind.Address
+        "Timeout" => HttpErrorKind.Timeout
+        "Protocol" => HttpErrorKind.Protocol
+        _ => HttpErrorKind.Connection
+    }
+    return HttpError { kind, message: fields[1] }
 }
 
 fn (self: SqlError) _json_write(out: var string) {

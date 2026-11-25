@@ -37,6 +37,9 @@ pub enum Trust {
 
 type Ptr = *mut u8;
 
+/// What the system says of a read or a write on a socket whose time to wait is up.
+pub const AGAIN: i32 = if cfg!(target_os = "macos") { 35 } else { 11 };
+
 /// The functions of OpenSSL that are used, in the order of `NAMES`.
 #[repr(C)]
 struct Api {
@@ -285,11 +288,12 @@ pub unsafe fn connect(
                 while (api.err_get_error)() != 0 {}
                 say(why, &[b"the server's certificate is not to be trusted: ", reason])
             } else {
+                let slow = *errno_location() == AGAIN;
                 let len = complaint(api, &mut text);
-                let reason: &[u8] = if len == 0 {
-                    b"the server ended the connection"
-                } else {
-                    &text[..len]
+                let reason: &[u8] = match len {
+                    0 if slow => b"the server did not answer in time",
+                    0 => b"the server ended the connection",
+                    _ => &text[..len],
                 };
                 say(why, &[b"TLS could not be begun: ", reason])
             };
@@ -320,7 +324,9 @@ pub unsafe fn read(tls: *mut Tls, into: &mut [u8]) -> isize {
             match (api.ssl_get_error)((*tls).ssl, got) {
                 // The server said that it is done.
                 6 => return 0,
-                // More of the record is on its way.
+                // More of the record is on its way; unless the socket was given a time
+                // to wait and the time is up, which is -2.
+                2 | 3 if *errno_location() == AGAIN => return -2,
                 2 | 3 => continue,
                 _ => {
                     while (api.err_get_error)() != 0 {}
@@ -343,6 +349,7 @@ pub unsafe fn write_all(tls: *mut Tls, mut data: &[u8]) -> bool {
                 continue;
             }
             match (api.ssl_get_error)((*tls).ssl, sent) {
+                2 | 3 if *errno_location() == AGAIN => return false,
                 2 | 3 => continue,
                 _ => {
                     while (api.err_get_error)() != 0 {}

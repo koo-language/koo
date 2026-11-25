@@ -287,6 +287,10 @@ mod imp {
             }
         }
 
+        /// A wait for the socket to take more output is over when it has been told of
+        /// once, and must be asked for again if there is still output to write.
+        pub const ONCE: bool = true;
+
         /// Waits for the socket to take more output, once.
         pub unsafe fn want_write(queue: i32, fd: i32, tag: usize, _reading: bool) {
             unsafe { change(queue, fd as usize, EVFILT_WRITE, EV_ADD | EV_ONESHOT, 0, tag) };
@@ -423,6 +427,9 @@ mod imp {
         pub unsafe fn watch(queue: i32, fd: i32, tag: usize) {
             unsafe { control(queue, ADD, fd, interest(true, false), tag) };
         }
+
+        /// A wait for the socket to take more output lasts until `wrote` ends it.
+        pub const ONCE: bool = false;
 
         pub unsafe fn want_write(queue: i32, fd: i32, tag: usize, reading: bool) {
             unsafe { control(queue, MOD, fd, interest(reading, true), tag) };
@@ -1705,6 +1712,12 @@ mod imp {
                 return;
             }
             if e.writable {
+                // Where the wait was for once, it is over, and `flush` asks again if
+                // the socket still does not take everything. Without this an answer
+                // too long for two writes was never finished.
+                if sys::ONCE {
+                    conn(index).writing = false;
+                }
                 flush(index);
                 if !live(index) {
                     return;
