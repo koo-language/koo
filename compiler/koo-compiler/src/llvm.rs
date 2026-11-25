@@ -428,7 +428,11 @@ impl<'a> Gen<'a> {
     fn library_place(&mut self) -> (String, i64) {
         let name = self.p.functions[self.f.id].name.clone();
         // An assertion says the line of the test it is in, which is the place.
-        let named = if name.starts_with("test__") { None } else { library_name(&name) };
+        let named = if name.starts_with("test__") {
+            None
+        } else {
+            library_name(&name)
+        };
         match named {
             Some(name) => (self.string(&name), -1),
             None => (self.string("the prelude"), 0),

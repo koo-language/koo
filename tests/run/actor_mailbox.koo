@@ -63,7 +63,7 @@ fn main() {
             accepted += 1
         }
     }
-    print(accepted >= 4 and accepted < 20)
+    print(accepted >= 4 and accepted <= 6)
 
     // `send` waits for room, so none of these is lost.
     for i in 0..10 {

@@ -543,17 +543,12 @@ unsafe fn fresh_mail(slot: *mut Slot) -> *mut Job {
             (*slot).word.fetch_or(MAIL, AcqRel);
         }
         let mut oldest = core::ptr::null_mut();
-        let mut taken = 0;
         while !newest.is_null() {
             let next = (*newest).next;
             (*newest).next = oldest;
             oldest = newest;
             newest = next;
-            taken += 1;
         }
-        // There is room again, and the threads that waited for it are told.
-        (*slot).waiting.fetch_sub(taken, AcqRel);
-        make_room(slot);
         oldest
     }
 }
@@ -631,6 +626,10 @@ unsafe fn run_mail(slot: *mut Slot, me: &mut Thread, most: usize) {
             let job = inbox;
             inbox = (*job).next;
             handed(job);
+            // A letter waits until it is run: only then is there room for another, and
+            // the threads that waited for room are told.
+            (*slot).waiting.fetch_sub(1, AcqRel);
+            make_room(slot);
             // An actor that panicked once too often in a letter has no state to go on with.
             let wanted =
                 alive && runner != 0 && generation_of((*job).id) == generation && !(*me.held.add(at)).state.is_null();

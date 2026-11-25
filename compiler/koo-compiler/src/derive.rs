@@ -617,13 +617,15 @@ impl<'a> Deriver<'a> {
                      __actor_tell(id__, () -> {{\n            __actor_letter(next__, id__)\n            \
                      var cell__: [{state}] = __actor_take(id__, \"{called}\")\n            \
                      {local}\n            __actor_put(id__, cell__)\n        }}, \"{called}\")\n        return\n    }}\n\
-                     {pack}    __actor_send(self.home, \"{name} {{self.id}} send.{called}\", out__)\n}}\n\n\
+                     {pack}    \
+                     while __actor_ask(self.home, \"{name} {{self.id}} try.{called}\", out__) != \"true\" {{\n        \
+                     __sleep(1000000)\n    }}\n}}\n\n\
                      fn (self: {attempt}) {called}({typed}) -> bool {{\n    if __actor_local(self.home) {{\n        {frozen}        \
                      next__ := 0\n        id__ := self.id\n        \
                      return __actor_try_tell(id__, () -> {{\n            __actor_letter(next__, id__)\n            \
                      var cell__: [{state}] = __actor_take(id__, \"{called}\")\n            \
                      {local}\n            __actor_put(id__, cell__)\n        }})\n    }}\n\
-                     {pack}    __actor_send(self.home, \"{name} {{self.id}} send.{called}\", out__)\n    return true\n}}\n\n",
+                     {pack}    return __actor_ask(self.home, \"{name} {{self.id}} try.{called}\", out__) == \"true\"\n}}\n\n",
                     typed = params.join(", "),
                     local = call(&format!("{lower}___handle(id__, __actor_home())")),
                 );
@@ -672,9 +674,15 @@ impl<'a> Deriver<'a> {
             }
             arms.push_str("            }\n");
             if !valued {
+                // What another process tells: it is left for the actor if the actor has
+                // room, and the process is told whether it was. A process that means
+                // to wait for room asks again, so that this one, which answers for
+                // every actor, never waits on one of them.
                 let _ = write!(
                     arms,
-                    "            \"send.{called}\" => {{\n{read}                self.send.{called}({given})\n            }}\n"
+                    "            \"try.{called}\" => {{\n{read}                \
+                     if self.try_send.{called}({given}) {{\n                    __actor_reply(\"\", \"true\")\n                \
+                     }} else {{\n                    __actor_reply(\"\", \"false\")\n                }}\n            }}\n"
                 );
             }
         }

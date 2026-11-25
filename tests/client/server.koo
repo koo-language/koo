@@ -19,11 +19,51 @@ actor Visits {
     }
 }
 
+// An actor that takes its time, and lets four messages wait.
+@mailbox(4)
+actor Printer {
+    var printed: int = 0
+
+    fn page(n: int) {
+        time.sleep(100ms)
+        printed += 1
+    }
+
+    fn count() -> int {
+        return printed
+    }
+}
+
 type Echo = { method: string, path: string, body: string, agent: string, kind: string, token: string }
 
 fn main() ! http.Error {
     visits := Visits.start()
     var app := http.App.new()
+    // Twenty messages at once to an actor with room for four: whether there was room
+    // is the actor's to say, whichever process the handler is in.
+    printer := Printer.start()
+    app.get("/try", req -> {
+        var accepted := 0
+        for n in 0..20 {
+            if printer.try_send.page(n) {
+                accepted += 1
+            }
+        }
+        return http.text("{accepted}\n")
+    })
+    // Six that wait for room, and are all there when they are counted.
+    app.get("/send", req -> {
+        before := printer.count()
+        for n in 0..6 {
+            printer.send.page(n)
+        }
+        var after := printer.count()
+        while after < before + 6 {
+            time.sleep(10ms)
+            after = printer.count()
+        }
+        return http.text("{after - before}\n")
+    })
     app.get("/ratio", req -> {
         done := float.parse(req.query("done") else "0") else 0.0
         total := float.parse(req.query("total") else "0") else 0.0

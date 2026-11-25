@@ -1503,6 +1503,14 @@ fn a_stopping_server_answers_what_it_has_in_hand() {
     assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
     for workers in [1, 3] {
         let (mut server, port) = serve(&executable, workers, &dir);
+        // An actor's mail has room for what it says, from whichever process it is told:
+        // four wait, and a fifth is the one the actor is at.
+        let got = get(port, "/try");
+        let accepted: i64 = got.rsplit("\r\n\r\n").next().unwrap().trim().parse().unwrap();
+        assert!((4..=5).contains(&accepted), "with {workers} workers: {got}");
+        std::thread::sleep(std::time::Duration::from_millis(700));
+        let got = get(port, "/send");
+        assert!(got.ends_with("\r\n\r\n6\n"), "with {workers} workers: {got}");
         // A float that is not a number is itself when it comes back from an actor,
         // though the actor is in another process.
         for (asked, answer) in [
