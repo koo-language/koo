@@ -27,6 +27,24 @@ jobs:
             sleep 1
           done
           echo "KOO_TEST_POSTGRES=postgres://postgres:koo-ci@localhost:5432/postgres" >> "$GITHUB_ENV"
+      # The same tests again over TLS: a server with a certificate signed by an authority
+      # made here, which the tests are told to trust.
+      - name: PostgreSQL with TLS (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          mkdir -p "$RUNNER_TEMP/certs" && cd "$RUNNER_TEMP/certs"
+          openssl req -x509 -newkey rsa:2048 -nodes -days 2 -subj "/CN=koo test authority" -keyout ca.key -out ca.crt
+          openssl req -newkey rsa:2048 -nodes -subj "/CN=localhost" -keyout server.key -out server.csr
+          printf 'subjectAltName=DNS:localhost,IP:127.0.0.1\n' > names.cnf
+          openssl x509 -req -in server.csr -CA ca.crt -CAkey ca.key -CAcreateserial -days 2 -extfile names.cnf -out server.crt
+          chmod 644 server.key
+          docker run -d --name koo-postgres-tls -e POSTGRES_PASSWORD=koo-ci -p 5433:5432 -v "$PWD":/certs:ro postgres:16 \
+            sh -c 'cp -r /certs /own && chown -R postgres /own && chmod 600 /own/server.key && exec docker-entrypoint.sh postgres -c ssl=on -c ssl_cert_file=/own/server.crt -c ssl_key_file=/own/server.key'
+          for attempt in $(seq 60); do
+            docker exec koo-postgres-tls pg_isready -h 127.0.0.1 -U postgres && break
+            sleep 1
+          done
+          echo "KOO_TEST_POSTGRES_TLS=postgres://postgres:koo-ci@localhost:5433/postgres?sslmode=verify-full&sslrootcert=$PWD/ca.crt" >> "$GITHUB_ENV"
       - run: rustup toolchain install stable --profile minimal --component rustfmt,clippy
       - run: cargo fmt --check
       - run: cargo clippy --workspace --all-targets -- -D warnings

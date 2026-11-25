@@ -10,9 +10,9 @@
 //! one with connections, as a worker of a server is, has none: it makes its own.
 //!
 //! What is here of the protocol: the start-up message, the three ways PostgreSQL asks
-//! for a password (in the clear, as an MD5 digest, and by SCRAM-SHA-256), and the
-//! extended query messages, with every parameter and every value as text. What is not:
-//! TLS, so the database must be reached over a network that is trusted.
+//! for a password (in the clear, as an MD5 digest, and by SCRAM-SHA-256), the request
+//! for encryption, which `tls.rs` then provides, and the extended query messages, with
+//! every parameter and every value as text.
 
 use super::digest::{base64_decode, base64_encode, hex, hmac_sha256, md5, pbkdf2_sha256, sha256};
 use super::thread::{Gate, me};
@@ -174,6 +174,8 @@ struct Conn {
     /// What has been read from the server and not yet looked at.
     input: Buf,
     at: usize,
+    /// The encryption of the connection, if it has one (`tls.rs`).
+    tls: *mut tls::Tls,
 }
 
 struct Db {
@@ -185,6 +187,12 @@ struct Db {
     database: Buf,
     /// Settings for each session, as `options` in the address gives them.
     options: Buf,
+    /// Whether a connection is encrypted, as `sslmode` in the address says: not at all
+    /// (0), if the server will (1), always (2), always and with a certificate that an
+    /// authority vouches for (3), and that names the host as well (4).
+    secure: u8,
+    /// A file of the authorities to trust, in place of the system's.
+    authorities: Buf,
     limit: usize,
     conns: [Conn; MOST_CONNS],
 }
@@ -197,6 +205,7 @@ const NO_CONN: Conn = Conn {
     serial: 0,
     input: Buf::new(),
     at: 0,
+    tls: core::ptr::null_mut(),
 };
 
 const NO_DB: Db = Db {
@@ -207,6 +216,8 @@ const NO_DB: Db = Db {
     password: Buf::new(),
     database: Buf::new(),
     options: Buf::new(),
+    secure: 1,
+    authorities: Buf::new(),
     limit: 0,
     conns: [NO_CONN; MOST_CONNS],
 };
@@ -522,6 +533,33 @@ unsafe fn send_all(fd: i32, mut data: &[u8]) -> bool {
     true
 }
 
+/// Writes to a connection, through its encryption if it has one.
+unsafe fn send(conn: &Conn, data: &[u8]) -> bool {
+    unsafe {
+        if conn.tls.is_null() {
+            send_all(conn.fd, data)
+        } else {
+            tls::write_all(conn.tls, data)
+        }
+    }
+}
+
+/// Ends a connection: its encryption, with a word to the server if `polite`, and its
+/// socket. A process that was forked is not polite about the connections of its
+/// parent, which are still the parent's.
+unsafe fn hang_up(conn: &mut Conn, polite: bool) {
+    unsafe {
+        if !conn.tls.is_null() {
+            tls::close(conn.tls, polite);
+            conn.tls = core::ptr::null_mut();
+        }
+        if conn.fd >= 0 {
+            close(conn.fd);
+            conn.fd = -1;
+        }
+    }
+}
+
 /// Reads until `conn.input` holds `need` bytes past `conn.at`.
 unsafe fn fill(conn: &mut Conn, need: usize) -> bool {
     unsafe {
@@ -531,11 +569,17 @@ unsafe fn fill(conn: &mut Conn, need: usize) -> bool {
         }
         while conn.input.len - conn.at < need {
             conn.input.room(need.max(8192));
-            let n = read(
-                conn.fd,
-                conn.input.ptr.add(conn.input.len),
-                conn.input.cap - conn.input.len,
-            );
+            let room =
+                core::slice::from_raw_parts_mut(conn.input.ptr.add(conn.input.len), conn.input.cap - conn.input.len);
+            let n = if conn.tls.is_null() {
+                read(conn.fd, room.as_mut_ptr(), room.len())
+            } else {
+                match tls::read(conn.tls, room) {
+                    // An error of the encryption is not one to try again after.
+                    n if n < 0 => return false,
+                    n => n,
+                }
+            };
             if n > 0 {
                 conn.input.len += n as usize;
             } else if n == 0 || *errno_location() != EINTR {
@@ -727,7 +771,7 @@ unsafe fn authenticate(conn: &mut Conn, db: &Db) -> bool {
                     break false;
                 }
             }
-            if out.len > 0 && !send_all(conn.fd, out.bytes()) {
+            if out.len > 0 && !send(conn, out.bytes()) {
                 failed(CONNECTION, &[b"the connection was lost while it was being set up"]);
                 break false;
             }
@@ -796,6 +840,53 @@ unsafe fn establish(conn: &mut Conn, db: &Db) -> bool {
         conn.fd = fd;
         conn.at = 0;
         conn.input.len = 0;
+        // Encryption is asked for before anything else is said: the server answers
+        // with one letter, `S` if it will, and then TLS begins on the same socket.
+        let wanted = match db.secure {
+            0 => false,
+            1 => tls::available(),
+            _ => true,
+        };
+        if wanted {
+            if !tls::available() {
+                failed(CONNECTION, &[tls::missing()]);
+                hang_up(conn, false);
+                return false;
+            }
+            let mut answer = [0u8; 1];
+            let asked = send_all(fd, &[0, 0, 0, 8, 0x04, 0xd2, 0x16, 0x2f]);
+            if !asked || read(fd, answer.as_mut_ptr(), 1) != 1 {
+                failed(
+                    CONNECTION,
+                    &[b"the server closed the connection while it was being set up"],
+                );
+                hang_up(conn, false);
+                return false;
+            }
+            if answer[0] == b'S' {
+                let trust = match db.secure {
+                    3 => tls::Trust::Authority,
+                    4 => tls::Trust::Host,
+                    _ => tls::Trust::Any,
+                };
+                let mut why = [0u8; 300];
+                match tls::connect(fd, host, trust, db.authorities.bytes(), &mut why) {
+                    Ok(made) => conn.tls = made,
+                    Err(len) => {
+                        failed(CONNECTION, &[&why[..len]]);
+                        hang_up(conn, false);
+                        return false;
+                    }
+                }
+            } else if db.secure >= 2 {
+                failed(
+                    CONNECTION,
+                    &[b"the server does not encrypt its connections, and the address asks for it with `sslmode`"],
+                );
+                hang_up(conn, false);
+                return false;
+            }
+        }
         let mut out = Buf::new();
         let mut start = Message::begin(&mut out, 0);
         start.int32(196608); // version 3.0
@@ -816,7 +907,7 @@ unsafe fn establish(conn: &mut Conn, db: &Db) -> bool {
         }
         start.bytes(&[0]);
         start.end();
-        let sent = send_all(fd, out.bytes());
+        let sent = send(conn, out.bytes());
         out.release();
         if !sent {
             failed(CONNECTION, &[b"the connection was lost while it was being set up"]);
@@ -842,8 +933,7 @@ unsafe fn establish(conn: &mut Conn, db: &Db) -> bool {
             }
         }
         if !ready {
-            close(fd);
-            conn.fd = -1;
+            hang_up(conn, false);
         }
         ready
     }
@@ -861,10 +951,7 @@ unsafe fn adopt() {
             POOL.open();
             for db in DBS.iter_mut() {
                 for conn in db.conns.iter_mut() {
-                    if conn.fd >= 0 {
-                        close(conn.fd);
-                    }
-                    conn.fd = -1;
+                    hang_up(conn, false);
                     conn.busy = false;
                     conn.transaction = 0;
                 }
@@ -914,9 +1001,8 @@ unsafe fn check_out(db: &mut Db) -> Option<&mut Conn> {
 unsafe fn give_back(conn: &mut Conn, broken: bool) {
     unsafe {
         POOL.lock();
-        if broken && conn.fd >= 0 {
-            close(conn.fd);
-            conn.fd = -1;
+        if broken {
+            hang_up(conn, false);
         }
         conn.busy = false;
         POOL.wake_one();
@@ -969,18 +1055,32 @@ pub unsafe extern "C" fn koo_sql_open(url: *const Header, limit: i64) -> i64 {
             Some(at) => (&rest[..at], &rest[at + 1..]),
             None => (rest, &b""[..]),
         };
-        if options.split(|byte| *byte == b'&').any(|option| {
-            matches!(
-                option,
-                b"sslmode=require" | b"sslmode=verify-ca" | b"sslmode=verify-full"
-            )
-        }) {
-            failed(
-                CONNECTION,
-                &[b"this address asks for TLS, which `std/sql` does not speak yet: connect over a trusted network with `sslmode=disable`"],
-            );
-            return -1;
-        }
+        // Whether connections are encrypted, by the names PostgreSQL gives the ways.
+        let setting = |name: &[u8]| {
+            options
+                .split(|byte| *byte == b'&')
+                .find_map(|option| option.strip_prefix(name)?.strip_prefix(b"="))
+        };
+        let authorities = setting(b"sslrootcert").unwrap_or(b"");
+        let secure = match setting(b"sslmode") {
+            None | Some(b"prefer") => 1,
+            Some(b"disable") | Some(b"allow") => 0,
+            // With authorities given, to encrypt is also to ask who is there.
+            Some(b"require") if authorities.is_empty() => 2,
+            Some(b"require") | Some(b"verify-ca") => 3,
+            Some(b"verify-full") => 4,
+            Some(other) => {
+                failed(
+                    CONNECTION,
+                    &[
+                        b"`",
+                        other,
+                        b"` is not an `sslmode`: it is `disable`, `prefer`, `require`, `verify-ca` or `verify-full`",
+                    ],
+                );
+                return -1;
+            }
+        };
         let (who, place) = match rest.iter().rposition(|byte| *byte == b'@') {
             Some(at) => (&rest[..at], &rest[at + 1..]),
             None => (&b""[..], rest),
@@ -1032,6 +1132,8 @@ pub unsafe extern "C" fn koo_sql_open(url: *const Header, limit: i64) -> i64 {
             .find_map(|option| option.strip_prefix(b"options="))
             .unwrap_or(b"");
         unescaped(settings, &mut db.options);
+        unescaped(authorities, &mut db.authorities);
+        db.secure = secure;
         db.port = port_number as u16;
         db.limit = (limit.max(1) as usize).min(MOST_CONNS);
         // One connection now, so that an address that leads nowhere is known at once.
@@ -1053,7 +1155,7 @@ pub unsafe extern "C" fn koo_sql_open(url: *const Header, limit: i64) -> i64 {
 /// that is read, so that the connection is good for the next statement.
 unsafe fn exchange(conn: &mut Conn, request: &[u8], out: &mut Outcome) -> Result<bool, bool> {
     unsafe {
-        if !send_all(conn.fd, request) {
+        if !send(conn, request) {
             return Err(true);
         }
         let mut ok = true;
@@ -1289,8 +1391,7 @@ pub unsafe extern "C" fn koo_sql_run(
         ran.unwrap_or_else(|_| {
             // The transaction is lost with its connection; `koo_sql_end` gives the
             // place in the pool back.
-            close(conn.fd);
-            conn.fd = -1;
+            hang_up(conn, false);
             failed(
                 CONNECTION,
                 &[b"the connection to the database was lost, and the transaction with it"],
@@ -1481,9 +1582,8 @@ pub unsafe fn at_exit() {
         for db in DBS.iter_mut() {
             for conn in db.conns.iter_mut() {
                 if conn.fd >= 0 {
-                    let _ = send_all(conn.fd, &[b'X', 0, 0, 0, 4]);
-                    close(conn.fd);
-                    conn.fd = -1;
+                    let _ = send(conn, &[b'X', 0, 0, 0, 4]);
+                    hang_up(conn, true);
                 }
                 conn.input.release();
             }
@@ -1492,6 +1592,7 @@ pub unsafe fn at_exit() {
             db.password.release();
             db.database.release();
             db.options.release();
+            db.authorities.release();
             db.used = false;
         }
         thread::every(|thread| {

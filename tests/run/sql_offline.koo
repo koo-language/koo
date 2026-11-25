@@ -31,7 +31,7 @@ fn main() {
         "mysql://localhost/app",
         "postgres://app@localhost:1/app",
         "postgres://app@localhost:port/app",
-        "postgres://app@db.example.com/app?sslmode=require",
+        "postgres://app@localhost:1/app?sslmode=sometimes",
     ] {
         match postgres.connect(url) {
             db => print("connected?")
@@ -50,4 +50,4 @@ fn main() {
 //= Connection: the address of a database begins with `postgres://`: `postgres://user:password@host:5432/name`
 //= Connection: cannot connect to localhost:1: Connection refused
 //= Connection: `port` is not a port
-//= Connection: this address asks for TLS, which `std/sql` does not speak yet: connect over a trusted network with `sslmode=disable`
+//= Connection: `sometimes` is not an `sslmode`: it is `disable`, `prefer`, `require`, `verify-ca` or `verify-full`

@@ -173,6 +173,7 @@ fn actors_share_only_what_is_frozen() {
             let said = String::from_utf8_lossy(&built.stderr);
             if said.contains("tsan") || said.contains("sanitizer") {
                 eprintln!("no ThreadSanitizer here: actors were not checked for races");
+                let _ = std::fs::remove_dir_all(&dir);
                 return;
             }
             failures.push(format!("{}: does not build\n{said}", path.display()));
@@ -190,6 +191,7 @@ fn actors_share_only_what_is_frozen() {
             // let it arrange the memory of the process: then nothing was checked.
             if said.contains("ThreadSanitizer: CHECK failed") || said.contains("FATAL: ThreadSanitizer") {
                 eprintln!("ThreadSanitizer cannot run here: actors were not checked for races");
+                let _ = std::fs::remove_dir_all(&dir);
                 return;
             }
         }
@@ -266,7 +268,9 @@ fn empty_book_database(dir: &Path, url: &str) -> Result<(), String> {
     }
 }
 
-/// The programs in `tests/sql` do, against a real database, what they say they do.
+/// The programs in `tests/sql` do, against a real database, what they say they do; and
+/// again over TLS, if `KOO_TEST_POSTGRES_TLS` is the address of a server that speaks it,
+/// with the `sslmode` and the `sslrootcert` to use.
 #[test]
 fn a_database_answers_queries() {
     let Some(url) = test_database() else {
@@ -274,11 +278,32 @@ fn a_database_answers_queries() {
         return;
     };
     let _alone = DATABASE.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    let encrypted = std::env::var("KOO_TEST_POSTGRES_TLS")
+        .ok()
+        .filter(|url| !url.is_empty());
     let mut failures = Vec::new();
     for path in programs("tests/sql") {
         let source = std::fs::read_to_string(&path).unwrap();
         let expected = expectation(&source);
         let name = path.file_name().unwrap().to_string_lossy().to_string();
+        if let Some(encrypted) = &encrypted {
+            let output = Command::new(env!("CARGO_BIN_EXE_koo"))
+                .arg("run")
+                .arg(&path)
+                .env("KOO_LEAKS", "1")
+                .env("KOO_TEST_POSTGRES", encrypted)
+                .output()
+                .expect("koo runs");
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            if stdout != expected.stdout || output.status.code() != Some(expected.exit) {
+                failures.push(format!(
+                    "{name} (over TLS): exit status {:?}\n--- expected\n{}--- found\n{stdout}--- stderr\n{}",
+                    output.status.code(),
+                    expected.stdout,
+                    String::from_utf8_lossy(&output.stderr)
+                ));
+            }
+        }
         for release in [false, true] {
             let mut command = Command::new(env!("CARGO_BIN_EXE_koo"));
             command
@@ -1068,7 +1093,19 @@ fn post(port: u16, path: &str, body: &str) -> String {
 struct Server(std::process::Child);
 
 impl Drop for Server {
+    /// Asks the server to stop, so that it can tidy up after itself, and kills it only
+    /// if it has not stopped in two seconds.
     fn drop(&mut self) {
+        if !matches!(self.0.try_wait(), Ok(None)) {
+            return;
+        }
+        let _ = Command::new("kill").args(["-TERM", &self.0.id().to_string()]).status();
+        for _ in 0..200 {
+            if !matches!(self.0.try_wait(), Ok(None)) {
+                return;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
         let _ = self.0.kill();
         let _ = self.0.wait();
     }

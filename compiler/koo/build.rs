@@ -17,6 +17,7 @@ fn main() {
         "log.rs",
         "pg.rs",
         "thread.rs",
+        "tls.rs",
     ] {
         println!("cargo:rerun-if-changed={}", source.with_file_name(file).display());
     }

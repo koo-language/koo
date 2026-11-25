@@ -885,6 +885,7 @@ Account { name: "bob", balance: 50 }
 - `Account.from_row(row)` reads a struct from a row, each field from the column of its name. A row also gives one value at a time: `row.int("balance")`.
 - `db.transaction` commits when its function returns and rolls back when it fails, and fails with the function's own error: here `Insufficient` or a `sql.Error`.
 - Every failure of the database is a `sql.Error`, whose `kind` says which sort: `Connection`, `Constraint`, `Syntax`, `Serialization`, `Timeout`, `NoRows`.
+- The connection is encrypted when the server offers it, and `?sslmode=verify-full` in the address insists on it and on the server's certificate. The TLS is the system's OpenSSL, loaded when it is first needed.
 - Passing a `string` where a query is wanted is a compile error. `sql.Query.raw(text)` is there for the rare statement that must be built as text.
 
 The program reads the address of its database from `DATABASE_URL`, as `postgres://user:password@host:5432/name`. [Chapter 11 of the book](book/11-database.md) has the rest.
@@ -1166,4 +1167,4 @@ None of them can corrupt memory. Errors you expect, such as a missing file or ba
 
 ## What is not here yet
 
-The compiler does not build these parts of the specification yet, and says so if you use them: importing one package of your own from another, parts of the standard library (an HTTP client, TLS), tasks, channels and `select`, interface values (a list of different shapes), `Decimal`, resources and `defer`, and the WebAssembly targets. The [README](../README.md) keeps the current list.
+The compiler does not build these parts of the specification yet, and says so if you use them: importing one package of your own from another, parts of the standard library (an HTTP client, HTTPS in the server), tasks, channels and `select`, interface values (a list of different shapes), `Decimal`, resources and `defer`, and the WebAssembly targets. The [README](../README.md) keeps the current list.

@@ -388,6 +388,18 @@ fn build(args: &[String], mode: Mode, program_args: &[std::ffi::OsString]) -> Ex
     } else {
         ir
     };
+    // How a program loads a library, which the support library does for TLS
+    // (`koo-rt/src/tls.rs`): by the system's loader, or, in a program that is linked
+    // statically and has none, not at all.
+    let mut ir = ir;
+    ir.push_str(if fixed {
+        "define ptr @koo_dlopen(ptr %name) {\n  ret ptr null\n}\n\
+         define ptr @koo_dlsym(ptr %library, ptr %name) {\n  ret ptr null\n}\n"
+    } else {
+        "declare ptr @dlopen(ptr, i32)\ndeclare ptr @dlsym(ptr, ptr)\n\
+         define ptr @koo_dlopen(ptr %name) {\n  %library = call ptr @dlopen(ptr %name, i32 2)\n  ret ptr %library\n}\n\
+         define ptr @koo_dlsym(ptr %library, ptr %name) {\n  %found = call ptr @dlsym(ptr %library, ptr %name)\n  ret ptr %found\n}\n"
+    });
     let prepared = work_dir().and_then(|dir| {
         let ir_path = dir.path.join("program.ll");
         let runtime = dir.path.join("libkoo_rt.a");
@@ -425,11 +437,13 @@ fn build(args: &[String], mode: Mode, program_args: &[std::ffi::OsString]) -> Ex
     if !cfg!(target_os = "macos") {
         clang.arg("-pthread");
     }
+    let loads = !fixed && !cfg!(target_os = "macos");
     let status = clang
         .arg(if release { "-O3" } else { "-O0" })
         .arg("-Wno-override-module")
         .arg(&ir_path)
         .arg(&runtime)
+        .args(loads.then_some("-ldl"))
         .arg("-o")
         .arg(&executable)
         .status();

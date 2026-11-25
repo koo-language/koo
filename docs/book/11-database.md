@@ -242,7 +242,7 @@ The `message` says what happened, in the server's words when it is the server th
 | `Constraint` | the statement would have broken a rule of the table: a duplicate key, a missing reference, a NULL where none is allowed |
 | `Syntax` | the statement is wrong: bad SQL, or a table or column that does not exist |
 | `Serialization` | the transaction could not be completed beside another, and may be tried again (Section 11.5) |
-| `Timeout` | the statement ran longer than it was allowed, or waited too long for a lock (Section 11.7) |
+| `Timeout` | the statement ran longer than it was allowed, or waited too long for a lock (Section 11.8) |
 | `NoRows` | `query_row` found no row |
 | `Other` | anything else, including a value in a row that is not of the type asked for |
 
@@ -577,9 +577,27 @@ A statement in a text block (Section 2.3) may run over as many lines as it likes
 
 Two things about a server and its database follow from how the server runs (Section 10.7). Each worker is a process, and a connection belongs to the process that made it, so each worker has a pool of its own, which it fills as it needs: the limit given to `connect` is a limit for each worker, and the database sees as many connections as all of them together have made. And a worker that waits for the database answers no other request meanwhile, so the number of statements a server has in hand at one time is, for now, the number of its workers. A server whose handlers spend most of their time waiting for the database is therefore given more workers than the machine has processors, as `app.serve(port: 8080, workers: 32)`: a worker that is waiting costs the machine little.
 
-## 11.7 What Is Not There
+## 11.7 Encryption
 
-The package speaks to PostgreSQL and to nothing else yet. It does not encrypt: an address that asks for TLS, with `sslmode=require`, is refused with an error that says so, and the database should be reached over a network that is trusted, as it is when both run in one private network. It proves who it is by any of the three ways PostgreSQL asks for a password, of which the default, SCRAM-SHA-256, never sends the password itself.
+A database on the same machine, or in the same private network, may be spoken to in the clear. One that is reached across a network that others share must not be, and the databases that are rented by the hour refuse to be. Whether what passes between a program and its database is encrypted is said in the address, with `sslmode`, by the names PostgreSQL itself uses:
+
+| | |
+| --- | --- |
+| `?sslmode=disable` | never |
+| `?sslmode=prefer` | if the server will; this is what an address that says nothing means |
+| `?sslmode=require` | always, or the connection fails; but whoever answers is believed to be the database |
+| `?sslmode=verify-ca` | always, and the server must show a certificate that an authority vouches for |
+| `?sslmode=verify-full` | the same, and the certificate must be that of the host in the address |
+
+Only the last two keep out someone who stands between the program and the database and pretends to be each to the other, and `verify-full` is the one to use across a network that is not one's own. The authorities are those the system trusts, or, with `&sslrootcert=/path/to/file`, the ones whose certificates are in a file, which is how a database with a certificate of one's own making is trusted.
+
+The encryption is TLS, and it is not built into a program: it is done by the OpenSSL that is installed on the machine where the program runs, found when a connection first needs it. On Linux that is the library `libssl.so.3`, which most systems have and a small container may have to be given (on Debian and Ubuntu it is the package `libssl3`, and the authorities are the package `ca-certificates`); on macOS, the one that Homebrew installs as `openssl@3`. A program built with `--static` cannot load a library, and so cannot encrypt: with `prefer` it connects without, as does any program on a machine with no OpenSSL, and with the three stricter modes it fails with an error that says why.
+
+The password is safe in either case from someone who only listens. PostgreSQL asks for it in one of three ways, and the usual one, SCRAM-SHA-256, never sends the password itself; the package answers whichever it is asked.
+
+## 11.8 What Is Not There
+
+The package speaks to PostgreSQL and to nothing else yet.
 
 The rows of a query arrive all at once, as a list, and cannot yet be read one at a time as the server sends them; a statement that would return a million rows should be given a `limit`. A value in a row is read as one of the five types of Section 11.2: a column of another type, such as an array or a `numeric` of more digits than a `float` holds, is read as a `string` in the form PostgreSQL writes it, or cast in the statement to something that fits. Settings for a session, such as a limit on how long a statement may run, go in the address, as `?options=-c%20statement_timeout%3D5s`, where `%20` is a space and `%3D` an equals sign.
 
