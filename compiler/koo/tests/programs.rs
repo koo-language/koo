@@ -1786,6 +1786,14 @@ fn a_server_answers_requests() {
         &post(port, "/orders", "not json"),
         &["400 Bad Request", "expected an object"],
     );
+    // A header that a handler sets and the server writes too is there once.
+    let typed = get(port, "/typed");
+    has(
+        &typed,
+        &["Content-Type: text/csv\r\n", "Content-Length: 4\r\n", "X-Rows: 1\r\n"],
+    );
+    assert_eq!(typed.to_lowercase().matches("content-type").count(), 1, "{typed}");
+    assert_eq!(typed.to_lowercase().matches("content-length").count(), 1, "{typed}");
     // A list for a body, and a map; the path to a mistake begins at its place in them.
     has(
         &post(port, "/batch", r#"[{"sku": "x"}, {"sku": "y", "qty": 3}]"#),

@@ -1488,10 +1488,25 @@ fn (self: HttpRequest) json<T>() -> T ! JsonError {
 type HttpResponse = { status: int, content_type: string, headers: string, body: string, file: string = "" }
 
 /// The response with one more header. A line break in a name or a value would begin
-/// another header, so there is none in what is sent.
+/// another header, so there is none in what is sent. The type of the body is one
+/// header, whoever sets it, and the headers that say how the response is carried are
+/// the server's to write: a second of any of them would contradict the first.
 fn (self: HttpResponse) header(name: string, value: string) -> HttpResponse {
-    name_sent := name.replace("\r", "").replace("\n", "").replace(":", "")
+    name_sent := name.replace("\r", "").replace("\n", "").replace(":", "").trim()
     value_sent := value.replace("\r", "").replace("\n", "")
+    match name_sent.to_lower() {
+        "content-type" => {
+            return HttpResponse {
+                status: self.status,
+                content_type: value_sent,
+                headers: self.headers,
+                body: self.body,
+                file: self.file,
+            }
+        }
+        "content-length" | "transfer-encoding" | "connection" | "date" => { return self }
+        _ => {}
+    }
     return HttpResponse {
         status: self.status,
         content_type: self.content_type,

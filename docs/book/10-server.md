@@ -126,7 +126,7 @@ A response is a value, made by one of these functions:
 | `http.redirect(to)` | a redirection to another address |
 | `http.file(path)` | a file, sent as it is |
 
-Each takes an optional `status:`, where the default is not wanted. A response has a method `header(name, value)` that returns the response with a header added, and `cookie(name, value)` that returns it with a cookie set.
+Each takes an optional `status:`, where the default is not wanted. A response has a method `header(name, value)` that returns the response with a header added, and `cookie(name, value)` that returns it with a cookie set. A header `Content-Type` takes the place of the type the response had, so there is never more than one; the length of the body and the other headers that say how the response is carried are written by the server, whatever a handler adds.
 
 ```koo
 import std/http

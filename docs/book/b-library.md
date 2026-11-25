@@ -405,7 +405,7 @@ A handler is a `fn(http.Request) -> http.Response ! Failure`.
 | `http.status(status: int, message: string = "")` | a status, with a message as the body |
 | `http.redirect(to: string, status: int = 302)` | a redirection |
 | `http.file(path: string, status: int = 200)` | a file |
-| `response.header(name: string, value: string) -> http.Response` | the response with a header added |
+| `response.header(name: string, value: string) -> http.Response` | the response with a header added; `Content-Type` replaces the type the response had, and `Content-Length`, `Transfer-Encoding`, `Connection` and `Date` are the server's to write and are left out |
 | `response.cookie(name: string, value: string, max_age: int = -1) -> http.Response` | the response with a cookie set |
 | `response.with_status(status: int) -> http.Response` | the response with another status |
 

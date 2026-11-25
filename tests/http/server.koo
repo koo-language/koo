@@ -66,6 +66,8 @@ fn main() ! http.Error {
         }
         return http.text("{counts.len} named, {known} counted")
     })
+    // The type of a body is said once, and how long it is only by the server.
+    app.get("/typed", req -> http.text("a,b\n").header("content-type", "text/csv").header("Content-Length", "99").header("X-Rows", "1"))
     app.get("/files/*", req -> http.text("file {req.path}"))
     app.any("/any", req -> http.text(req.method))
     app.files("/static", os.env("STATIC") else "public")
