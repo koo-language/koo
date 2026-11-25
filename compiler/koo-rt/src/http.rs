@@ -123,6 +123,7 @@ mod stub {
         _: *const Header,
         _: *const Header,
         _: *const Header,
+        _: *const Header,
     ) {
     }
 }
@@ -150,6 +151,8 @@ mod imp {
         fn setrlimit(resource: i32, limit: *const [u64; 2]) -> i32;
         fn getrlimit(resource: i32, limit: *mut [u64; 2]) -> i32;
         fn opendir(path: *const u8) -> *mut u8;
+        fn realpath(path: *const u8, resolved: *mut u8) -> *mut u8;
+        fn strlen(text: *const u8) -> usize;
         fn closedir(directory: *mut u8) -> i32;
         fn fseek(file: *mut u8, offset: i64, whence: i32) -> i32;
         fn ftell(file: *mut u8) -> i64;
@@ -2883,6 +2886,7 @@ mod imp {
         content_type: *const Header,
         extra: *const Header,
         path: *const Header,
+        root: *const Header,
     ) {
         unsafe {
             let Some((index, keep)) = answering(id) else { return };
@@ -2908,11 +2912,38 @@ mod imp {
             };
             let name = c_string(path);
             let directory = opendir(name);
+            // A file that is served from a directory is in the directory, where it
+            // really is and not only by its name: a link that leads out of the
+            // directory leads to nothing that is served.
+            let within = text(root).is_empty() || {
+                let kept = c_string(root);
+                let (really, bounds) = (
+                    realpath(name, core::ptr::null_mut()),
+                    realpath(kept, core::ptr::null_mut()),
+                );
+                free(kept);
+                let inside_of = !really.is_null() && !bounds.is_null() && {
+                    let file = core::slice::from_raw_parts(really, strlen(really));
+                    let bounds = core::slice::from_raw_parts(bounds, strlen(bounds));
+                    file.len() > bounds.len()
+                        && file.starts_with(bounds)
+                        && (bounds == b"/" || file[bounds.len()] == b'/')
+                };
+                if !really.is_null() {
+                    free(really);
+                }
+                if !bounds.is_null() {
+                    free(bounds);
+                }
+                inside_of
+            };
             free(name);
-            let file = if directory.is_null() {
+            let file = if directory.is_null() && within {
                 open(path, c"rb")
             } else {
-                closedir(directory);
+                if !directory.is_null() {
+                    closedir(directory);
+                }
                 core::ptr::null_mut()
             };
             let size = if file.is_null() || fseek(file, 0, 2) != 0 {

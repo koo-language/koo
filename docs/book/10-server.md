@@ -456,7 +456,7 @@ Not Found
 Not Found
 ```
 
-`app.files(prefix, directory)` serves the files under a directory at the paths under a prefix, with `index.html` for a directory itself, the one at the prefix or any inside it, and tells the client the type of each file from its name. A path cannot climb out of the directory with `..`, as the last request tried to.
+`app.files(prefix, directory)` serves the files under a directory at the paths under a prefix, with `index.html` for a directory itself, the one at the prefix or any inside it; what is served is what is really in the directory, so a link in it is followed while it leads to something inside, and is nothing when it leads out, and tells the client the type of each file from its name. A path cannot climb out of the directory with `..`, as the last request tried to.
 
 On Linux, a server can be built so that the executable needs nothing else to be installed where it runs:
 
@@ -549,8 +549,6 @@ Headers go in a map, `headers: ["Authorization": "Bearer {token}"]`, and `http.f
 A URL that begins `https` is asked over TLS, and the server's certificate must be one that the system's authorities vouch for and must name the host: there is no way to ask for less. The TLS is the one that the database package uses, with what Section 11.7 says of it.
 
 ## 10.9 What Is Not There
-
-`app.files` keeps a path from climbing out of its directory with `..`, but it follows a link that is in the directory to wherever the link leads: what is put in a directory that is served is served, links and all.
 
 The server speaks HTTP/1.1. It does not speak HTTPS or HTTP/2; where those are needed, it runs behind a proxy that does, which is how most services are deployed in any case. A body, of a request or a response, is handled whole, and cannot yet be read or written a piece at a time.
 

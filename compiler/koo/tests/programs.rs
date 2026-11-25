@@ -1810,6 +1810,10 @@ fn a_server_answers_requests() {
     std::fs::write(files.join("docs/index.html"), "<h1>docs</h1>").unwrap();
     std::fs::write(files.join("blob.bin"), [0u8, 159, 146, 150]).unwrap();
     std::fs::write(dir.join("secret.txt"), "not to be served").unwrap();
+    // A link that stays in the directory, and two that lead out of it.
+    std::os::unix::fs::symlink("css", files.join("styles")).unwrap();
+    std::os::unix::fs::symlink("../secret.txt", files.join("leak.txt")).unwrap();
+    std::os::unix::fs::symlink("..", files.join("up")).unwrap();
 
     let (child, port) = serve(&executable, 1, &files);
     let has = |answer: &str, parts: &[&str]| {
@@ -2034,6 +2038,20 @@ fn a_server_answers_requests() {
         &["application/octet-stream", "Content-Length: 4\r\n"],
     );
     has(&get(port, "/static/missing.txt"), &["404 Not Found"]);
+    // What is served is what is really in the directory: a link is followed while it
+    // stays inside, and leads to nothing when it leads out.
+    has(&get(port, "/static/styles/site.css"), &["200 OK", "body { margin: 0 }"]);
+    has(
+        &get(port, "/static/up/public/index.html"),
+        &["200 OK", "<h1>index</h1>"],
+    );
+    for leading_out in ["/static/leak.txt", "/static/up/secret.txt"] {
+        let answer = get(port, leading_out);
+        assert!(
+            answer.starts_with("HTTP/1.1 404 ") && !answer.contains("not to be served"),
+            "{leading_out}: {answer}"
+        );
+    }
     for climbing in [
         "/static/../secret.txt",
         "/static/%2e%2e/secret.txt",

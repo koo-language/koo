@@ -1581,7 +1581,9 @@ fn (self: HttpRequest) json<T>() -> T ! JsonError {
 ///
 /// A body of bytes that need not be text is kept apart, in `_raw`, where no program
 /// can take it for a string.
-type HttpResponse = { status: int, content_type: string, headers: string, body: string, file: string = "", _raw: [byte] = [] }
+/// A file that `app.files` serves is one of a directory, `_root`, which it must
+/// really be in.
+type HttpResponse = { status: int, content_type: string, headers: string, body: string, file: string = "", _raw: [byte] = [], _root: string = "" }
 
 /// The response with one more header. A line break in a name or a value would begin
 /// another header, so there is none in what is sent. The type of the body is one
@@ -1599,6 +1601,7 @@ fn (self: HttpResponse) header(name: string, value: string) -> HttpResponse {
                 body: self.body,
                 file: self.file,
                 _raw: self._raw,
+                _root: self._root,
             }
         }
         // A header has a name.
@@ -1612,6 +1615,7 @@ fn (self: HttpResponse) header(name: string, value: string) -> HttpResponse {
         body: self.body,
         file: self.file,
         _raw: self._raw,
+        _root: self._root,
     }
 }
 
@@ -1633,6 +1637,7 @@ fn (self: HttpResponse) with_status(status: int) -> HttpResponse {
         body: self.body,
         file: self.file,
         _raw: self._raw,
+        _root: self._root,
     }
 }
 
@@ -1724,8 +1729,8 @@ fn (self: var HttpApp) delete(path: string, handler: take fn(HttpRequest) -> Htt
 fn (self: var HttpApp) files(path: string, directory: string) {
     self.route("GET", "{path}/*", req -> {
         rest := req.rest() else return http__status(404, "Not Found")
-        if rest == "" or rest.ends_with("/") { return http__file("{directory}/{rest}index.html") }
-        return http__file("{directory}/{rest}")
+        path := if rest == "" or rest.ends_with("/") { "{directory}/{rest}index.html" } else { "{directory}/{rest}" }
+        return HttpResponse { status: 200, content_type: "", headers: "", body: "", file: path, _root: directory }
     })
 }
 
@@ -1829,7 +1834,7 @@ fn h__answer(handler: fn(HttpRequest) -> HttpResponse ! Failure, request: HttpRe
             } else if response.file == "" {
                 __http_respond(id, response.status, response.content_type, response.headers, response.body)
             } else {
-                __http_respond_file(id, response.status, response.content_type, response.headers, response.file)
+                __http_respond_file(id, response.status, response.content_type, response.headers, response.file, response._root)
             }
         }
         // What a client sent that cannot be read is the client's mistake, and it is

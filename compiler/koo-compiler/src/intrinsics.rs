@@ -750,7 +750,7 @@ pub const INTRINSICS: &[Intrinsic] = &[
     },
     Intrinsic {
         name: "http_respond_file",
-        params: &[I::Int, I::Int, I::Str, I::Str, I::Str],
+        params: &[I::Int, I::Int, I::Str, I::Str, I::Str, I::Str],
         ret: I::Unit,
     },
 ];
