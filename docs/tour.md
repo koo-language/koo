@@ -748,7 +748,7 @@ Ada closes with 70
 1
 ```
 
-- `Account.start(...)` takes every field that has no default, by name, and returns a handle. A handle is a value like any other: it can be copied, kept in a struct, and sent to another actor.
+- `Account.start(...)` takes every field that has no default, best given by name, and returns a handle. A handle is a value like any other: it can be copied, kept in a struct, and sent to another actor.
 - `account.deposit(100)` asks: it sends the message and waits for the answer, errors included.
 - `account.send.close()` tells: it sends and goes on. Only a method that returns nothing and cannot fail can be told, so nothing is thrown away. What an actor is told, it does in the order told, and before it next answers an ask: that is why `Ada closes with 70` comes before the `1`.
 - Inside the actor a field is used by its bare name, and only a `var` field can be changed. A method calls another of the same actor by bare name. `self` is the actor's own handle.

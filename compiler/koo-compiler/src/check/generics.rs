@@ -779,10 +779,21 @@ impl<'a> Checker<'a> {
     /// `within` holds the structs and enums being looked into: a type that holds itself
     /// has `==` if the rest of it does.
     fn has_equality_in(&self, ty: &Ty, within: &mut Vec<Ty>) -> bool {
-        // A map or set has no `==` yet: comparing its fields would compare how it
-        // happens to be laid out, not what it holds.
+        // A map or a set is equal to another by a function of the prelude's: comparing
+        // its fields would compare how it happens to be laid out, not what it holds.
         if self.is_prelude_type(ty) {
-            return false;
+            return match self.prelude_equality(ty) {
+                Some(args) => {
+                    if within.contains(ty) {
+                        return true;
+                    }
+                    within.push(ty.clone());
+                    let all = args.iter().all(|arg| self.has_equality_in(arg, within));
+                    within.pop();
+                    all
+                }
+                None => false,
+            };
         }
         match ty {
             Ty::Fn(_) => false,

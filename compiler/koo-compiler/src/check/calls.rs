@@ -258,15 +258,18 @@ impl<'a> Checker<'a> {
                     && self.modules.contains_key(&(self.file, module.name.clone()))
                     && self.resolve_local(&module.name).is_none()
                 {
-                    self.modules.get_mut(&(self.file, module.name.clone())).unwrap().1 = true;
-                    let function = format!("{}__{}", module.name, name.name);
+                    let import = self.modules.get_mut(&(self.file, module.name.clone())).unwrap();
+                    import.1 = true;
+                    // The package's own name, which `as` may have replaced in this file.
+                    let own = import.2.clone();
+                    let function = format!("{own}__{}", name.name);
                     if let Some(&template) = self.generic_fns.get(&function) {
                         return self.generic_call(template, None, HashMap::new(), args, span, expected);
                     }
                     if let Some(&id) = self.free_fns.get(&function) {
                         return self.user_call(id, None, args, span);
                     }
-                    let known = self.package_names(&module.name);
+                    let known = self.package_names(&own);
                     let message = format!("the package `{}` has no function `{}`", module.name, name.name);
                     self.error_near(name.span, message, &name.name, known, None);
                     for arg in args {

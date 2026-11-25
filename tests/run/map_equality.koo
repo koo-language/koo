@@ -1,0 +1,67 @@
+// Two maps are equal when they hold the same keys with equal values, and two sets when
+// they have the same members, in whatever order they were added (Section 3.4).
+type Order = { id: int, totals: [string: float], tags: Set<string> }
+
+fn main() {
+    a := ["one": 1, "two": 2]
+    var b: [string: int] = [:]
+    b["two"] = 2
+    b["one"] = 1
+    print(a == b)
+    b["one"] = 10
+    print(a == b)
+    print(a != b)
+    b.remove("one")
+    print(a == b)
+
+    var c := a
+    c["three"] = 3
+    c.remove("three")
+    print(a == c)
+
+    empty: [string: int] = [:]
+    other: [string: int] = [:]
+    print(empty == other)
+    print(empty == a)
+
+    s := Set<int>.from_list([1, 2, 3])
+    t := Set<int>.from_list([3, 2, 1, 1])
+    print(s == t)
+    var u := t
+    u.insert(4)
+    print(s == u)
+
+    // Inside other values.
+    nested := ["x": [1, 2], "y": []]
+    same: [string: [int]] = ["y": [], "x": [1, 2]]
+    print(nested == same)
+    print([a, a] == [a, c])
+    first := Order { id: 1, totals: ["net": 9.5], tags: Set<string>.from_list(["a", "b"]) }
+    second := Order { id: 1, totals: ["net": 9.5], tags: Set<string>.from_list(["b", "a"]) }
+    third := Order { id: 1, totals: ["net": 9.0], tags: Set<string>.from_list(["b", "a"]) }
+    print(first == second)
+    print(first == third)
+    maybe: [string: int]? = a
+    also: [string: int]? = c
+    print(maybe == also)
+    print([a].contains(c))
+    maps := ["m": a]
+    print(maps == ["m": c])
+}
+
+//= true
+//= false
+//= true
+//= false
+//= true
+//= true
+//= false
+//= true
+//= false
+//= true
+//= true
+//= true
+//= false
+//= true
+//= true
+//= true

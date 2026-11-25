@@ -23,7 +23,6 @@ fn main() {
     x := Map<string, int> { _keys: [], _values: [], _live: [], _slots: [], _len: 5 }
     y := Map<string, int>._from_lists(["a"], [1])
     print(m._len)
-    print(m == m)
     unit := [(): 1]
 
     n := 5
@@ -37,8 +36,6 @@ fn main() {
 //! error `[string: int]` cannot be built from its fields
 //! error `Map` has no function `_from_lists`
 //! error `[string: int]` has no field `_len`
-//! error `==` is not defined for `[string: int]`
-//! stderr maps and sets cannot be compared with `==` in this compiler yet
 //! error a map or set of `()` is not supported by this compiler yet
 //! error the format `<>5` cannot be used here
 //! error the format `.+1` cannot be used here

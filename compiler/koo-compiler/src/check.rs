@@ -239,9 +239,10 @@ pub(crate) struct Checker<'a> {
     /// Statements that take apart the tuple a condition bound: `if (a, b) := e`. They
     /// go first in the block the condition guards.
     cond_stmts: Vec<Stmt>,
-    /// The standard packages each file imports, and whether the file uses each. An
-    /// import belongs to its file (Section 8.2).
-    modules: HashMap<(usize, String), (Span, bool)>,
+    /// The standard packages each file imports, by the name the file knows each under:
+    /// where it is imported, whether the file uses it, and the package's own name, which
+    /// is another if the import says `as`. An import belongs to its file (Section 8.2).
+    modules: HashMap<(usize, String), (Span, bool, String)>,
     /// Where each file of the package begins: a span says which file it is in.
     file_bases: Vec<u32>,
     /// The file of the function being checked.
@@ -511,15 +512,15 @@ impl<'a> Checker<'a> {
     /// `http.Request` is `HttpRequest`. The import counts as used.
     pub(crate) fn package_type(&mut self, path: &[ast::Ident]) -> Option<String> {
         let [package, name] = path else { return None };
-        let mut letters = package.name.chars();
+        let file = self.file_of(package.span);
+        let own = self.modules.get(&(file, package.name.clone()))?.2.clone();
+        let mut letters = own.chars();
         let first = letters.next()?.to_ascii_uppercase();
         let full = format!("{first}{}{}", letters.as_str(), name.name);
         if !self.type_names.contains_key(&full) {
             return None;
         }
-        let file = self.file_of(package.span);
-        let import = self.modules.get_mut(&(file, package.name.clone()))?;
-        import.1 = true;
+        self.modules.get_mut(&(file, package.name.clone()))?.1 = true;
         Some(full)
     }
 
@@ -595,7 +596,8 @@ impl<'a> Checker<'a> {
                     if matches!(path.as_str(), "std/os" | "std/io" | "std/test" | "std/http") =>
                 {
                     let key = (self.file_of(import.span), import.binding.clone());
-                    if self.modules.insert(key, (import.span, false)).is_some() {
+                    let own = path.rsplit('/').next().unwrap_or(path).to_string();
+                    if self.modules.insert(key, (import.span, false, own)).is_some() {
                         self.error(import.span, format!("`{}` is imported twice", import.binding));
                         self.fix("remove the second import", import.span, "");
                     }
@@ -795,7 +797,9 @@ impl<'a> Checker<'a> {
             self.type_env.clear();
             self.origin = None;
             self.body_in_prelude = false;
-            if !self.generic_to_strings() {
+            let texts = self.generic_to_strings();
+            let equalities = self.generic_equalities();
+            if !texts && !equalities {
                 break;
             }
         }
@@ -846,8 +850,8 @@ impl<'a> Checker<'a> {
         let unused: Vec<(String, Span)> = self
             .modules
             .iter()
-            .filter(|(_, (_, used))| !used)
-            .map(|((_, name), (span, _))| (name.clone(), *span))
+            .filter(|(_, (_, used, _))| !used)
+            .map(|((_, name), (span, _, _))| (name.clone(), *span))
             .collect();
         for (name, span) in unused {
             self.error(span, format!("the import `{name}` is not used"));

@@ -180,6 +180,9 @@ pub struct Program {
     /// The types with a hand-written `to_string()`, which replaces the generated text form
     /// (Section 4.6), and the function that is it.
     pub to_string: std::collections::HashMap<Ty, FnId>,
+    /// The types whose `==` is a function of the prelude's and not a comparison of
+    /// their fields: a map or a set is what it holds, not how it happens to be laid out.
+    pub equals: std::collections::HashMap<Ty, FnId>,
     pub structs: Vec<StructDef>,
     pub enums: Vec<EnumDef>,
     pub errors: Vec<ErrorDef>,

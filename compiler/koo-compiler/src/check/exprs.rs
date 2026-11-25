@@ -963,13 +963,8 @@ impl<'a> Checker<'a> {
         if !defined {
             let found = self.ty_name(&a.ty);
             let help = match hir_op {
-                BinOp::Eq | BinOp::Ne if self.is_prelude_type(&a.ty) => {
-                    "maps and sets cannot be compared with `==` in this compiler yet"
-                }
                 BinOp::Eq | BinOp::Ne if matches!(a.ty, Ty::Fn(_)) => "a function value has no `==` (Section 3.4)",
-                BinOp::Eq | BinOp::Ne => {
-                    "it holds a map, a set or a function, none of which can be compared with `==` in this compiler"
-                }
+                BinOp::Eq | BinOp::Ne => "it holds a function, and a function value has no `==` (Section 3.4)",
                 BinOp::Lt | BinOp::Le | BinOp::Gt | BinOp::Ge => {
                     "give the type a method `fn (self: T) compare(other: T) -> int` to order it (Section 4.9)"
                 }

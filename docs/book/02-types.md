@@ -302,7 +302,7 @@ error: comparisons do not chain
 1 error
 ```
 
-The equality operators apply to nearly every type, not only to numbers, and they compare *values*: two strings are equal if they have the same characters, two lists if they have equal elements in the same order, two structures if their fields are equal. It never matters where a value is stored or how it was arrived at. (The exceptions are maps and sets, which the compiler cannot compare yet, and functions.) The two sides of a comparison are of the same type. The relational operators apply to `int`, `float`, `byte` and `string`. Strings are ordered by the codes of their characters, so that upper case letters come before lower case ones.
+The equality operators apply to nearly every type, not only to numbers, and they compare *values*: two strings are equal if they have the same characters, two lists if they have equal elements in the same order, two structures if their fields are equal. It never matters where a value is stored or how it was arrived at. (The one exception is functions, and types that contain one, which cannot be compared.) The two sides of a comparison are of the same type. The relational operators apply to `int`, `float`, `byte` and `string`. Strings are ordered by the codes of their characters, so that upper case letters come before lower case ones.
 
 ```koo
 fn main() {

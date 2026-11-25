@@ -172,6 +172,39 @@ impl<'a> Checker<'a> {
         }
     }
 
+    /// Whether a type of the prelude's has `==`: it says how two of it are equal, in a
+    /// method `_same`, and what it holds can be compared.
+    pub(super) fn prelude_equality(&self, ty: &Ty) -> Option<Vec<Ty>> {
+        let (generic, args) = self.instance_of.get(ty)?;
+        let key = (OwnerKey::Generic(generic.clone()), "_same".to_string());
+        self.generic_methods.contains_key(&key).then(|| args.clone())
+    }
+
+    /// Makes the function that compares two maps, or two sets, for each set of type
+    /// arguments that such a type is used with and that can themselves be compared.
+    /// Returns whether any were made.
+    pub(super) fn generic_equalities(&mut self) -> bool {
+        let mut made = false;
+        let instances: Vec<(Ty, (String, Vec<Ty>))> =
+            self.instance_of.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
+        for (ty, (generic, args)) in instances {
+            if self.program.equals.contains_key(&ty) || !self.has_equality(&ty) {
+                continue;
+            }
+            let key = (OwnerKey::Generic(generic), "_same".to_string());
+            let Some(&template) = self.generic_methods.get(&key) else {
+                continue;
+            };
+            if let Some(id) = self.instantiate(template, args, Span::default())
+                && self.sigs[id].ret == Ty::Bool
+            {
+                self.program.equals.insert(ty, id);
+                made = true;
+            }
+        }
+        made
+    }
+
     /// Gives every generic type that has a `to_string` its text form (Section 4.6): the
     /// function is made for each set of type arguments the type is used with. Returns
     /// whether any were made, since making one may use more types.

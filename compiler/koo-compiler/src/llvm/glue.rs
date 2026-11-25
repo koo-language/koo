@@ -776,6 +776,13 @@ impl Gen<'_> {
     /// and not through its own glue function, which is how that function's body is made.
     pub(super) fn eq_at(&mut self, ty: &Ty, a: &str, b: &str, differ: &str, inline: bool) {
         let llty = self.llty(ty);
+        // A map or a set says for itself when two of it are equal.
+        if let Some(&function) = self.p.equals.get(ty) {
+            let name = self.fn_name(function);
+            let same = self.value(format!("call i1 {name}(ptr {a}, ptr {b})"));
+            self.same_or(&same, differ);
+            return;
+        }
         match ty {
             Ty::Unit | Ty::Never | Ty::Unknown => {}
             Ty::Int | Ty::Byte | Ty::Bool => {

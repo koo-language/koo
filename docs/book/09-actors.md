@@ -49,7 +49,7 @@ This is not a hole in the rule about values; it is where the rule leads. The cou
 
 ## 9.2 Starting an Actor
 
-The fields of an actor that have defaults begin with them. Those that do not must be given to `start`, by name:
+The fields of an actor that have defaults begin with them. Those that do not must be given to `start`. They may be given in the order in which they are declared, but it is better to give them by name:
 
 ```koo
 actor Account {

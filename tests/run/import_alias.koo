@@ -1,0 +1,11 @@
+// An import may give a package another name in its file (Section 8.2).
+import std/io as out
+import std/os as system
+
+fn main() {
+    out.write("written through another name\n")
+    print(system.args().len)
+}
+
+//= written through another name
+//= 0

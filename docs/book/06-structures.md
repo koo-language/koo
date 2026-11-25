@@ -645,7 +645,40 @@ quince
 | `Ordered` | it has `<`, `<=`, `>`, `>=` and `compare`: numbers, strings, and any type you give a `compare` method |
 | `Hashable` | it can be the key of a map or a member of a set |
 
-A function with an unconstrained type parameter can do very little with a value of that type, and a function that asks for more must say so in its first line. Either way the body is checked once, where it is written, and a call that satisfies the first line cannot go wrong inside.
+A constraint is checked at each call. A list of lists has no order, so `largest` cannot be given one, and the message is about the call:
+
+```koo
+fn largest<T: Ordered>(items: [T]) -> T? {
+    if items.len == 0 {
+        return none
+    }
+    var best := items[0]
+    for item in items {
+        if item > best {
+            best = item
+        }
+    }
+    return best
+}
+
+fn main() {
+    print(largest([[1, 2], [3]]))
+}
+```
+
+```error
+error: `[int]` does not satisfy `Ordered`
+  --> main.koo:15:11
+   |
+15 |     print(largest([[1, 2], [3]]))
+   |           ^^^^^^^^^^^^^^^^^^^^^^
+   |
+   = help: `largest` requires it: it has no order; give the type a method `fn (self: T) compare(other: T) -> int`
+
+1 error
+```
+
+You should know that the compiler does not yet hold a function to its own constraints. It checks the body of a function with type parameters separately for each type that the function is used with, and not once, in general, against what the first line promises. If `largest` had been written without `: Ordered`, it would still be accepted, and would still work for numbers and strings; the call with a list of lists would then be reported from inside the function, at the `>`, which is the wrong place to learn of it. Write the constraint. It tells a caller what the function needs, and it puts the message where the mistake is.
 
 ## 6.9 Interfaces
 

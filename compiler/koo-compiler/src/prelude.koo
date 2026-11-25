@@ -614,6 +614,20 @@ fn (self: var Map<K, V>) update(key: K, start: V, f: fn(V) -> V) {
     }
 }
 
+/// Whether two maps hold the same keys with equal values: what `==` means for a map.
+/// The order in which the keys were added does not come into it.
+fn (self: Map<K, V>) _same(other: Map<K, V>) -> bool {
+    if self._len != other._len { return false }
+    for i in 0..self._keys.len {
+        if self._live[i] {
+            entry := other._find(self._keys[i])
+            if entry < 0 { return false }
+            if other._values[entry] != self._values[i] { return false }
+        }
+    }
+    return true
+}
+
 fn (self: Map<K, V>) is_empty() -> bool { return self._len == 0 }
 
 /// The keys, in the order they were added.
@@ -695,6 +709,11 @@ fn (self: var Set<T>) remove(item: T) -> bool {
             return true
         }
     }
+}
+
+/// Whether two sets have the same members: what `==` means for a set.
+fn (self: Set<T>) _same(other: Set<T>) -> bool {
+    return self._items._same(other._items)
 }
 
 fn (self: Set<T>) is_empty() -> bool { return self._len == 0 }

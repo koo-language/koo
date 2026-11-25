@@ -111,7 +111,7 @@ An *import*
 
     import std/io
 
-makes the functions of a standard package available in the file that contains it, under the last part of the package's name: `io.read_line()`. The packages are `std/io`, `std/os`, `std/http` and `std/test`. An import that its file does not use is an error.
+makes the functions of a standard package available in the file that contains it, under the last part of the package's name: `io.read_line()`. `import std/io as files` gives the package another name in that file, `files.read_line()`. The packages are `std/io`, `std/os`, `std/http` and `std/test`. An import that its file does not use is an error.
 
 A *constant*
 
@@ -173,7 +173,7 @@ For `float`, the operations are those of IEEE 754, and none panics.
 
 ### A.5.5 Comparison Operators
 
-`==` and `!=` take two operands of the same type and yield a `bool`. They are defined for every type except functions, maps, sets, and types that contain one of these. Equality is structural: two values are equal when they are the same variant, or have equal fields, elements, or characters. Two floating-point values are compared as IEEE 754 prescribes.
+`==` and `!=` take two operands of the same type and yield a `bool`. They are defined for every type except functions and types that contain one. Equality is structural: two values are equal when they are the same variant, or have equal fields, elements, or characters. Two maps are equal when they have the same keys with equal values, and two sets when they have the same members; the order in which keys or members were added plays no part. Two floating-point values are compared as IEEE 754 prescribes.
 
 `<`, `<=`, `>` and `>=` are defined for `int`, `float`, `byte` and `string`, and for a type that has a method `compare(other: T) -> int`, in which case `a < b` means `a.compare(b) < 0`, and likewise for the others. Strings are ordered by the values of their bytes.
 

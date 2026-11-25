@@ -685,7 +685,25 @@ fn main() {
 (1, 1): O
 ```
 
-A map is a value, like everything else: assigning it gives an independent map, and a function changes the caller's map only through a `var` parameter.
+A map is a value, like everything else: assigning it gives an independent map, and a function changes the caller's map only through a `var` parameter. Two maps are equal when they have the same keys with equal values. The order in which the keys were added decides the order of a loop, but has no part in equality:
+
+```koo
+fn main() {
+    a := ["x": 1, "y": 2]
+    var b := ["y": 2]
+    b["x"] = 1
+    print("{a} {b}")
+    print(a == b)
+    b["x"] = 100
+    print(a == b)
+}
+```
+
+```text
+["x": 1, "y": 2] ["y": 2, "x": 1]
+true
+false
+```
 
 **Exercise 5-8.** Write a program that prints the distinct words of its input, sorted alphabetically, each followed by the numbers of the lines on which it occurs.
 
@@ -719,7 +737,7 @@ true
 Set["to", "be", "not"]
 ```
 
-`insert` returns whether the value was new, and `remove` whether it was there, which often saves a separate test. `items()` is the members as a list, in the order they were added, and a `for` loop over a set runs in that order too. The members of a set are of a type that could be the key of a map.
+`insert` returns whether the value was new, and `remove` whether it was there, which often saves a separate test. Two sets are equal when they have the same members. `items()` is the members as a list, in the order they were added, and a `for` loop over a set runs in that order too. The members of a set are of a type that could be the key of a map.
 
 ## 5.10 Tuples
 

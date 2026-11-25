@@ -135,7 +135,9 @@ The [specification](../../SPEC.md) describes more than the compiler builds. For 
 
 *Types.* There is no `char`: a character is a string. There are no integer or floating-point types of other sizes, no decimal numbers, and no types for times and durations. A structure cannot contain itself through an optional (Section 6.5). An interface cannot be the type of a value (Section 6.9). `distinct` types and `resource` types are not built.
 
-*Expressions.* A list is sliced with the method `slice`, not with `v[a..b]`. A range is not a value: it can be the sequence of a `for` and a pattern, and nothing else. There is no `is` test; use `match`. Maps and sets cannot be compared with `==`. A tuple cannot be assigned to as a whole, so two variables are exchanged through a third.
+*Type parameters.* The body of a function with type parameters is checked for each type it is used with, and not once against its constraints (Section 6.8). An actor cannot have type parameters.
+
+*Expressions.* A list is sliced with the method `slice`, not with `v[a..b]`. A range is not a value: it can be the sequence of a `for` and a pattern, and nothing else. There is no `is` test; use `match`. A tuple cannot be assigned to as a whole, so two variables are exchanged through a third.
 
 *Statements.* Loops cannot be labeled, so `break` and `continue` apply to the innermost loop. There is no `defer`.
 
