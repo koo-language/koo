@@ -133,7 +133,7 @@ The compiler reports the mistakes it can find in one run, not only the first, an
 
 The [specification](../../SPEC.md) describes more than the compiler builds. For a construct that it knows of and does not build, the compiler says "is not supported by this compiler yet". These are the ones that a reader of this book is most likely to reach for.
 
-*Types.* There is no `char`: a character is a string. There are no integer or floating-point types of other sizes, no decimal numbers, and no types for times and durations. A structure cannot contain itself through an optional (Section 6.5). An interface cannot be the type of a value (Section 6.9). `distinct` types and `resource` types are not built.
+*Types.* There is no `char`: a character is a string. There are no integer or floating-point types of other sizes, and no decimal numbers. A `Time` cannot yet be shown in the time of a place, only in UTC, and there are no dates apart from times. A structure cannot contain itself through an optional (Section 6.5). An interface cannot be the type of a value (Section 6.9). `distinct` types and `resource` types are not built.
 
 *Type parameters.* The body of a function with type parameters is checked for each type it is used with, and not once against its constraints (Section 6.8). An actor cannot have type parameters.
 
@@ -145,9 +145,9 @@ The [specification](../../SPEC.md) describes more than the compiler builds. For 
 
 *Concurrency.* Of the concurrency that the specification describes, actors are built, as Chapter 9 describes them, with the limits listed in Section 9.11. Tasks, `spawn`, `scope`, channels and `select` are not.
 
-*Packages.* A program is one package. One package of your own cannot yet import another, and there is no package manager. The standard packages are `std/io`, `std/os`, `std/http` and `std/test`.
+*Packages.* A program is one package. One package of your own cannot yet import another, and there is no package manager. The standard packages are `std/io`, `std/os`, `std/time`, `std/http` and `std/test`.
 
-*The library.* There is no access to the clock, no random numbers, no network client, no database, and no way to read a file except whole.
+*The library.* There are no random numbers, no network client, no database, and no way to read a file except whole.
 
 *Targets.* The compiler builds for the machine it runs on: macOS on arm64, and Linux on x86-64 and arm64. It does not build for another machine than its own, or for WebAssembly.
 

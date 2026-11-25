@@ -193,6 +193,22 @@ pub const INTRINSICS: &[Intrinsic] = &[
         params: &[],
         ret: I::Int,
     },
+    // The clock (`std/time`).
+    Intrinsic {
+        name: "time_now",
+        params: &[],
+        ret: I::Int,
+    },
+    Intrinsic {
+        name: "uptime",
+        params: &[],
+        ret: I::Int,
+    },
+    Intrinsic {
+        name: "sleep",
+        params: &[I::Int],
+        ret: I::Unit,
+    },
     // Reading and writing JSON.
     Intrinsic {
         name: "json_ws",

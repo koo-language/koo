@@ -42,6 +42,8 @@ A *floating constant* has digits, a decimal point and more digits; or digits and
 
 Underscores may appear between the digits of either kind, and are ignored.
 
+A *duration constant* is one or more groups of decimal digits and a unit, with nothing between them, the units being `h`, `min`, `s`, `ms`, `us` and `ns`, each at most once and in that order: `90s`, `1h30min`. Its type is `Duration`, and it is an error if it is longer than a `Duration` can be.
+
 A *string constant* is one of three forms.
 
 - Characters between double quotes, on one line. A backslash introduces an escape sequence: `\n` newline, `\r` carriage return, `\t` tab, `\0` the character of code zero, `\\` backslash, `\"` double quote, `\'` single quote, `\{` opening brace, and `\u{`*h*`}`, where *h* is one or more hexadecimal digits, the character with that code. An opening brace not preceded by a backslash begins an *interpolation* (A.5.9).
@@ -76,6 +78,8 @@ A line that begins with `-` is not a continuation. A list between parentheses, b
 | `bool` | `true` and `false` |
 | `byte` | integers from 0 to 255 |
 | `string` | sequences of characters, encoded in UTF-8, always valid |
+| `Duration` | lengths of time, as a signed count of nanoseconds in 64 bits |
+| `Time` | instants, as the nanoseconds from the beginning of 1970 in UTC, in 64 bits |
 
 ### A.3.2 Derived Types
 
@@ -111,14 +115,14 @@ An *import*
 
     import std/io
 
-makes the functions of a standard package available in the file that contains it, under the last part of the package's name: `io.read_line()`. `import std/io as files` gives the package another name in that file, `files.read_line()`. The packages are `std/io`, `std/os`, `std/http` and `std/test`. An import that its file does not use is an error.
+makes the functions of a standard package available in the file that contains it, under the last part of the package's name: `io.read_line()`. `import std/io as files` gives the package another name in that file, `files.read_line()`. The packages are `std/io`, `std/os`, `std/time`, `std/http` and `std/test`. An import that its file does not use is an error.
 
 A *constant*
 
     name := constant
     name: Type = constant
 
-declares a name whose value is an integer, floating, string or boolean constant, or the negation of a number. A constant cannot be `var`.
+declares a name whose value is an integer, floating, string, boolean or duration constant, or the negation of a number. A constant cannot be `var`.
 
 The other declarations are described in A.7.
 
@@ -167,6 +171,8 @@ For `float`, the operations are those of IEEE 754, and none panics.
 
 `+` also applies to two strings, and yields their concatenation.
 
+For durations and times the operators are these, and no others: `Duration + Duration`, `Duration - Duration` and unary `-` yield a `Duration`; `Duration * int`, `int * Duration` and `Duration / int` yield a `Duration`; `Time + Duration`, `Duration + Time` and `Time - Duration` yield a `Time`; `Time - Time` yields a `Duration`. The program panics if a result cannot be represented.
+
 ### A.5.4 Ranges
 
 `a..b` and `a..=b`, where `a` and `b` are of type `int`, denote the integers from `a` up to but not including `b`, and up to and including `b`. A range may appear only as the sequence of a `for` statement, or, with constant bounds, as a pattern.
@@ -175,7 +181,7 @@ For `float`, the operations are those of IEEE 754, and none panics.
 
 `==` and `!=` take two operands of the same type and yield a `bool`. They are defined for every type except functions and types that contain one. Equality is structural: two values are equal when they are the same variant, or have equal fields, elements, or characters. Two maps are equal when they have the same keys with equal values, and two sets when they have the same members; the order in which keys or members were added plays no part. Two floating-point values are compared as IEEE 754 prescribes.
 
-`<`, `<=`, `>` and `>=` are defined for `int`, `float`, `byte` and `string`, and for a type that has a method `compare(other: T) -> int`, in which case `a < b` means `a.compare(b) < 0`, and likewise for the others. Strings are ordered by the values of their bytes.
+`<`, `<=`, `>` and `>=` are defined for `int`, `float`, `byte`, `string`, `Duration` and `Time`, and for a type that has a method `compare(other: T) -> int`, in which case `a < b` means `a.compare(b) < 0`, and likewise for the others. Strings are ordered by the values of their bytes.
 
 The comparison operators do not associate: `a < b < c` is an error.
 
@@ -247,7 +253,7 @@ The first two declare a name that cannot be assigned to; the next two, a variabl
     place = expression
     place += expression        and likewise -=, *=, /=
 
-A *place* is a variable declared with `var`, or a `var` parameter or receiver, optionally followed by any number of field selections `.f` and list or map subscripts `[i]`. The compound forms are not allowed when the place ends in a map subscript. `+=` on a string appends. An assignment has no value, and one assignment assigns to one place.
+A *place* is a variable declared with `var`, or a `var` parameter or receiver, optionally followed by any number of field selections `.f` and list or map subscripts `[i]`. The compound forms are not allowed when the place ends in a map subscript. `+=` on a string appends. For a `Duration` or a `Time` the compound forms are those whose operator yields the type of the place. An assignment has no value, and one assignment assigns to one place.
 
 ### A.6.3 Expression Statements
 
@@ -378,7 +384,7 @@ declares an actor, and the type `Name` of its handles. In the body of a method, 
 
 A mailbox holds 1,024 messages, or the number given by `@mailbox(n)` on a line before the declaration of the actor.
 
-The types of a method's parameters and result, and of the fields given to `start`, are restricted to those that can be messages: `int`, `float`, `bool`, `string`, lists and optionals of message types, maps from `string` to a message type, structures, enumerations and errors whose fields are message types, and handles. The fields given to `start` may in addition be of types that the others exclude, provided they contain no function.
+The types of a method's parameters and result, and of the fields given to `start`, are restricted to those that can be messages: `int`, `float`, `bool`, `string`, `Duration`, `Time`, lists and optionals of message types, maps from `string` to a message type, structures, enumerations and errors whose fields are message types, and handles. The fields given to `start` may in addition be of types that the others exclude, provided they contain no function.
 
 A program ends when `main` has returned and every message that was told has been executed.
 
@@ -416,6 +422,7 @@ The text form of a value is:
 - for an `int` or `byte`, its decimal digits, with a minus sign if it is negative;
 - for a `float`, its decimal digits, always with a decimal point or an exponent, so that it cannot be taken for an integer; or `inf`, `-inf` or `NaN`;
 - for a `bool`, `true` or `false`;
+- for a `Duration`, a duration constant, with a minus sign if it is negative, and `0s` for none; for a `Time`, the date and time in UTC as RFC 3339 writes them, `2026-01-31T12:00:00Z`, with a fraction of a second if there is one;
 - for a string, its characters; but where the string is an element or field of another value, the characters in double quotes, with escape sequences;
 - for a list, `[e1, e2]`; for a map, `[k1: v1, k2: v2]`; for a set, `Set[e1, e2]`; for a tuple, `(e1, e2)`;
 - for an optional, the text form of its value, or `none`;

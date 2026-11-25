@@ -753,6 +753,7 @@ pub unsafe extern "C" fn koo_init(argc: i32, argv: *const *const u8) {
         ARGV = argv;
         let counting = !getenv(c"KOO_LEAKS".as_ptr() as *const u8).is_null();
         COUNTING.store(counting, core::sync::atomic::Ordering::Relaxed);
+        STARTED.store(koo_now_nanos(), core::sync::atomic::Ordering::Relaxed);
         thread::watch_stack();
     }
 }
@@ -1033,6 +1034,42 @@ pub unsafe extern "C" fn koo_exit_now(code: i64) {
     unsafe {
         koo_flush();
         exit(code as i32)
+    }
+}
+
+/// When the program started, on the clock that only goes forward.
+static STARTED: core::sync::atomic::AtomicI64 = core::sync::atomic::AtomicI64::new(0);
+
+/// Nanoseconds from the beginning of 1970 to now, by the machine's clock.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn koo_time_now() -> i64 {
+    let mut time = [0i64; 2];
+    unsafe { clock_gettime(0, &mut time) };
+    time[0] * 1_000_000_000 + time[1]
+}
+
+/// Nanoseconds since the program started.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn koo_uptime() -> i64 {
+    unsafe { koo_now_nanos() - STARTED.load(core::sync::atomic::Ordering::Relaxed) }
+}
+
+/// Waits for some nanoseconds. What the program has printed is written first, so that
+/// it is seen before the wait and not after.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn koo_sleep(nanos: i64) {
+    unsafe extern "C" {
+        fn nanosleep(wanted: *const [i64; 2], left: *mut [i64; 2]) -> i32;
+    }
+    if nanos <= 0 {
+        return;
+    }
+    unsafe { koo_flush() };
+    let mut wanted = [nanos / 1_000_000_000, nanos % 1_000_000_000];
+    let mut left = [0i64; 2];
+    // A signal ends a wait early, with what is left of it.
+    while unsafe { nanosleep(&wanted, &mut left) } != 0 && unsafe { *errno_location() } == 4 {
+        wanted = left;
     }
 }
 

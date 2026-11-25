@@ -130,7 +130,7 @@ The compiler implements the part of the language below and rejects everything el
 
 | Area | In |
 | --- | --- |
-| Types | `int`, `float`, `bool`, `byte`, `string`, lists `[T]`, maps `[K: V]`, `Set<T>`, tuples, optionals `T?`, structs with default fields, enums with fields, error types and named error sets, results `T ! E`, function types |
+| Types | `int`, `float`, `bool`, `byte`, `string`, `Duration` (`250ms`, `1h30min`) and `Time`, lists `[T]`, maps `[K: V]`, `Set<T>`, tuples, optionals `T?`, structs with default fields, enums with fields, error types and named error sets, results `T ! E`, function types |
 | Functions | Free functions, methods, type-level functions, the three parameter kinds (borrow, `var`, `take`), named arguments, default values |
 | Generics | Generic functions, structs and enums, compiled once for each type they are used with; interfaces as constraints, satisfied by having the methods; `Ordered`, `Equatable` and `Hashable` derived for every type that can have them |
 | Lambdas | `x -> e` and `(a, b) -> { ... }`. One passed straight to a function works on the variables around it; one that is kept holds copies |
@@ -144,13 +144,13 @@ The compiler implements the part of the language below and rejects everything el
 | JSON | `value.to_json()` and `Type.from_json(text)` for every struct and enum made of numbers, strings, booleans, lists, optionals, maps with string keys and other such types, with nothing to import or annotate. A text that does not fit is refused with the path to the mistake (`/items/3/qty`) |
 | HTTP | `std/http`: a server with routes (`/orders/:id`, `/files/*`), queries, headers, forms, cookies, bodies whole or in chunks, JSON in and out, files from a directory, 404 and 405 by itself, and a log of requests. One event loop per core, each in a process that is replaced if a handler panics. A body that does not fit its type is answered with 400 and the path |
 | Actors | `actor Name { fields, methods }`, `Name.start(...)`, ask (`handle.method(...)`), tell (`handle.send.method(...)`), `handle.stop()`, typed errors across the boundary, handles in messages, restart after a panic, and a panic in place of a cycle of asks that would wait for ever. What actors are told runs on every core, and what they hand each other is shared between threads without being copied or locked. An actor's mail is limited (`@mailbox(n)`): `send` waits for room and `try_send` does not. One actor serves every process of a server. An actor lives in the process that starts it, and asking it from there costs about what a call does |
-| Standard packages | `std/os` (arguments, environment, exit), `std/io` (files, standard input and output), `std/http`, `std/test` (assertions) |
+| Standard packages | `std/os` (arguments, environment, exit), `std/io` (files, standard input and output), `std/time` (the clock, a clock for measuring, sleeping), `std/http`, `std/test` (assertions) |
 | Packages | A directory is a package: its files are one program and share one namespace. `koo run dir`, `koo test dir` |
 | Diagnostics | Every error says what is wrong, marks the place, points at the declaration or the earlier line that explains it, and shows the corrected line where there is one thing that was meant. A name that is nearly right gets a "did you mean". Syntax from other languages (`let`, `function`, `class`, `elif`, `&&`, `x++`, `'text'`, `null`, `try`, C's `for`, `int x = 5`, `.length`) is named for what it is and answered with the Koo that was meant |
 | Tooling | `koo run`, `koo build`, `koo check`, `koo test`, `koo parse`, with `--release`, `--emit-llvm`, `--sanitize` and `--sanitize=thread` |
 | Editors | Syntax highlighting for Visual Studio Code, in [`editors/vscode`](editors/vscode) |
 
-Not yet: importing one package of your own from another, the package manager, the rest of the standard library (SQL, time, an HTTP client; and in the server HTTPS, HTTP/2 and streamed bodies), interface values, tasks, channels and `select`, and of actors the generic ones and `spawn` inside one, `Decimal`, resources, `defer`, variadic parameters, the WebAssembly targets, Windows, the formatter and the language server.
+Not yet: importing one package of your own from another, the package manager, the rest of the standard library (SQL, dates and time zones, an HTTP client; and in the server HTTPS, HTTP/2 and streamed bodies), interface values, tasks, channels and `select`, and of actors the generic ones and `spawn` inside one, `Decimal`, resources, `defer`, variadic parameters, the WebAssembly targets, Windows, the formatter and the language server.
 
 What has been checked, and how:
 

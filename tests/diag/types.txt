@@ -1596,7 +1596,7 @@ error: the package `std/sql` is not part of this compiler yet
 1 | import std/sql
   | ^^^^^^^^^^^^^^
   |
-  = help: the standard packages so far are `std/os`, `std/io`, `std/http` and `std/test`
+  = help: the standard packages so far are `std/os`, `std/io`, `std/http`, `std/time` and `std/test`
 
 error: the package `std/strings` is not part of this compiler yet
  --> main.koo:2:1
@@ -1604,7 +1604,7 @@ error: the package `std/strings` is not part of this compiler yet
 2 | import std/strings
   | ^^^^^^^^^^^^^^^^^^
   |
-  = help: the standard packages so far are `std/os`, `std/io`, `std/http` and `std/test`
+  = help: the standard packages so far are `std/os`, `std/io`, `std/http`, `std/time` and `std/test`
 
 2 errors
 

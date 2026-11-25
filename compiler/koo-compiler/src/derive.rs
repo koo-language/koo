@@ -928,7 +928,9 @@ pub fn derive(package: &File, json: bool) -> Derived {
     // until none is left to strike: a type may hold itself, in a list or an optional.
     deriver.ok = order.iter().copied().collect();
     // A handle of an actor is its address, which can always be sent.
-    let handles: Vec<&str> = deriver.actors.iter().map(|actor| actor.name.name.as_str()).collect();
+    let mut handles: Vec<&str> = deriver.actors.iter().map(|actor| actor.name.name.as_str()).collect();
+    // And so can a duration and a time, which the prelude writes and reads.
+    handles.extend(["Duration", "Time"]);
     deriver.ok.extend(handles.iter().copied());
     loop {
         let struck: Vec<&str> = order

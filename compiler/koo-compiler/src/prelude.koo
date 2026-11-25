@@ -998,6 +998,293 @@ fn (self: Map<K, V>) to_json() -> string {
     return out
 }
 
+// ---- time -------------------------------------------------------------------------------
+//
+// A `Duration` is a number of nanoseconds, and a `Time` an instant, as the nanoseconds
+// between it and the beginning of 1970 in UTC (Section 10.6). The compiler knows the two
+// by name: `250ms` is a `Duration`, and `+`, `-`, `*` and `/` on them are the methods
+// below whose names begin with `_`.
+
+pub type Duration = { _ns: int }
+pub type Time = { _ns: int }
+
+fn (self: Duration) nanos() -> int { return self._ns }
+fn (self: Duration) micros() -> int { return self._ns / 1000 }
+fn (self: Duration) millis() -> int { return self._ns / 1000000 }
+fn (self: Duration) seconds() -> float { return float.from(self._ns) / 1000000000.0 }
+fn (self: Duration) abs() -> Duration { return Duration { _ns: self._ns.abs() } }
+fn (self: Duration) compare(other: Duration) -> int { return self._ns.compare(other._ns) }
+
+fn (self: Duration) _add(other: Duration) -> Duration { return Duration { _ns: self._ns + other._ns } }
+fn (self: Duration) _sub(other: Duration) -> Duration { return Duration { _ns: self._ns - other._ns } }
+fn (self: Duration) _mul(by: int) -> Duration { return Duration { _ns: self._ns * by } }
+fn (self: Duration) _div(by: int) -> Duration { return Duration { _ns: self._ns / by } }
+fn (self: Duration) _neg() -> Duration { return Duration { _ns: -self._ns } }
+
+/// A duration as it is written in a program: `1h30min`, `250ms`, `0s`.
+fn (self: Duration) to_string() -> string {
+    if self._ns == 0 { return "0s" }
+    var out := if self._ns < 0 { "-" } else { "" }
+    var left := self._ns
+    names := ["h", "min", "s", "ms", "us", "ns"]
+    sizes := [3600000000000, 60000000000, 1000000000, 1000000, 1000, 1]
+    for i in 0..6 {
+        count := (left / sizes[i]).abs()
+        left = left % sizes[i]
+        if count > 0 { out += "{count}{names[i]}" }
+    }
+    return out
+}
+
+/// The duration that a text is, in the form of a literal: digits and a unit, once or
+/// several times, the units from large to small or in any order.
+fn Duration.parse(text: string) -> Duration ! ParseError {
+    b := text.bytes()
+    var at := 0
+    var sign := 1
+    if t__at(b, 0) == 45 {
+        sign = -1
+        at = 1
+    }
+    if at >= b.len { fail ParseError { input: text } }
+    var total := 0
+    while at < b.len {
+        var count := 0
+        var digits := 0
+        while t__at(b, at) >= 48 and t__at(b, at) <= 57 {
+            // No count of nanoseconds that an `int` holds has more digits than this.
+            if digits >= 18 { fail ParseError { input: text } }
+            count = count * 10 + t__at(b, at) - 48
+            digits += 1
+            at += 1
+        }
+        if digits == 0 { fail ParseError { input: text } }
+        var size := 0
+        first := t__at(b, at)
+        second := t__at(b, at + 1)
+        if first == 110 and second == 115 {
+            size = 1
+            at += 2
+        } else if first == 117 and second == 115 {
+            size = 1000
+            at += 2
+        } else if first == 109 and second == 115 {
+            size = 1000000
+            at += 2
+        } else if first == 109 and second == 105 and t__at(b, at + 2) == 110 {
+            size = 60000000000
+            at += 3
+        } else if first == 115 {
+            size = 1000000000
+            at += 1
+        } else if first == 104 {
+            size = 3600000000000
+            at += 1
+        } else {
+            fail ParseError { input: text }
+        }
+        if count > (9223372036854775807 - total) / size { fail ParseError { input: text } }
+        total += count * size
+    }
+    return Duration { _ns: sign * total }
+}
+
+fn (self: Time) _add(by: Duration) -> Time { return Time { _ns: self._ns + by._ns } }
+fn (self: Time) _sub(by: Duration) -> Time { return Time { _ns: self._ns - by._ns } }
+fn (self: Time) _since(earlier: Time) -> Duration { return Duration { _ns: self._ns - earlier._ns } }
+fn (self: Time) compare(other: Time) -> int { return self._ns.compare(other._ns) }
+
+/// The whole seconds from the beginning of 1970 to this time.
+fn (self: Time) unix() -> int {
+    seconds := self._ns / 1000000000
+    if self._ns % 1000000000 < 0 { return seconds - 1 }
+    return seconds
+}
+
+/// The nanoseconds from the beginning of 1970 to this time.
+fn (self: Time) unix_nanos() -> int { return self._ns }
+
+/// The time so many seconds after the beginning of 1970.
+fn Time.from_unix(seconds: int) -> Time { return Time { _ns: seconds * 1000000000 } }
+
+/// The byte at a position as a number, or -1 if there is none.
+fn t__at(b: [byte], at: int) -> int {
+    if at < 0 or at >= b.len { return -1 }
+    return int.from(b[at])
+}
+
+/// The number that `count` digits at a position are, or -1 if they are not all digits.
+fn t__number(b: [byte], from: int, count: int) -> int {
+    var n := 0
+    for i in from..from + count {
+        digit := t__at(b, i) - 48
+        if digit < 0 or digit > 9 { return -1 }
+        n = n * 10 + digit
+    }
+    return n
+}
+
+fn t__month_days(year: int, month: int) -> int {
+    if month == 2 {
+        if (year % 4 == 0 and year % 100 != 0) or year % 400 == 0 { return 29 }
+        return 28
+    }
+    if month == 4 or month == 6 or month == 9 or month == 11 { return 30 }
+    return 31
+}
+
+/// A time as RFC 3339 writes it, in UTC: `2026-11-24T18:02:48.5Z`.
+fn (self: Time) to_string() -> string {
+    var seconds := self._ns / 1000000000
+    var nanos := self._ns % 1000000000
+    if nanos < 0 {
+        nanos += 1000000000
+        seconds -= 1
+    }
+    var days := seconds / 86400
+    var rest := seconds % 86400
+    if rest < 0 {
+        rest += 86400
+        days -= 1
+    }
+    // The date of a day, counted from the first of March of a year divisible by 400,
+    // so that the day a leap year adds is the last of its year.
+    z := days + 719468
+    era := (if z >= 0 { z } else { z - 146096 }) / 146097
+    day_of_era := z - era * 146097
+    year_of_era := (day_of_era - day_of_era / 1460 + day_of_era / 36524 - day_of_era / 146096) / 365
+    day_of_year := day_of_era - (365 * year_of_era + year_of_era / 4 - year_of_era / 100)
+    shifted := (5 * day_of_year + 2) / 153
+    day := day_of_year - (153 * shifted + 2) / 5 + 1
+    month := if shifted < 10 { shifted + 3 } else { shifted - 9 }
+    year := year_of_era + era * 400 + (if month <= 2 { 1 } else { 0 })
+    var out := "{year:04}-{month:02}-{day:02}T{rest / 3600:02}:{rest % 3600 / 60:02}:{rest % 60:02}"
+    if nanos != 0 {
+        var fraction := "{nanos:09}"
+        while fraction.ends_with("0") { fraction = fraction.slice(0, fraction.len - 1) }
+        out += "." + fraction
+    }
+    return out + "Z"
+}
+
+/// The time that a text in the form of RFC 3339 names: a date, `T`, a time of day with
+/// or without a fraction of a second, and `Z` or an offset from UTC such as `+02:00`.
+fn Time.parse(text: string) -> Time ! ParseError {
+    b := text.bytes()
+    year := t__number(b, 0, 4)
+    month := t__number(b, 5, 2)
+    day := t__number(b, 8, 2)
+    hour := t__number(b, 11, 2)
+    minute := t__number(b, 14, 2)
+    second := t__number(b, 17, 2)
+    if year < 0 or month < 1 or month > 12 or day < 1 or hour < 0 or hour > 23 { fail ParseError { input: text } }
+    if minute < 0 or minute > 59 or second < 0 or second > 59 { fail ParseError { input: text } }
+    if day > t__month_days(year, month) { fail ParseError { input: text } }
+    if t__at(b, 4) != 45 or t__at(b, 7) != 45 or t__at(b, 13) != 58 or t__at(b, 16) != 58 {
+        fail ParseError { input: text }
+    }
+    if t__at(b, 10) != 84 and t__at(b, 10) != 116 { fail ParseError { input: text } }
+    var at := 19
+    var nanos := 0
+    if t__at(b, at) == 46 {
+        at += 1
+        var digits := 0
+        while t__at(b, at) >= 48 and t__at(b, at) <= 57 {
+            if digits < 9 { nanos = nanos * 10 + t__at(b, at) - 48 }
+            digits += 1
+            at += 1
+        }
+        if digits == 0 { fail ParseError { input: text } }
+        while digits < 9 {
+            nanos *= 10
+            digits += 1
+        }
+    }
+    var offset := 0
+    zone := t__at(b, at)
+    if zone == 90 or zone == 122 {
+        at += 1
+    } else if zone == 43 or zone == 45 {
+        hours := t__number(b, at + 1, 2)
+        minutes := t__number(b, at + 4, 2)
+        if hours < 0 or hours > 23 or minutes < 0 or minutes > 59 or t__at(b, at + 3) != 58 {
+            fail ParseError { input: text }
+        }
+        offset = hours * 3600 + minutes * 60
+        if zone == 45 { offset = -offset }
+        at += 6
+    } else {
+        fail ParseError { input: text }
+    }
+    if at != b.len { fail ParseError { input: text } }
+    y := if month <= 2 { year - 1 } else { year }
+    era := y / 400
+    year_of_era := y - era * 400
+    shifted := if month > 2 { month - 3 } else { month + 9 }
+    day_of_year := (153 * shifted + 2) / 5 + day - 1
+    day_of_era := year_of_era * 365 + year_of_era / 4 - year_of_era / 100 + day_of_year
+    days := era * 146097 + day_of_era - 719468
+    seconds := days * 86400 + hour * 3600 + minute * 60 + second - offset
+    // An `int` of nanoseconds reaches from 1677 to 2262.
+    if seconds > 9223372035 or seconds < -9223372035 { fail ParseError { input: text } }
+    return Time { _ns: seconds * 1000000000 + nanos }
+}
+
+// As JSON a duration is its literal, and a time is RFC 3339, each in a string.
+
+fn (self: Duration) _json_write(out: var string) { out += __json_quote(self.to_string()) }
+
+fn (self: Duration) to_json() -> string { return __json_quote(self.to_string()) }
+
+fn Duration._json_read(text: string, at: var int) -> Duration ! JsonError {
+    written := j__str(text, var at)?
+    return Duration.parse(written) else fail JsonError {
+        message: "expected a duration such as \"250ms\", found \"{written}\"",
+        path: "",
+    }
+}
+
+fn Duration.from_json(text: string) -> Duration ! JsonError {
+    __json_begin()
+    var at := 0
+    value := Duration._json_read(text, var at)?
+    j__end(text, at)?
+    return value
+}
+
+fn (self: Time) _json_write(out: var string) { out += __json_quote(self.to_string()) }
+
+fn (self: Time) to_json() -> string { return __json_quote(self.to_string()) }
+
+fn Time._json_read(text: string, at: var int) -> Time ! JsonError {
+    written := j__str(text, var at)?
+    return Time.parse(written) else fail JsonError {
+        message: "expected a time such as \"2026-01-31T12:00:00Z\", found \"{written}\"",
+        path: "",
+    }
+}
+
+fn Time.from_json(text: string) -> Time ! JsonError {
+    __json_begin()
+    var at := 0
+    value := Time._json_read(text, var at)?
+    j__end(text, at)?
+    return value
+}
+
+// ---- std/time ---------------------------------------------------------------------------
+
+/// The time now, by the clock of the machine.
+fn time__now() -> Time { return Time { _ns: __time_now() } }
+
+/// How long the program has been running, by a clock that only goes forward: the
+/// difference of two of these is how long something took, whatever is done to the
+/// machine's clock meanwhile.
+fn time__uptime() -> Duration { return Duration { _ns: __uptime() } }
+
+/// Waits. What the program has printed is written first.
+fn time__sleep(length: Duration) { __sleep(length._ns) }
+
 // ---- actors -----------------------------------------------------------------------------
 //
 // What the compiler writes for an actor (`derive.rs`) asks it by taking its state from

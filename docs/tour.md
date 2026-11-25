@@ -653,6 +653,42 @@ order 8: 1 of b-2
 - A text that does not fit is refused with a `JsonError`, whose `path` leads to the mistake.
 - Numbers, strings, booleans, lists and maps have `to_json` too: `[1, 2, 3].to_json()`.
 
+## Time
+
+A length of time is a `Duration`, written with its unit, and an instant is a `Time`. Neither is a number, so a timeout of `30` cannot be mistaken for seconds or for milliseconds.
+
+```koo
+import std/time
+
+type Booking = { room: string, starts: Time, lasts: Duration }
+
+fn main() {
+    timeout := 30s
+    print(timeout / 4)
+    print(1h30min + 45min)
+
+    booking := Booking { room: "Lovelace", starts: Time.parse("2026-03-01T09:30:00Z") else Time.from_unix(0), lasts: 90min }
+    print(booking.starts + booking.lasts)
+    print(booking.to_json())
+
+    started := time.uptime()
+    time.sleep(10ms)
+    print(time.uptime() - started >= 10ms)
+}
+```
+
+```text
+7s500ms
+2h15min
+2026-03-01T11:00:00Z
+{"room":"Lovelace","starts":"2026-03-01T09:30:00Z","lasts":"1h30min"}
+true
+```
+
+- Durations add, subtract, and multiply and divide by an `int`. A time and a duration add to a time, and two times subtract to a duration.
+- `time.now()` is the clock, `time.uptime()` a clock that only goes forward, for measuring, and `time.sleep(length)` waits.
+- Both are JSON, as strings: `"1h30min"` and RFC 3339.
+
 ## A web server
 
 `std/http` is a server in a few lines. A handler is a function from a request to a response.

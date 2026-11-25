@@ -300,7 +300,51 @@ Set[1, 2] 0
 
 `JsonError` has the fields `message: string` and `path: string`. Section 8.7 gives the correspondence between types and JSON.
 
-## B.9 `std/io`
+## B.9 Durations and Times
+
+| `Duration` | |
+| --- | --- |
+| `Duration.parse(text: string) -> Duration ! ParseError` | the duration that the text is, in the form of a constant |
+| `d.seconds() -> float` | the length in seconds |
+| `d.millis() -> int`, `d.micros() -> int`, `d.nanos() -> int` | the length in whole thousandths, millionths and thousand-millionths of a second |
+| `d.abs() -> Duration` | the length without its sign |
+| `d.compare(other: Duration) -> int` | negative, zero or positive, by the order of `<` |
+
+| `Time` | |
+| --- | --- |
+| `Time.parse(text: string) -> Time ! ParseError` | the time that a text in the form of RFC 3339 names |
+| `Time.from_unix(seconds: int) -> Time` | the time so many seconds after the beginning of 1970 in UTC |
+| `t.unix() -> int` | the whole seconds from the beginning of 1970 to the time |
+| `t.unix_nanos() -> int` | the same in nanoseconds |
+| `t.compare(other: Time) -> int` | negative, zero or positive, by the order of `<` |
+
+Both have `to_string`, `to_json` and `from_json`. The operators on them are in Section A.5.3.
+
+```koo
+fn main() {
+    d := Duration.parse("1min30s") else 0s
+    print("{d} {d.seconds()} {d.millis()} {d.micros()} {d.nanos()} {(-d).abs()} {d.compare(2min)}")
+    t := Time.parse("2026-01-31T12:00:00.25Z") else Time.from_unix(0)
+    print("{t} {t.unix()} {t.unix_nanos()} {t.compare(Time.from_unix(0))} {Time.from_unix(86400)}")
+    print("{d.to_json()} {t.to_json()} {Duration.parse("soon") else 0s}")
+}
+```
+
+```text
+1min30s 90.0 90000 90000000 90000000000 1min30s -1
+2026-01-31T12:00:00.25Z 1769860800 1769860800250000000 1 1970-01-02T00:00:00Z
+"1min30s" "2026-01-31T12:00:00.25Z" 0s
+```
+
+## B.10 `std/time`
+
+| | |
+| --- | --- |
+| `time.now() -> Time` | the time, by the clock of the machine |
+| `time.uptime() -> Duration` | how long the program has been running, by a clock that only goes forward |
+| `time.sleep(length: Duration)` | waits; a length that is not positive does not wait |
+
+## B.11 `std/io`
 
 | | |
 | --- | --- |
@@ -313,7 +357,7 @@ Set[1, 2] 0
 
 `IoError` has the field `message: string`.
 
-## B.10 `std/os`
+## B.12 `std/os`
 
 | | |
 | --- | --- |
@@ -321,7 +365,7 @@ Set[1, 2] 0
 | `os.env(name: string) -> string?` | the value of an environment variable |
 | `os.exit(status: int)` | ends the program with a status |
 
-## B.11 `std/http`
+## B.13 `std/http`
 
 | | |
 | --- | --- |
@@ -360,7 +404,7 @@ A handler is a `fn(http.Request) -> http.Response ! Failure`.
 
 `http.Error` has the field `message: string`. Chapter 10 has programs that use these.
 
-## B.12 `std/test`
+## B.14 `std/test`
 
 | | |
 | --- | --- |

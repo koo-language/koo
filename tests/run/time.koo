@@ -1,0 +1,104 @@
+// Durations and times (Section 10.6): literals, arithmetic, order, text, JSON, what
+// crosses to an actor, and the clock.
+import std/time
+
+timeout := 30s
+retry: Duration = 250ms
+
+type Job = { name: string, every: Duration, last: Time, deadline: Time? }
+
+actor Clock {
+    var ticks: int = 0
+    var total: Duration = 0s
+
+    fn tick(after: Duration, at: Time) -> Duration {
+        ticks += 1
+        total += after
+        return total
+    }
+}
+
+fn wait(length: Duration = 5ms) -> Duration {
+    return length * 2
+}
+
+fn main() {
+    print(timeout)
+    print(retry * 4)
+    print(2 * retry)
+    print(timeout / 4)
+    print(timeout + retry - 1s)
+    print(-retry)
+    print(1h30min)
+    print(timeout > retry)
+    print(timeout == 30s)
+    print(wait())
+    print(wait(length: 1s))
+    var budget := 1s
+    budget -= 250ms
+    budget *= 2
+    budget /= 3
+    print(budget)
+    start := Time.from_unix(1764007368)
+    later := start + 90min
+    print(later)
+    print(later - start)
+    print(later - 1h)
+    print(later > start)
+    var deadline := start
+    deadline += 10s
+    print(deadline)
+    print([3s, 1s, 2s].sorted())
+    print([1s, 2s].max())
+    var by_length: [Duration: string] = [:]
+    by_length[1s] = "one second"
+    print(by_length[1000ms])
+    job := Job { name: "sweep", every: 15min, last: start, deadline: none }
+    print(job)
+    text := job.to_json()
+    print(text)
+    print((Job.from_json(text) else job) == job)
+    match Job.from_json(`{"name": "x", "every": "soon", "last": "2026-01-01T00:00:00Z"}`) {
+        j => print(j)
+        ! e => print("{e.path}: {e.message}")
+    }
+    clock := Clock.start()
+    print(clock.tick(5s, start))
+    print(clock.tick(500ms, later))
+    print("{timeout.seconds()} {retry.millis()} {retry.micros()} {retry.nanos()}")
+    began := time.uptime()
+    time.sleep(30ms)
+    took := time.uptime() - began
+    print(took >= 30ms and took < 2s)
+    print(time.now() > start)
+}
+
+//= 30s
+//= 1s
+//= 500ms
+//= 7s500ms
+//= 29s250ms
+//= -250ms
+//= 1h30min
+//= true
+//= true
+//= 10ms
+//= 2s
+//= 500ms
+//= 2025-11-24T19:32:48Z
+//= 1h30min
+//= 2025-11-24T18:32:48Z
+//= true
+//= 2025-11-24T18:02:58Z
+//= [1s, 2s, 3s]
+//= 2s
+//= one second
+//= Job { name: "sweep", every: 15min, last: 2025-11-24T18:02:48Z, deadline: none }
+//= {"name":"sweep","every":"15min","last":"2025-11-24T18:02:48Z"}
+//= true
+//= /every: expected a duration such as "250ms", found "soon"
+//= 5s
+//= 5s500ms
+//= 30.0 250 250000 250000000
+//= true
+//= true

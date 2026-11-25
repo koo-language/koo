@@ -107,10 +107,7 @@ impl<'a> Checker<'a> {
                 self.unsupported(span, "`Decimal` is");
                 self.unknown(span)
             }
-            ast::ExprKind::Duration(_) => {
-                self.unsupported(span, "`Duration` is");
-                self.unknown(span)
-            }
+            ast::ExprKind::Duration(text) => self.duration_literal(text, span),
             ast::ExprKind::Char(_) => {
                 self.unsupported(span, "`char` is");
                 self.unknown(span)
@@ -207,11 +204,14 @@ impl<'a> Checker<'a> {
                             self.mk(ExprKind::Unary(UnOp::Neg, Box::new(operand)), ty, span)
                         }
                         Ty::Unknown => self.unknown(span),
-                        _ => {
-                            let found = self.ty_name(&operand.ty);
-                            self.error(span, format!("`-` is not defined for `{found}`"));
-                            self.unknown(span)
-                        }
+                        _ => match self.negated_duration(&operand, span) {
+                            Some(negated) => negated,
+                            None => {
+                                let found = self.ty_name(&operand.ty);
+                                self.error(span, format!("`-` is not defined for `{found}`"));
+                                self.unknown(span)
+                            }
+                        },
                     }
                 }
                 ast::UnaryOp::Not => {
@@ -632,7 +632,8 @@ impl<'a> Checker<'a> {
         } else {
             name.name.as_str()
         };
-        if private && name.name.starts_with('_') {
+        let hidden = private || (self.is_time_type(&base.ty) && !self.body_in_prelude);
+        if hidden && name.name.starts_with('_') {
             let found = self.ty_name(&base.ty);
             self.error(name.span, format!("`{found}` has no field `{}`", name.name));
             return self.unknown(span);
@@ -812,6 +813,28 @@ impl<'a> Checker<'a> {
         let b = self.expr(rhs, Some(&a.ty));
         if a.ty.is_unknown() || b.ty.is_unknown() {
             return self.unknown(span);
+        }
+        // Arithmetic on durations and times is the prelude's (`check/time.rs`).
+        if arithmetic && (self.is_time_type(&a.ty) || self.is_time_type(&b.ty)) {
+            let time_op = match op {
+                B::Add => Some(BinOp::Add),
+                B::Sub => Some(BinOp::Sub),
+                B::Mul => Some(BinOp::Mul),
+                B::Div => Some(BinOp::Div),
+                _ => None,
+            };
+            match time_op.and_then(|time_op| self.time_arithmetic(time_op, &a, &b, span)) {
+                Some(result) => return result,
+                None => {
+                    let (left, right) = (self.ty_name(&a.ty), self.ty_name(&b.ty));
+                    self.error_help(
+                        span,
+                        format!("`{}` is not defined for `{left}` and `{right}`", op.as_str()),
+                        "durations add and subtract, and are multiplied and divided by an `int`; a `Time` and a `Duration` add to a `Time`, and two times subtract to a `Duration` (Section 10.6)",
+                    );
+                    return self.unknown(span);
+                }
+            }
         }
         let hir_op = match op {
             B::Add => BinOp::Add,
@@ -1175,6 +1198,18 @@ impl<'a> Checker<'a> {
             }
             return self.unknown(span);
         };
+        if let Target::Struct(id) = target
+            && !self.body_in_prelude
+            && self.is_time_type(&Ty::Struct(id))
+        {
+            let name = self.ty_name(&Ty::Struct(id));
+            self.error_help(
+                span,
+                format!("`{name}` cannot be built from its fields"),
+                "its fields are its own: write a duration as `250ms`, and get a time from `time.now()`, `Time.from_unix(seconds)` or `Time.parse(text)`",
+            );
+            return self.unknown(span);
+        }
         if let Target::Struct(id) = target
             && !self.body_in_prelude
             && self.is_prelude_type(&Ty::Struct(id))

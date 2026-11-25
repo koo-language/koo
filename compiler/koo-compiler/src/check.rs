@@ -21,6 +21,7 @@ mod lambdas;
 mod maps;
 mod patterns;
 mod suggest;
+mod time;
 
 /// Checks a program. `prelude` is the standard prelude, whose declarations are in scope in
 /// every program (Section 4.1).
@@ -593,7 +594,10 @@ impl<'a> Checker<'a> {
             // brings one's name into scope (Section 8.2).
             match &import.kind {
                 ast::ImportKind::Package { path, .. }
-                    if matches!(path.as_str(), "std/os" | "std/io" | "std/test" | "std/http") =>
+                    if matches!(
+                        path.as_str(),
+                        "std/os" | "std/io" | "std/test" | "std/http" | "std/time"
+                    ) =>
                 {
                     let key = (self.file_of(import.span), import.binding.clone());
                     let own = path.rsplit('/').next().unwrap_or(path).to_string();
@@ -606,7 +610,7 @@ impl<'a> Checker<'a> {
                     self.error_help(
                         import.span,
                         format!("the package `{path}` is not part of this compiler yet"),
-                        "the standard packages so far are `std/os`, `std/io`, `std/http` and `std/test`",
+                        "the standard packages so far are `std/os`, `std/io`, `std/http`, `std/time` and `std/test`",
                     );
                 }
                 _ => self.unsupported(import.span, "imports of other packages are"),
@@ -680,7 +684,7 @@ impl<'a> Checker<'a> {
                 || is_builtin_type(&name.name)
             {
                 self.already_declared(name.span, &name.name, &format!("type {}", name.name));
-                if is_builtin_type(&name.name) {
+                if is_builtin_type(&name.name) || matches!(name.name.as_str(), "Duration" | "Time") {
                     self.note(format!("`{}` is a type of the language", name.name));
                 }
             } else if let Some(kind) = kind {
@@ -1132,7 +1136,7 @@ impl<'a> Checker<'a> {
                         }
                         Ty::Unknown
                     }
-                    "Decimal" | "Duration" | "Time" | "Map" | "Set" | "Json" | "Channel" | "Shared" => {
+                    "Decimal" | "Map" | "Set" | "Json" | "Channel" | "Shared" => {
                         self.unsupported(ty.span, &format!("`{name}` is"));
                         Ty::Unknown
                     }
@@ -1265,6 +1269,7 @@ impl<'a> Checker<'a> {
             | ast::ExprKind::Float(_)
             | ast::ExprKind::Bool(_)
             | ast::ExprKind::RawStr(_)
+            | ast::ExprKind::Duration(_)
             | ast::ExprKind::None => true,
             ast::ExprKind::Str(parts) => parts.iter().all(|p| matches!(p, ast::StrPart::Lit(_))),
             ast::ExprKind::List(items) => items.is_empty(),
@@ -1295,7 +1300,8 @@ impl<'a> Checker<'a> {
         if !matches!(
             value.ty,
             Ty::Int | Ty::Float | Ty::Bool | Ty::Str | Ty::Byte | Ty::Unknown
-        ) {
+        ) && !self.is_time_type(&value.ty)
+        {
             self.unsupported(decl.value.span, "constants of this type are");
             return;
         }
@@ -1964,6 +1970,41 @@ impl<'a> Checker<'a> {
                     ast::AssignOp::Mul => Some(BinOp::Mul),
                     ast::AssignOp::Div => Some(BinOp::Div),
                 };
+                // `deadline += 5s`: the operators of durations and times are methods of
+                // the prelude's, so the assignment is of what the method returns.
+                if let Some(op) = op
+                    && self.is_time_type(&target_expr.ty)
+                {
+                    let value = self.expr(value, None);
+                    if value.ty.is_unknown() {
+                        return None;
+                    }
+                    return match self.time_arithmetic(op, &target_expr, &value, stmt.span) {
+                        Some(result) if result.ty == target_expr.ty => Some(Stmt::Assign {
+                            target: target_expr,
+                            op: None,
+                            value: result,
+                            span: stmt.span,
+                        }),
+                        Some(result) => {
+                            let (found, wanted) = (self.ty_name(&result.ty), self.ty_name(&target_expr.ty));
+                            self.error(
+                                stmt.span,
+                                format!("this gives a `{found}`, which cannot be assigned to a `{wanted}`"),
+                            );
+                            None
+                        }
+                        None => {
+                            let (left, right) = (self.ty_name(&target_expr.ty), self.ty_name(&value.ty));
+                            self.error_help(
+                                stmt.span,
+                                format!("this operator is not defined for `{left}` and `{right}`"),
+                                "durations add and subtract, and are multiplied and divided by an `int`; a `Time` and a `Duration` add to a `Time` (Section 10.6)",
+                            );
+                            None
+                        }
+                    };
+                }
                 let value = self.expr(value, Some(&target_expr.ty));
                 let value = self.coerce(value, &target_expr.ty);
                 if let Some(op) = op {
@@ -2646,18 +2687,7 @@ impl<'a> Checker<'a> {
 fn is_builtin_type(name: &str) -> bool {
     matches!(
         name,
-        "List"
-            | "Map"
-            | "Set"
-            | "Failure"
-            | "Decimal"
-            | "Duration"
-            | "Time"
-            | "Json"
-            | "Channel"
-            | "Shared"
-            | "Any"
-            | "Self"
+        "List" | "Map" | "Set" | "Failure" | "Decimal" | "Json" | "Channel" | "Shared" | "Any" | "Self"
     )
 }
 
@@ -2749,6 +2779,7 @@ fn is_constant(expr: &ast::Expr) -> bool {
         | ast::ExprKind::Float(_)
         | ast::ExprKind::Bool(_)
         | ast::ExprKind::RawStr(_)
+        | ast::ExprKind::Duration(_)
         | ast::ExprKind::None => true,
         ast::ExprKind::Str(parts) => parts.iter().all(|part| matches!(part, ast::StrPart::Lit(_))),
         ast::ExprKind::List(items) => items.iter().all(is_constant),
