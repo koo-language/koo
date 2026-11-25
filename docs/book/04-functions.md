@@ -557,7 +557,32 @@ The function sorts in place: all its invocations work on the one list of `main`,
 
 Recursion may provide no saving in storage, since somewhere a stack of the values being processed must be maintained. Nor will it be faster. But recursive code is more compact, and often much easier to write and understand than the non-recursive equivalent. Recursion is especially convenient for recursively defined data structures like trees; we will see a nice example in Section 6.5.
 
-A recursion that never stops, or that goes many hundreds of thousands of calls deep, runs out of the memory that is set aside for calls. At present such a program is ended by the operating system, without the message and line number of a panic.
+A recursion that never stops, or that goes many hundreds of thousands of calls deep, runs out of the memory that is set aside for calls. That is a panic, like an overflow in arithmetic:
+
+```koo
+// The number of steps down from n to zero.
+fn steps(n: int) -> int {
+    if n == 0 {
+        return 0
+    }
+    return steps(n - 1) + 1
+}
+
+fn main() {
+    print(steps(1000))
+    print(steps(-1))
+}
+```
+
+```text
+1000
+```
+
+```panic
+panic: the call stack is exhausted: a function calls itself too deeply or without end, or a value is nested too deeply
+```
+
+The second call never reaches zero. This panic does not name a line, since it is not one line that is at fault.
 
 **Exercise 4-6.** Adapt the ideas of `print_decimal` to write a recursive version of `itoa`; that is, convert an integer into a string by calling a recursive function.
 

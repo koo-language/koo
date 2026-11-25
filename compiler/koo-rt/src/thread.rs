@@ -78,6 +78,11 @@ impl Lock {
     pub fn unlock(&self) {
         self.0.store(false, Release);
     }
+
+    /// Takes the lock if nobody has it. Returns whether it was taken.
+    pub fn try_lock(&self) -> bool {
+        !self.0.swap(true, Acquire)
+    }
 }
 
 /// Lets go of the processor for a moment, when trying again has not helped.
@@ -178,6 +183,8 @@ pub struct Thread {
     pub index: u32,
     /// Whether it is one of the threads that run what actors are told.
     pub worker: bool,
+    /// The lowest address of the thread's stack, below which is the page that stops it.
+    pub stack_low: usize,
     /// The actor this thread is waiting for, as its slot and one more, or 0.
     pub waiting_for: AtomicU32,
     /// Allocations made on this thread, less those freed on it.
@@ -296,6 +303,134 @@ pub unsafe fn start(work: extern "C" fn(*mut u8) -> *mut u8) -> bool {
             pthread_detach(thread);
         }
         made
+    }
+}
+
+// ---- a stack that runs out ---------------------------------------------------------------
+//
+// A function that calls itself too deeply, or without end, runs off the end of its
+// thread's stack, into a page that the system keeps unreadable, and the system sends the
+// process a signal. The signal is taken here, on a small stack of its own (the thread's
+// has no room), and reported as the panic it is (Section 5.9).
+
+unsafe extern "C" {
+    fn sigaltstack(new: *const SignalStack, old: *mut SignalStack) -> i32;
+    fn sigaction(signal: i32, new: *const SignalAction, old: *mut SignalAction) -> i32;
+    fn pthread_self() -> usize;
+    fn _exit(status: i32) -> !;
+    #[cfg(target_os = "macos")]
+    fn pthread_get_stackaddr_np(thread: usize) -> usize;
+    #[cfg(target_os = "macos")]
+    fn pthread_get_stacksize_np(thread: usize) -> usize;
+    #[cfg(target_os = "linux")]
+    fn pthread_getattr_np(thread: usize, attributes: *mut u8) -> i32;
+    #[cfg(target_os = "linux")]
+    fn pthread_attr_getstack(attributes: *const u8, low: *mut usize, size: *mut usize) -> i32;
+}
+
+#[cfg(target_os = "macos")]
+#[repr(C)]
+struct SignalStack {
+    base: *mut u8,
+    size: usize,
+    flags: i32,
+}
+
+#[cfg(not(target_os = "macos"))]
+#[repr(C)]
+struct SignalStack {
+    base: *mut u8,
+    flags: i32,
+    size: usize,
+}
+
+#[cfg(target_os = "macos")]
+#[repr(C)]
+struct SignalAction {
+    handler: usize,
+    mask: u32,
+    flags: i32,
+}
+
+#[cfg(not(target_os = "macos"))]
+#[repr(C)]
+struct SignalAction {
+    handler: usize,
+    mask: [u64; 16],
+    flags: i32,
+    restorer: usize,
+}
+
+/// On the signal's own stack, and with what the signal was about.
+const ON_STACK_WITH_INFO: i32 = if cfg!(target_os = "macos") {
+    0x0001 | 0x0040
+} else {
+    0x0800_0000 | 0x0004
+};
+const SEGV: i32 = 11;
+const BUS: i32 = if cfg!(target_os = "macos") { 10 } else { 7 };
+/// Where in what the system says of a signal the address is that could not be reached.
+const ADDRESS_AT: usize = if cfg!(target_os = "macos") { 24 } else { 16 };
+/// How far below a stack an address still counts as having run off it: a function
+/// with large variables may step well past the page that stops it.
+const BELOW: usize = 64 << 20;
+
+/// Finds the calling thread's stack and gives the thread a stack to take the signal on.
+/// The handler is the process's, and is set by whichever thread comes here first.
+pub unsafe fn watch_stack() {
+    unsafe {
+        let thread = me();
+        #[cfg(target_os = "macos")]
+        {
+            let this = pthread_self();
+            thread.stack_low = pthread_get_stackaddr_np(this) - pthread_get_stacksize_np(this);
+        }
+        #[cfg(target_os = "linux")]
+        {
+            let mut attributes = [0u64; 16];
+            let (mut low, mut size) = (0usize, 0usize);
+            if pthread_getattr_np(pthread_self(), attributes.as_mut_ptr() as *mut u8) == 0 {
+                pthread_attr_getstack(attributes.as_ptr() as *const u8, &mut low, &mut size);
+                pthread_attr_destroy(attributes.as_mut_ptr() as *mut u8);
+            }
+            thread.stack_low = low;
+        }
+        if thread.stack_low == 0 {
+            return;
+        }
+        const SIZE: usize = 64 << 10;
+        let base = malloc(SIZE);
+        if base.is_null() {
+            return;
+        }
+        let stack = SignalStack {
+            base,
+            size: SIZE,
+            flags: 0,
+        };
+        sigaltstack(&stack, core::ptr::null_mut());
+        let mut action: SignalAction = core::mem::zeroed();
+        action.handler = stack_signal as *const () as usize;
+        action.flags = ON_STACK_WITH_INFO;
+        sigaction(SEGV, &action, core::ptr::null_mut());
+        sigaction(BUS, &action, core::ptr::null_mut());
+    }
+}
+
+/// A signal that says memory could not be reached. If the address is just below the
+/// thread's stack, the stack ran out, and that is a panic. Anything else is not the
+/// program's doing: the signal is given back to the system, which ends the process as
+/// it would have.
+extern "C" fn stack_signal(signal: i32, info: *const u8, _context: *const u8) {
+    unsafe {
+        let address = *(info.add(ADDRESS_AT) as *const usize);
+        let low = me().stack_low;
+        if low != 0 && address < low + 4096 && address + BELOW >= low {
+            overflowed();
+            _exit(101);
+        }
+        let action: SignalAction = core::mem::zeroed();
+        sigaction(signal, &action, core::ptr::null_mut());
     }
 }
 

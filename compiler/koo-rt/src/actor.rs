@@ -791,6 +791,7 @@ extern "C" fn work(_: *mut u8) -> *mut u8 {
     unsafe {
         let me = me();
         me.worker = true;
+        thread::watch_stack();
         loop {
             let index = dequeue();
             let slot = slot_at(index);

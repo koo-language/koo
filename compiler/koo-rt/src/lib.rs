@@ -753,7 +753,23 @@ pub unsafe extern "C" fn koo_init(argc: i32, argv: *const *const u8) {
         ARGV = argv;
         let counting = !getenv(c"KOO_LEAKS".as_ptr() as *const u8).is_null();
         COUNTING.store(counting, core::sync::atomic::Ordering::Relaxed);
+        thread::watch_stack();
     }
+}
+
+/// Reports that a thread's stack ran out, from the handler of the signal that says so.
+/// What the program had printed is written first, unless the thread was in the middle
+/// of printing, when it cannot be.
+fn overflowed() {
+    if PRINTING.try_lock() {
+        let out = unsafe { &mut *core::ptr::addr_of_mut!(STDOUT) };
+        write_all(1, &out.data[..out.len]);
+        out.len = 0;
+    }
+    write_all(
+        2,
+        b"panic: the call stack is exhausted: a function calls itself too deeply or without end, or a value is nested too deeply\n",
+    );
 }
 
 unsafe fn c_text<'a>(s: *const u8) -> &'a [u8] {
