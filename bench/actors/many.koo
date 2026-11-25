@@ -1,0 +1,29 @@
+// A million actors, each asked once, and all of them kept.
+
+actor Cell {
+    var value: int = 0
+    name: string
+
+    fn set(to: int) -> int {
+        value = to
+        return value
+    }
+
+    fn get() -> int {
+        return value
+    }
+}
+
+fn main() {
+    var cells: [Cell] = []
+    for i in 0..1000000 {
+        cell := Cell.start(name: "cell")
+        cell.set(i)
+        cells.push(cell)
+    }
+    var total := 0
+    for cell in cells {
+        total += cell.get()
+    }
+    print("{cells.len} actors, total {total}")
+}

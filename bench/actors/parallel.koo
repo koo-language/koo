@@ -1,0 +1,42 @@
+// Sixteen actors each count the primes in a range of their own, at the same time.
+
+actor Counter {
+    var found: int = 0
+
+    fn count(from: int, to: int) {
+        var n := 0
+        for i in from..to {
+            if is_prime(i) { n += 1 }
+        }
+        found = n
+    }
+
+    fn result() -> int {
+        return found
+    }
+}
+
+fn is_prime(n: int) -> bool {
+    if n < 2 { return false }
+    var d := 2
+    while d * d <= n {
+        if n % d == 0 { return false }
+        d += 1
+    }
+    return true
+}
+
+fn main() {
+    var counters: [Counter] = []
+    for i in 0..16 {
+        counters.push(Counter.start())
+    }
+    for i in 0..16 {
+        counters[i].send.count(i * 1000000, (i + 1) * 1000000)
+    }
+    var total := 0
+    for counter in counters {
+        total += counter.result()
+    }
+    print("{total}")
+}

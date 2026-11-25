@@ -1,0 +1,10 @@
+import std/http
+import std/os
+
+fn main() ! http.Error {
+    workers := int.parse(os.env("WORKERS") else "0") else 0
+    var app := http.App.new()
+    app.get("/", req -> http.text("Hello, world!"))
+    app.get("/hello/:name", req -> http.text("Hello, {req.param("name")}!"))
+    app.serve(port: 18090, workers: workers)?
+}

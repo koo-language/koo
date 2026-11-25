@@ -1,0 +1,31 @@
+// A thousand actors in a ring pass a message round, twenty million times in all.
+
+actor Node {
+    var next: Node? = none
+
+    fn link(to: Node) {
+        next = to
+    }
+
+    fn pass(left: int, passed: int) {
+        if left == 0 {
+            print("{passed + 1}")
+            return
+        }
+        if node := next {
+            node.send.pass(left - 1, passed + 1)
+        }
+    }
+}
+
+fn main() {
+    var nodes: [Node] = []
+    for i in 0..1000 {
+        nodes.push(Node.start())
+    }
+    for i in 0..1000 {
+        nodes[i].link(nodes[(i + 1) % 1000])
+    }
+    // The program ends when `main` has returned and every message has been answered.
+    nodes[0].send.pass(20000000, 0)
+}

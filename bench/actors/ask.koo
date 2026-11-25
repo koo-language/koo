@@ -1,0 +1,19 @@
+// Ten million asks of one actor, one after the other.
+
+actor Counter {
+    var n: int = 0
+
+    fn add(by: int) -> int {
+        n += by
+        return n
+    }
+}
+
+fn main() {
+    counter := Counter.start()
+    var last := 0
+    for i in 0..10000000 {
+        last = counter.add(1)
+    }
+    print("{last}")
+}

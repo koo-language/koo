@@ -1,0 +1,47 @@
+// Sixty-four actors are each told two hundred thousand things by the others, all at once.
+
+actor Sink {
+    var got: int = 0
+
+    fn add(by: int) {
+        got += by
+    }
+
+    fn total() -> int {
+        return got
+    }
+}
+
+actor Source {
+    fn pour(sinks: [Sink], times: int) {
+        for i in 0..times {
+            sinks[i % sinks.len].send.add(1)
+        }
+    }
+
+    fn done() -> bool {
+        return true
+    }
+}
+
+fn main() {
+    var sinks: [Sink] = []
+    var sources: [Source] = []
+    for i in 0..64 {
+        sinks.push(Sink.start())
+    }
+    for i in 0..16 {
+        sources.push(Source.start())
+    }
+    for source in sources {
+        source.send.pour(sinks, 800000)
+    }
+    for source in sources {
+        source.done()
+    }
+    var total := 0
+    for sink in sinks {
+        total += sink.total()
+    }
+    print("{total}")
+}
