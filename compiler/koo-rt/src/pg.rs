@@ -418,6 +418,62 @@ fn address_in(answer: &[u8]) -> Option<[u8; 4]> {
     None
 }
 
+/// On macOS the system is asked for the address of a host: what it knows of names is
+/// not all in the two files that `resolve` reads (a VPN has its own name servers for its
+/// own names, and a machine on the same network is found without any), and its resolver
+/// is part of every program there in any case.
+#[cfg(target_os = "macos")]
+unsafe fn by_the_system(host: &[u8]) -> Option<[u8; 4]> {
+    unsafe {
+        #[repr(C)]
+        struct Found {
+            flags: i32,
+            family: i32,
+            kind: i32,
+            protocol: i32,
+            address_len: u32,
+            name: *mut u8,
+            address: *const u8,
+            next: *mut Found,
+        }
+        unsafe extern "C" {
+            fn getaddrinfo(host: *const u8, service: *const u8, hints: *const Found, found: *mut *mut Found) -> i32;
+            fn freeaddrinfo(found: *mut Found);
+        }
+        let mut name = [0u8; 256];
+        if host.len() < name.len() && !host.contains(&0) {
+            name[..host.len()].copy_from_slice(host);
+            let hints = Found {
+                flags: 0,
+                family: AF_INET,
+                kind: SOCK_STREAM,
+                protocol: 0,
+                address_len: 0,
+                name: core::ptr::null_mut(),
+                address: core::ptr::null(),
+                next: core::ptr::null_mut(),
+            };
+            let mut found: *mut Found = core::ptr::null_mut();
+            if getaddrinfo(name.as_ptr(), core::ptr::null(), &hints, &mut found) == 0 && !found.is_null() {
+                let mut address = None;
+                if (*found).family == AF_INET && (*found).address_len >= 8 {
+                    // The length, the family, the port, and then the four bytes.
+                    let at = (*found).address.add(4);
+                    address = Some([*at, *at.add(1), *at.add(2), *at.add(3)]);
+                }
+                freeaddrinfo(found);
+                return address;
+            }
+        }
+        None
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+unsafe fn by_the_system(_host: &[u8]) -> Option<[u8; 4]> {
+    None
+}
+
 /// The address of a host: as it is written, from the machine's table of hosts, or from
 /// the name servers the machine is set up with, trying the name inside each of the
 /// domains it searches, as the system's own resolver does.
@@ -428,6 +484,9 @@ unsafe fn resolve(host: &[u8]) -> Option<[u8; 4]> {
         }
         if host.eq_ignore_ascii_case(b"localhost") {
             return Some([127, 0, 0, 1]);
+        }
+        if cfg!(target_os = "macos") {
+            return by_the_system(host);
         }
         let mut hosts = file(c"/etc/hosts");
         let mut found = None;

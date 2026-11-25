@@ -65,6 +65,36 @@ fn main() {
 }
 ```
 
+## A service
+
+[`examples/service`](examples/service) is a small orders service of about a hundred lines, and the pattern for one of your own. Its settings are a struct read from the environment, its state is in PostgreSQL, it listens where `PORT` says, it logs lines that a program can read, and it stops cleanly when it is asked to. Its README goes through the twelve factors one by one, and the tests start the service with nothing but its environment and check what it answers.
+
+```koo
+type Settings = { database_url: string, pool: int = 10 }
+
+fn main() ! EnvError | sql.Error | http.Error {
+    settings := Settings.from_env()?
+    db := postgres.connect(settings.database_url, pool: settings.pool)?
+
+    var app := http.App.new()
+    app.get("/orders/:id", req -> {
+        id := int.parse(req.param("id")) else {
+            return http.status(400, "an order has a number\n")
+        }
+        row := db.query_one("select * from orders where id = {id}")? else {
+            return http.status(404, "there is no order {id}\n")
+        }
+        return http.json(Order.from_row(row)?)
+    })
+    app.serve()?
+}
+```
+
+- A handler that waits for the database does not hold up its worker: one worker answers many requests at a time.
+- A handler that panics fails its own request, with 500, and nothing else.
+- `{id}` in the query is a parameter, never SQL.
+- `docker compose -f examples/service/compose.yaml up --build` runs it with a database.
+
 ## Where it is going
 
 The specification describes the whole language. This service is its reference example. It does not compile yet as written, for want of `distinct` types, `Decimal` and `app.on_error`; the same service with an `int` for the id and a `match` in the handler does, and [Chapter 11 of the book](docs/book/11-database.md) has it, run against a real database.
