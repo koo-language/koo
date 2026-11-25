@@ -223,6 +223,16 @@ pub struct Thread {
     /// The kind of the last answer from an actor of another process.
     pub answer_kind: [u8; 104],
     pub answer_kind_len: usize,
+    /// Whether the thread is in the middle of talking to another process (`actor.rs`).
+    pub talking: bool,
+    /// The message from another process that the thread is answering: the connection
+    /// it came on and one more, turned about once the connection is to be let go of,
+    /// or 0 for none; its kind; the message, its length, and where its method ends.
+    pub asked_on: i32,
+    pub asked_kind: u8,
+    pub asked: *mut u8,
+    pub asked_len: usize,
+    pub asked_method: usize,
 }
 
 static KEY: AtomicUsize = AtomicUsize::new(0);

@@ -1757,6 +1757,67 @@ fn a_stopping_server_answers_what_it_has_in_hand() {
                 "with {workers} workers: {got}"
             );
         }
+        // An actor that takes its time is waited for by the handlers that asked it and
+        // by nobody else: while four ask one that naps, the worker they are in answers
+        // other requests, and the process that keeps the actors answers for the
+        // others. Where there is one process the actor is asked in the handler itself.
+        if workers > 1 {
+            let napping: Vec<_> = (0..4)
+                .map(|_| std::thread::spawn(move || get(port, "/sloth/400")))
+                .collect();
+            std::thread::sleep(std::time::Duration::from_millis(100));
+            let started = std::time::Instant::now();
+            for _ in 0..20 {
+                let got = get(port, "/whoami");
+                assert!(
+                    got.ends_with("\r\n\r\nnobody, no token"),
+                    "with {workers} workers: {got}"
+                );
+                let got = get(port, "/bytes");
+                assert!(
+                    got.ends_with("\r\n\r\n[97, 195, 191]\n"),
+                    "with {workers} workers: {got}"
+                );
+            }
+            let took = started.elapsed();
+            assert!(
+                took < std::time::Duration::from_millis(300),
+                "with {workers} workers, forty requests beside an actor that naps took {took:?}"
+            );
+            let mut naps: Vec<String> = napping
+                .into_iter()
+                .map(|answer| {
+                    let answer = answer.join().unwrap();
+                    assert!(answer.starts_with("HTTP/1.1 200 "), "with {workers} workers: {answer}");
+                    answer.rsplit("\r\n\r\n").next().unwrap().trim().to_string()
+                })
+                .collect();
+            naps.sort();
+            assert_eq!(naps, ["1", "2", "3", "4"], "with {workers} workers");
+            // A method that panics costs the handler that asked, which answers 500,
+            // and not those that wait for the same actor before it and after it.
+            let before = std::thread::spawn(move || get(port, "/sloth/200"));
+            std::thread::sleep(std::time::Duration::from_millis(50));
+            let tripped = std::thread::spawn(move || get(port, "/trip"));
+            std::thread::sleep(std::time::Duration::from_millis(50));
+            let after = std::thread::spawn(move || get(port, "/sloth/1"));
+            let (before, tripped, after) = (before.join().unwrap(), tripped.join().unwrap(), after.join().unwrap());
+            assert!(before.ends_with("\r\n\r\n5\n"), "with {workers} workers: {before}");
+            assert!(
+                tripped.starts_with("HTTP/1.1 500 "),
+                "with {workers} workers: {tripped}"
+            );
+            // The actor began again when its method panicked.
+            assert!(after.ends_with("\r\n\r\n1\n"), "with {workers} workers: {after}");
+        } else {
+            let tripped = get(port, "/trip");
+            assert!(
+                tripped.starts_with("HTTP/1.1 500 "),
+                "with {workers} workers: {tripped}"
+            );
+            let got = get(port, "/sloth/1");
+            assert!(got.ends_with("\r\n\r\n1\n"), "with {workers} workers: {got}");
+        }
         let asked: Vec<_> = (0..6)
             .map(|_| std::thread::spawn(move || get(port, "/visit")))
             .collect();

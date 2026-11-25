@@ -937,6 +937,15 @@ impl<'a> Gen<'a> {
         if self.p.functions.iter().any(|function| function.name == "a__job") {
             text.push_str("  call void @koo_actor_runner(ptr @\"koo.a__job\")\n");
         }
+        // What answers a message that another process has for an actor of this one.
+        if self
+            .p
+            .functions
+            .iter()
+            .any(|function| function.name == "a__serve_remote")
+        {
+            text.push_str("  call void @koo_actor_answerer(ptr @\"koo.a__serve_remote\")\n");
+        }
         if self.p.test_mode {
             let tests = self.p.tests.clone();
             let cases: Vec<String> = (0..tests.len()).map(|i| format!("i64 {i}, label %test{i}")).collect();
@@ -986,6 +995,7 @@ declare void @koo_exit_main()
 declare i32 @_setjmp(ptr) returns_twice
 declare ptr @koo_guard_enter()
 declare void @koo_actor_runner(ptr)
+declare void @koo_actor_answerer(ptr)
 declare void @koo_init(i32, ptr)
 declare i64 @koo_test_index()
 declare void @koo_print(ptr)

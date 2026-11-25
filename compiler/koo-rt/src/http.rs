@@ -1762,11 +1762,15 @@ mod imp {
                     let Some(slot) = CHILDREN[..CHILD_COUNT].iter().position(|child| *child == gone) else {
                         continue;
                     };
+                    // The threads that answer for the actors go on meanwhile, but leave
+                    // their connections as they are until the new process has its own.
+                    super::super::actor::forking(true);
                     let child = fork();
                     if child == 0 {
                         become_worker();
                         return 1;
                     }
+                    super::super::actor::forking(false);
                     if child > 0 {
                         CHILDREN[slot] = child;
                     } else {

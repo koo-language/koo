@@ -77,6 +77,22 @@ actor Printer {
     }
 }
 
+// An actor that takes as long as it is asked to, and one of whose methods panics.
+actor Sloth {
+    var naps: int = 0
+
+    fn nap(millis: int) -> int {
+        time.sleep(1ms * millis)
+        naps += 1
+        return naps
+    }
+
+    fn trip(n: int) -> int {
+        empty: [int] = []
+        return empty[n]
+    }
+}
+
 type Echo = { method: string, path: string, body: string, agent: string, kind: string, token: string }
 
 // A program's own function may have a name the library has too.
@@ -180,6 +196,11 @@ fn main() ! http.Error {
         kind: req.header("Content-Type") else "",
         token: req.header("X-Token") else "",
     }))
+    // An actor that takes its time is waited for by the handler that asked it, and by
+    // nobody else: not by the other handlers of its worker, nor by the other actors.
+    sloth := Sloth.start()
+    app.get("/sloth/:millis", req -> http.text("{sloth.nap(int.parse(req.param("millis")) else 0)}\n"))
+    app.get("/trip", req -> http.text("{sloth.trip(3)}\n"))
     app.get("/slow", req -> {
         time.sleep(2s)
         return http.text("late\n")

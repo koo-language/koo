@@ -1501,6 +1501,11 @@ mod alone {
     pub unsafe extern "C" fn koo_actor_reply(_: *const Header, _: *const Header) {}
     #[unsafe(no_mangle)]
     pub unsafe extern "C" fn koo_actor_hang_up() {}
+
+    #[unsafe(no_mangle)]
+    pub unsafe extern "C" fn koo_actor_answerer(_: usize) {}
+
+    pub unsafe fn forking(_: bool) {}
     #[unsafe(no_mangle)]
     pub unsafe extern "C" fn koo_actor_ask(_: *const Header, _: *const Header, _: *const Header) -> *mut Header {
         unsafe { die(&[b"an actor of another process was asked, on a system where processes do not talk yet"]) }
@@ -1529,8 +1534,13 @@ mod remote {
         fn poll(fds: *mut PollFd, count: usize, milliseconds: i32) -> i32;
         fn unlink(path: *const u8) -> i32;
         fn signal(number: i32, handler: usize) -> usize;
+        fn recv(fd: i32, data: *mut u8, len: usize, flags: i32) -> isize;
+        fn shutdown(fd: i32, how: i32) -> i32;
     }
 
+    const MSG_PEEK: i32 = 2;
+    const MSG_DONTWAIT: i32 = if cfg!(target_os = "macos") { 0x80 } else { 0x40 };
+    const EAGAIN: i32 = if cfg!(target_os = "macos") { 35 } else { 11 };
     const AF_UNIX: i32 = 1;
     const SOCK_STREAM: i32 = 1;
     const POLLIN: i16 = 0x1;
@@ -1617,31 +1627,67 @@ mod remote {
     }
 
     // What this process is to others: where it is reached, and who is talking to it.
-    // Only the thread the program started on listens.
     static HOME: AtomicPtr<Header> = AtomicPtr::new(core::ptr::null_mut());
     static mut LISTENER: i32 = -1;
-    static mut CONNS: [i32; MOST_CLIENTS] = [-1; MOST_CLIENTS];
+
+    /// What is being done on a connection from another process: nothing;
+    const IDLE: u8 = 0;
+    /// a thread is answering the message that came on it;
+    const BUSY: u8 = 1;
+    /// its message was read, and waits until its actor has answered another;
+    const HELD_UP: u8 = 2;
+    /// or the other end is gone, and the thread that answers on it has yet to let go.
+    const GONE: u8 = 3;
+
+    #[derive(Clone, Copy)]
+    struct Conn {
+        fd: i32,
+        doing: u8,
+        /// The actor its message asks, or 0 for a message that keeps no actor.
+        actor: i64,
+        /// Its place among the messages that are held up.
+        turn: u64,
+        /// The message, while it is held up.
+        message: *mut u8,
+        len: usize,
+    }
+
+    const NO_CONN: Conn = Conn {
+        fd: -1,
+        doing: IDLE,
+        actor: 0,
+        turn: 0,
+        message: core::ptr::null_mut(),
+        len: 0,
+    };
+
+    /// The connections, and whose turn it is. `SERVED` is held to read or change them:
+    /// for a few instructions, and never while a thread waits for anything.
+    static SERVED: Lock = Lock::new();
+    static mut CONNS: [Conn; MOST_CLIENTS] = [NO_CONN; MOST_CLIENTS];
     static mut CONN_COUNT: usize = 0;
     static mut TURN: usize = 0;
-    static mut CURRENT: i32 = -1;
-    static mut CURRENT_KIND: u8 = ASK;
-    static mut MESSAGE: *mut u8 = core::ptr::null_mut();
-    static mut MESSAGE_CAP: usize = 0;
-    static mut METHOD: (usize, usize) = (0, 0);
-    static mut BODY: (usize, usize) = (0, 0);
+    static mut TURNS: u64 = 0;
 
-    // What this process knows of others: its connection to each it has talked to. One
-    // thread talks at a time, and holds `TALKING` from its message to the answer.
-    static TALKING: Gate = Gate::new();
-    /// The thread that is talking to another process, if one is.
-    static TALKER: AtomicUsize = AtomicUsize::new(0);
+    /// The threads that answer other processes. One of them at a time waits for a
+    /// message, holding `LEADING`; when it has one, it lets another wait and answers.
+    /// So an actor that takes its time keeps one thread, and the others are answered
+    /// meanwhile. `SPARE` is how many wait to be the one that waits.
+    static LEADING: Gate = Gate::new();
+    static ANSWERERS: AtomicUsize = AtomicUsize::new(0);
+    static SPARE: AtomicUsize = AtomicUsize::new(0);
+    const MOST_ANSWERERS: usize = 32;
+    /// The function of the program that answers a message, or 0 if it has not said.
+    static ANSWERER: AtomicUsize = AtomicUsize::new(0);
+    /// A message that was answered: it is not answered twice.
+    const ANSWERED: u8 = 2;
 
     /// Whether the thread that asks holds nothing of the support library's that others
     /// wait for: it is not in the middle of talking to another process, and not in the
     /// middle of making an actor's home. Asked where a signal is handled, of the thread
     /// the signal interrupted, to know whether the thread may be sent elsewhere.
     pub fn quiet() -> bool {
-        if TALKER.load(Acquire) == crate::thread::this_thread() {
+        if unsafe { me().talking } {
             return false;
         }
         let free = MAKING.try_lock();
@@ -1650,14 +1696,22 @@ mod remote {
         }
         free
     }
+
+    // What this process knows of others: connections to them that nothing is using. A
+    // thread that asks takes one, or makes one, and gives it back with the answer, so
+    // that handlers of a server that wait for answers side by side each have their own.
+    static KEPT: Lock = Lock::new();
     static mut HOMES: [(Name, i32); MOST_HOMES] = [(NO_NAME, -1); MOST_HOMES];
     static mut HOME_COUNT: usize = 0;
     static mut HOMES_OF: i32 = 0;
-    static mut ANSWER: *mut u8 = core::ptr::null_mut();
-    static mut ANSWER_CAP: usize = 0;
+    /// How many connections are in use, and the most that may be: the rest wait.
+    static OUT: AtomicUsize = AtomicUsize::new(0);
+    const MOST_OUT: usize = 32;
+    /// The most connections to one process that are kept when nothing uses them.
+    const MOST_KEPT: usize = 8;
 
     pub unsafe fn open() {
-        unsafe { TALKING.open() };
+        unsafe { LEADING.open() };
     }
 
     unsafe fn error() -> i32 {
@@ -1687,20 +1741,6 @@ mod remote {
             }
         }
         true
-    }
-
-    /// Room for `len` bytes in a buffer that is kept.
-    unsafe fn room<'a>(buffer: *mut *mut u8, cap: *mut usize, len: usize) -> &'a mut [u8] {
-        unsafe {
-            if len > *cap {
-                *buffer = realloc(*buffer, len.max(4096));
-                if (*buffer).is_null() {
-                    fatal(b"koo: out of memory\n");
-                }
-                *cap = len.max(4096);
-            }
-            core::slice::from_raw_parts_mut(*buffer, len)
-        }
     }
 
     /// The path of the socket's file, ended by a zero, and the process that made it: a
@@ -1823,6 +1863,16 @@ mod remote {
         !PARENT.load(Acquire).is_null()
     }
 
+    /// Before a process forks, and after, in the process that forked: the connections are
+    /// not changed meanwhile, so the new process finds them whole.
+    pub unsafe fn forking(begins: bool) {
+        if begins {
+            SERVED.lock();
+        } else {
+            SERVED.unlock();
+        }
+    }
+
     /// In a process just forked: the actors are its parent's, and so is their socket.
     #[allow(static_mut_refs)]
     pub unsafe fn after_fork() {
@@ -1833,10 +1883,15 @@ mod remote {
                 LISTENER = -1;
             }
             for conn in &CONNS[..CONN_COUNT] {
-                close(*conn);
+                close(conn.fd);
             }
             CONN_COUNT = 0;
-            CURRENT = -1;
+            // What a thread of the parent held is let go of; the threads are not here.
+            SERVED.unlock();
+            KEPT.unlock();
+            ANSWERERS.store(0, Release);
+            SPARE.store(0, Release);
+            OUT.store(0, Release);
             // The address is kept, and no longer matched: a handle that names it is
             // reached through the socket, like any other.
             HOME.store(core::ptr::null_mut(), Release);
@@ -1844,102 +1899,312 @@ mod remote {
         }
     }
 
+    /// Lets go of a connection: closes it and takes it out of the list. With `SERVED`.
     #[allow(static_mut_refs)]
     unsafe fn drop_conn(index: usize) {
         unsafe {
-            close(CONNS[index]);
+            // Whoever waits at the other end learns at once, whoever else has the socket.
+            shutdown(CONNS[index].fd, 2);
+            close(CONNS[index].fd);
+            free(CONNS[index].message);
             CONN_COUNT -= 1;
             CONNS[index] = CONNS[CONN_COUNT];
         }
     }
 
-    /// Waits up to some milliseconds for a message from another process. Returns whether
-    /// one is here: it is kept for `koo_actor_message` and `koo_actor_body`.
-    #[allow(static_mut_refs)]
+    /// Says which function of the program answers a message from another process. Called
+    /// as the program starts.
+    #[unsafe(no_mangle)]
+    pub unsafe extern "C" fn koo_actor_answerer(answerer: usize) {
+        ANSWERER.store(answerer, Release);
+    }
+
+    /// Starts another thread that answers, if there may be more. Returns whether it did.
+    unsafe fn another_answerer() -> bool {
+        unsafe {
+            if ANSWERERS.fetch_add(1, AcqRel) < MOST_ANSWERERS && thread::start(answer) {
+                return true;
+            }
+            ANSWERERS.fetch_sub(1, AcqRel);
+            false
+        }
+    }
+
+    /// What a thread that answers does: it waits its turn to wait for a message, and
+    /// when it has one, sees that another thread waits in its place, and answers.
+    extern "C" fn answer(_: *mut u8) -> *mut u8 {
+        unsafe {
+            thread::watch_stack();
+            loop {
+                SPARE.fetch_add(1, AcqRel);
+                LEADING.lock();
+                SPARE.fetch_sub(1, AcqRel);
+                let taken = take(1000);
+                if taken && SPARE.load(Acquire) == 0 {
+                    another_answerer();
+                }
+                LEADING.unlock();
+                if taken {
+                    answer_taken();
+                }
+            }
+        }
+    }
+
+    /// In the process that watches the workers of a server, from time to time: sees that
+    /// what the workers ask of the actors is answered, and waits up to some milliseconds.
+    /// The answering is done by threads of its own, so that an actor that takes its time
+    /// holds up neither the watching nor the other actors; where no thread can be
+    /// started, the calling thread answers a message itself.
     pub unsafe fn pending(milliseconds: i32) -> bool {
         unsafe {
-            if LISTENER < 0 {
-                if milliseconds > 0 {
-                    let (wanted, mut left) = ([0i64, milliseconds as i64 * 1_000_000], [0i64; 2]);
-                    nanosleep(&wanted, &mut left);
+            if LISTENER >= 0 {
+                gates();
+                if ANSWERERS.load(Acquire) == 0 && !another_answerer() {
+                    LEADING.lock();
+                    let taken = take(milliseconds);
+                    LEADING.unlock();
+                    if taken {
+                        answer_taken();
+                    }
+                    return false;
                 }
-                return false;
             }
+            if milliseconds > 0 {
+                let (wanted, mut left) = ([0i64, milliseconds as i64 * 1_000_000], [0i64; 2]);
+                nanosleep(&wanted, &mut left);
+            }
+            false
+        }
+    }
+
+    /// The actor a message keeps while it is answered, or 0: an ask of a method, or to
+    /// stop, is answered with the actor held, and only one such at a time is taken up
+    /// for an actor. To start one, and to try to tell one, keeps none.
+    fn kept_actor(kind: u8, method: &[u8]) -> i64 {
+        let mut parts = method.split(|byte| *byte == b' ');
+        let (_, id, called) = (parts.next(), parts.next(), parts.next().unwrap_or(b""));
+        if kind != ASK || called.starts_with(b"try.") || called.starts_with(b".") {
+            return 0;
+        }
+        id.and_then(|id| core::str::from_utf8(id).ok())
+            .and_then(|id| id.parse::<i64>().ok())
+            .unwrap_or(0)
+    }
+
+    /// Waits up to some milliseconds for a message from another process, with `LEADING`
+    /// held. Returns whether there is one for the calling thread to answer: it is then
+    /// the thread's, with its connection, until `answer_taken` has let go of them.
+    #[allow(static_mut_refs)]
+    unsafe fn take(milliseconds: i32) -> bool {
+        unsafe {
             let mut fds: [PollFd; MOST_CLIENTS + 1] = core::array::from_fn(|_| PollFd {
                 fd: -1,
                 events: POLLIN,
                 revents: 0,
             });
             fds[0].fd = LISTENER;
-            for (slot, conn) in fds[1..].iter_mut().zip(&CONNS[..CONN_COUNT]) {
-                slot.fd = *conn;
+            let mut count = 1;
+            SERVED.lock();
+            // A connection that is being answered is watched too: the next message on
+            // it may arrive before its thread has said that it is done.
+            for conn in &CONNS[..CONN_COUNT] {
+                if conn.doing == IDLE || conn.doing == BUSY {
+                    fds[count].fd = conn.fd;
+                    count += 1;
+                }
             }
-            if poll(fds.as_mut_ptr(), CONN_COUNT + 1, milliseconds) <= 0 {
+            SERVED.unlock();
+            if poll(fds.as_mut_ptr(), count, milliseconds) <= 0 {
                 return false;
             }
             if fds[0].revents != 0 {
                 let fd = accept(LISTENER, core::ptr::null_mut(), core::ptr::null_mut());
                 if fd >= 0 {
+                    SERVED.lock();
                     if CONN_COUNT < MOST_CLIENTS {
-                        CONNS[CONN_COUNT] = fd;
+                        CONNS[CONN_COUNT] = Conn { fd, ..NO_CONN };
                         CONN_COUNT += 1;
+                        SERVED.unlock();
                     } else {
+                        SERVED.unlock();
                         close(fd);
                     }
                 }
             }
             // Each connection in its turn, so that no sender waits behind a busy one.
-            let count = CONN_COUNT;
-            for step in 0..count {
-                let index = (TURN + step) % count;
-                if index >= CONN_COUNT || fds[index + 1].revents == 0 || fds[index + 1].fd != CONNS[index] {
+            let mut early = false;
+            for step in 0..count - 1 {
+                let slot = &fds[1 + (TURN + step) % (count - 1)];
+                if slot.revents == 0 {
                     continue;
                 }
-                let fd = CONNS[index];
+                let fd = slot.fd;
+                SERVED.lock();
+                let Some(index) = CONNS[..CONN_COUNT].iter().position(|conn| conn.fd == fd) else {
+                    SERVED.unlock();
+                    continue;
+                };
+                if CONNS[index].doing != IDLE {
+                    // Something on a connection that is being answered: the other end
+                    // is gone, or its next message is early.
+                    let mut byte = [0u8; 1];
+                    let there = recv(fd, byte.as_mut_ptr(), 1, MSG_PEEK | MSG_DONTWAIT);
+                    if there == 0 || (there < 0 && error() != EAGAIN && error() != EINTR) {
+                        if CONNS[index].doing == BUSY {
+                            CONNS[index].doing = GONE;
+                        }
+                    } else {
+                        early = true;
+                    }
+                    SERVED.unlock();
+                    continue;
+                }
+                CONNS[index].doing = BUSY;
+                CONNS[index].actor = 0;
+                SERVED.unlock();
                 let mut size = [0u8; 4];
-                if !read_full(fd, &mut size) {
-                    drop_conn(index);
-                    return false;
-                }
+                let size_read = read_full(fd, &mut size);
                 let size = u32::from_le_bytes(size) as usize;
-                let message = room(&raw mut MESSAGE, &raw mut MESSAGE_CAP, size);
-                if size < 3 || !read_full(fd, message) {
-                    drop_conn(index);
-                    return false;
+                let message = if size_read && size >= 3 {
+                    malloc(size)
+                } else {
+                    core::ptr::null_mut()
+                };
+                let whole = !message.is_null() && {
+                    let text = core::slice::from_raw_parts_mut(message, size);
+                    read_full(fd, text) && 3 + u16::from_le_bytes([text[1], text[2]]) as usize <= size
+                };
+                SERVED.lock();
+                // The connection is this thread's since it was found, and nothing has
+                // moved it but the leaving of others, so it is looked for again.
+                let index = CONNS[..CONN_COUNT].iter().position(|conn| conn.fd == fd);
+                let (Some(index), true) = (index, whole) else {
+                    free(message);
+                    if let Some(index) = index {
+                        drop_conn(index);
+                    }
+                    SERVED.unlock();
+                    continue;
+                };
+                let text = core::slice::from_raw_parts(message, size);
+                let method_end = 3 + u16::from_le_bytes([text[1], text[2]]) as usize;
+                let actor = kept_actor(text[0], &text[3..method_end]);
+                let held_up = actor != 0
+                    && CONNS[..CONN_COUNT]
+                        .iter()
+                        .any(|conn| conn.fd != fd && conn.actor == actor && conn.doing != IDLE);
+                CONNS[index].actor = actor;
+                if held_up {
+                    // Its actor is answering another: it waits, and whoever answers
+                    // that one takes this one up next.
+                    CONNS[index].doing = HELD_UP;
+                    CONNS[index].turn = TURNS;
+                    TURNS += 1;
+                    CONNS[index].message = message;
+                    CONNS[index].len = size;
+                    SERVED.unlock();
+                    continue;
                 }
-                let method_len = u16::from_le_bytes([message[1], message[2]]) as usize;
-                if 3 + method_len > size {
-                    drop_conn(index);
-                    return false;
-                }
-                METHOD = (3, 3 + method_len);
-                BODY = (3 + method_len, size);
-                CURRENT = fd;
-                CURRENT_KIND = message[0];
-                TURN = index + 1;
-                // The asker is told that its message is the one being answered.
-                if CURRENT_KIND == ASK && !write_full(fd, b"A") {
-                    drop_conn(index);
-                    return false;
-                }
+                TURN = (TURN + step + 1) % (count - 1);
+                SERVED.unlock();
+                let me = me();
+                me.asked_on = fd + 1;
+                me.asked_kind = text[0];
+                me.asked = message;
+                me.asked_len = size;
+                me.asked_method = method_end;
                 return true;
+            }
+            if early {
+                thread::give_way();
             }
             false
         }
     }
 
+    /// Answers the message the thread has taken, and after it those that were held up
+    /// for the same actor, the oldest first; then lets go of the connection.
+    #[allow(static_mut_refs)]
+    unsafe fn answer_taken() {
+        unsafe {
+            loop {
+                let me = me();
+                let fd = me.asked_on - 1;
+                // The asker is told that its message is the one being answered.
+                let there = me.asked_kind != ASK || write_full(fd, b"A");
+                let answerer = ANSWERER.load(Acquire);
+                if there && answerer != 0 {
+                    let answer: extern "C" fn() = core::mem::transmute(answerer);
+                    answer();
+                }
+                let me = crate::thread::me();
+                // A connection that was hung up on has its number turned about.
+                let leave = !there || answerer == 0 || me.asked_on < 0;
+                free(me.asked);
+                me.asked = core::ptr::null_mut();
+                me.asked_on = 0;
+                SERVED.lock();
+                let index = CONNS[..CONN_COUNT].iter().position(|conn| conn.fd == fd);
+                let actor = index.map_or(0, |index| CONNS[index].actor);
+                if let Some(index) = index {
+                    if leave || CONNS[index].doing == GONE {
+                        drop_conn(index);
+                    } else {
+                        CONNS[index].doing = IDLE;
+                        CONNS[index].actor = 0;
+                    }
+                }
+                let mut next: Option<usize> = None;
+                if actor != 0 {
+                    for (at, conn) in CONNS[..CONN_COUNT].iter().enumerate() {
+                        let older = next.is_none_or(|next| conn.turn < CONNS[next].turn);
+                        if conn.doing == HELD_UP && conn.actor == actor && older {
+                            next = Some(at);
+                        }
+                    }
+                }
+                let Some(next) = next else {
+                    SERVED.unlock();
+                    return;
+                };
+                let conn = &mut CONNS[next];
+                conn.doing = BUSY;
+                me.asked_on = conn.fd + 1;
+                me.asked = core::mem::replace(&mut conn.message, core::ptr::null_mut());
+                me.asked_len = conn.len;
+                me.asked_kind = *me.asked;
+                me.asked_method = 3 + u16::from_le_bytes([*me.asked.add(1), *me.asked.add(2)]) as usize;
+                SERVED.unlock();
+            }
+        }
+    }
+
     /// What the message from another process asks: `Kind id method`.
     #[unsafe(no_mangle)]
-    #[allow(static_mut_refs)]
     pub unsafe extern "C" fn koo_actor_message() -> *mut Header {
-        unsafe { new_str(core::slice::from_raw_parts(MESSAGE.add(METHOD.0), METHOD.1 - METHOD.0)) }
+        unsafe {
+            let me = me();
+            if me.asked.is_null() {
+                return new_str(b"");
+            }
+            new_str(core::slice::from_raw_parts(me.asked.add(3), me.asked_method - 3))
+        }
     }
 
     /// What the message was sent with.
     #[unsafe(no_mangle)]
-    #[allow(static_mut_refs)]
     pub unsafe extern "C" fn koo_actor_body() -> *mut Header {
-        unsafe { new_str(core::slice::from_raw_parts(MESSAGE.add(BODY.0), BODY.1 - BODY.0)) }
+        unsafe {
+            let me = me();
+            if me.asked.is_null() {
+                return new_str(b"");
+            }
+            new_str(core::slice::from_raw_parts(
+                me.asked.add(me.asked_method),
+                me.asked_len - me.asked_method,
+            ))
+        }
     }
 
     /// Answers the message: `kind` is empty for a value, and names the error for one.
@@ -1947,37 +2212,58 @@ mod remote {
     pub unsafe extern "C" fn koo_actor_reply(kind: *const Header, body: *const Header) {
         unsafe {
             koo_flush();
-            if CURRENT < 0 || CURRENT_KIND != ASK {
+            let me = me();
+            if me.asked_on <= 0 || me.asked_kind != ASK {
                 return;
             }
+            me.asked_kind = ANSWERED;
+            let fd = me.asked_on - 1;
             let (kind, body) = (bytes(kind), bytes(body));
             let size = (2 + kind.len() + body.len()) as u32;
             let mut head = [0u8; 6];
             head[..4].copy_from_slice(&size.to_le_bytes());
             head[4..].copy_from_slice(&(kind.len() as u16).to_le_bytes());
             // An asker that is gone is not answered, and nothing else is the matter.
-            let _ = write_full(CURRENT, &head) && write_full(CURRENT, kind) && write_full(CURRENT, body);
-            CURRENT = -1;
+            if !(write_full(fd, &head) && write_full(fd, kind) && write_full(fd, body)) {
+                me.asked_on = -me.asked_on;
+            }
         }
     }
 
     /// Ends the connection of the message being answered without an answer: its asker
     /// learns that the message panicked.
     #[unsafe(no_mangle)]
-    #[allow(static_mut_refs)]
     pub unsafe extern "C" fn koo_actor_hang_up() {
         unsafe {
-            if let Some(index) = CONNS[..CONN_COUNT].iter().position(|conn| *conn == CURRENT) {
-                drop_conn(index);
+            let me = me();
+            if me.asked_on > 0 {
+                me.asked_on = -me.asked_on;
             }
-            CURRENT = -1;
         }
     }
 
-    /// This process's connection to another, made if there is none, or made again.
-    #[allow(static_mut_refs)]
-    unsafe fn connection(name: &[u8], again: bool) -> i32 {
+    /// Does other work, or nothing, for so many nanoseconds.
+    unsafe fn nap(nanos: i64) {
         unsafe {
+            if !crate::fiber::pause(nanos) {
+                let (wanted, mut left) = ([0i64, nanos], [0i64; 2]);
+                nanosleep(&wanted, &mut left);
+            }
+        }
+    }
+
+    /// A connection to another process that nothing else is using: one that was kept,
+    /// or a new one when there is none, or when the ones kept are no longer to be
+    /// trusted (`fresh`). Returns -1 if the process is not there.
+    #[allow(static_mut_refs)]
+    unsafe fn connection(name: &[u8], fresh: bool) -> i32 {
+        unsafe {
+            // So many at a time and no more: the rest wait their turn.
+            while OUT.fetch_add(1, AcqRel) >= MOST_OUT {
+                OUT.fetch_sub(1, AcqRel);
+                nap(200_000);
+            }
+            KEPT.lock();
             // A connection is one process's: what a fork inherited is its parent's.
             if HOMES_OF != getpid() {
                 for (_, fd) in &HOMES[..HOME_COUNT] {
@@ -1987,14 +2273,25 @@ mod remote {
                 HOMES_OF = getpid();
                 signal(SIGPIPE, 1);
             }
-            let known = HOMES[..HOME_COUNT].iter().position(|(known, _)| known.text() == name);
-            if let Some(index) = known {
-                if !again {
-                    return HOMES[index].1;
+            let mut kept = -1;
+            let mut index = 0;
+            while index < HOME_COUNT {
+                if HOMES[index].0.text() != name {
+                    index += 1;
+                    continue;
                 }
-                close(HOMES[index].1);
+                let fd = HOMES[index].1;
                 HOME_COUNT -= 1;
                 HOMES[index] = HOMES[HOME_COUNT];
+                if !fresh {
+                    kept = fd;
+                    break;
+                }
+                close(fd);
+            }
+            KEPT.unlock();
+            if kept >= 0 {
+                return kept;
             }
             let (address, len) = address(name);
             let fd = socket(AF_UNIX, SOCK_STREAM, 0);
@@ -2002,40 +2299,84 @@ mod remote {
                 if fd >= 0 {
                     close(fd);
                 }
+                OUT.fetch_sub(1, AcqRel);
                 return -1;
             }
-            if HOME_COUNT == MOST_HOMES {
-                close(HOMES[0].1);
-                HOME_COUNT -= 1;
-                HOMES[0] = HOMES[HOME_COUNT];
-            }
-            HOMES[HOME_COUNT] = (Name::of(name), fd);
-            HOME_COUNT += 1;
             fd
         }
     }
 
-    /// Sends a message to another process. Returns the connection it went out on, or -1.
-    unsafe fn deliver(name: &[u8], kind: u8, method: &[u8], body: &[u8], again: bool) -> i32 {
+    /// Gives a connection back: it is kept for the next that asks, if it is still good
+    /// and not too many are kept already, and closed otherwise.
+    #[allow(static_mut_refs)]
+    unsafe fn give_back(name: &[u8], fd: i32, good: bool) {
         unsafe {
-            let fd = connection(name, again);
-            if fd < 0 {
-                return -1;
+            KEPT.lock();
+            let kept = HOMES[..HOME_COUNT]
+                .iter()
+                .filter(|(known, _)| known.text() == name)
+                .count();
+            if good && HOMES_OF == getpid() && HOME_COUNT < MOST_HOMES && kept < MOST_KEPT {
+                HOMES[HOME_COUNT] = (Name::of(name), fd);
+                HOME_COUNT += 1;
+            } else {
+                close(fd);
             }
+            KEPT.unlock();
+            OUT.fetch_sub(1, AcqRel);
+        }
+    }
+
+    /// Sends a message on a connection. Returns whether it went out whole.
+    unsafe fn deliver(fd: i32, kind: u8, method: &[u8], body: &[u8]) -> bool {
+        unsafe {
             let size = 1 + 2 + method.len() + body.len();
             let mut head = [0u8; 7];
             head[..4].copy_from_slice(&(size as u32).to_le_bytes());
             head[4] = kind;
             head[5..].copy_from_slice(&(method.len() as u16).to_le_bytes());
-            let sent = write_full(fd, &head) && write_full(fd, method) && write_full(fd, body);
-            if sent { fd } else { -1 }
+            write_full(fd, &head) && write_full(fd, method) && write_full(fd, body)
+        }
+    }
+
+    /// Reads as `read_full` does, but a handler of a server that has to wait for what it
+    /// reads is left where it is, and the thread answers other requests meanwhile.
+    unsafe fn read_waiting(fd: i32, data: &mut [u8]) -> bool {
+        unsafe {
+            let mut got = 0;
+            while got < data.len() {
+                let n = recv(fd, data.as_mut_ptr().add(got), data.len() - got, MSG_DONTWAIT);
+                if n > 0 {
+                    got += n as usize;
+                    continue;
+                }
+                if n == 0 || (error() != EAGAIN && error() != EINTR) {
+                    return false;
+                }
+                if error() == EINTR {
+                    continue;
+                }
+                // The thread is not in the middle of anything while it waits here.
+                me().talking = false;
+                let waited = crate::fiber::wait(fd, false, 0);
+                me().talking = true;
+                if waited == crate::fiber::Waited::NotHere {
+                    let mut ready = PollFd {
+                        fd,
+                        events: POLLIN,
+                        revents: 0,
+                    };
+                    poll(&mut ready, 1, -1);
+                }
+            }
+            true
         }
     }
 
     /// Asks an actor of another process, and waits for the answer, which is returned;
-    /// its kind is kept for `koo_actor_kind`.
+    /// its kind is kept for `koo_actor_kind`. A handler of a server that asks is left
+    /// where it is while it waits, and its thread answers other requests.
     #[unsafe(no_mangle)]
-    #[allow(static_mut_refs)]
     pub unsafe extern "C" fn koo_actor_ask(
         home: *const Header,
         method: *const Header,
@@ -2045,42 +2386,48 @@ mod remote {
             let (name, method, body) = (bytes(home), bytes(method), bytes(body));
             let asked = method.rsplit(|b| *b == b' ').next().unwrap_or(method);
             koo_flush();
-            gates();
-            TALKING.lock();
-            TALKER.store(crate::thread::this_thread(), Release);
             for attempt in 0..3 {
-                let fd = deliver(name, ASK, method, body, attempt > 0);
+                let fd = connection(name, attempt > 0);
+                me().talking = true;
                 let mut taken = [0u8; 1];
                 // No word that the message was taken up: the process that has the actor
                 // is not there to take it.
-                if fd < 0 || !read_full(fd, &mut taken) {
+                if fd < 0 || !deliver(fd, ASK, method, body) || !read_waiting(fd, &mut taken) {
+                    me().talking = false;
+                    if fd >= 0 {
+                        give_back(name, fd, false);
+                    }
                     if attempt > 0 {
-                        let (wanted, mut left) = ([0i64, 20_000_000], [0i64; 2]);
-                        nanosleep(&wanted, &mut left);
+                        nap(20_000_000);
                     }
                     continue;
                 }
                 let mut size = [0u8; 4];
-                let size_read = read_full(fd, &mut size);
+                let size_read = read_waiting(fd, &mut size);
                 let size = u32::from_le_bytes(size) as usize;
-                let answer = room(&raw mut ANSWER, &raw mut ANSWER_CAP, size);
-                if !size_read || size < 2 || !read_full(fd, answer) {
-                    TALKER.store(0, Release);
-                    TALKING.unlock();
+                let answer = if size_read && size >= 2 {
+                    malloc(size)
+                } else {
+                    core::ptr::null_mut()
+                };
+                if answer.is_null() || !read_waiting(fd, core::slice::from_raw_parts_mut(answer, size)) {
+                    free(answer);
+                    me().talking = false;
+                    give_back(name, fd, false);
                     die(&[b"an actor panicked while it answered `", asked, b"`"]);
                 }
-                let kind_len = u16::from_le_bytes([answer[0], answer[1]]) as usize;
-                let kind = &answer[2..2 + kind_len.min(size - 2)];
+                let answer_text = core::slice::from_raw_parts(answer, size);
+                let kind_len = u16::from_le_bytes([answer_text[0], answer_text[1]]) as usize;
+                let kind = &answer_text[2..2 + kind_len.min(size - 2)];
                 let me = me();
                 me.answer_kind_len = kind.len().min(me.answer_kind.len());
                 me.answer_kind[..me.answer_kind_len].copy_from_slice(&kind[..me.answer_kind_len]);
-                let text = new_str(&answer[(2 + kind_len).min(size)..]);
-                TALKER.store(0, Release);
-                TALKING.unlock();
+                let text = new_str(&answer_text[(2 + kind_len).min(size)..]);
+                free(answer);
+                me.talking = false;
+                give_back(name, fd, true);
                 return text;
             }
-            TALKER.store(0, Release);
-            TALKING.unlock();
             die(&[
                 b"`",
                 asked,
@@ -2106,12 +2453,21 @@ mod remote {
         unsafe {
             let (name, method, body) = (bytes(home), bytes(method), bytes(body));
             koo_flush();
-            gates();
-            TALKING.lock();
-            TALKER.store(crate::thread::this_thread(), Release);
-            let gone = deliver(name, SEND, method, body, false) < 0 && deliver(name, SEND, method, body, true) < 0;
-            TALKER.store(0, Release);
-            TALKING.unlock();
+            let mut gone = true;
+            for attempt in 0..2 {
+                let fd = connection(name, attempt > 0);
+                if fd < 0 {
+                    continue;
+                }
+                me().talking = true;
+                let sent = deliver(fd, SEND, method, body);
+                me().talking = false;
+                give_back(name, fd, sent);
+                if sent {
+                    gone = false;
+                    break;
+                }
+            }
             if gone {
                 let mut out = Buffer::new();
                 out.push(b"koo: a message for an actor whose process is gone was dropped\n");
@@ -2133,22 +2489,22 @@ mod remote {
                     free(path);
                 }
             }
+            SERVED.lock();
             for conn in &CONNS[..CONN_COUNT] {
-                close(*conn);
+                // One that a thread is still answering on is that thread's to close.
+                if conn.doing != BUSY && conn.doing != GONE {
+                    close(conn.fd);
+                    free(conn.message);
+                }
             }
             CONN_COUNT = 0;
+            SERVED.unlock();
+            KEPT.lock();
             for (_, fd) in &HOMES[..HOME_COUNT] {
                 close(*fd);
             }
             HOME_COUNT = 0;
-            for (buffer, cap) in [
-                (&raw mut MESSAGE, &raw mut MESSAGE_CAP),
-                (&raw mut ANSWER, &raw mut ANSWER_CAP),
-            ] {
-                free(*buffer);
-                *buffer = core::ptr::null_mut();
-                *cap = 0;
-            }
+            KEPT.unlock();
         }
     }
 }
