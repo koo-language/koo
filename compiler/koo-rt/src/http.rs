@@ -230,6 +230,10 @@ mod imp {
             zero: [u8; 8],
         }
 
+        pub const AF_INET6: i32 = 30;
+        pub const IPPROTO_IPV6: i32 = 41;
+        pub const IPV6_V6ONLY: i32 = 27;
+
         pub fn address(port: u16) -> SockAddr {
             SockAddr {
                 len: 16,
@@ -397,6 +401,10 @@ mod imp {
             address: u32,
             zero: [u8; 8],
         }
+
+        pub const AF_INET6: i32 = 10;
+        pub const IPPROTO_IPV6: i32 = 41;
+        pub const IPV6_V6ONLY: i32 = 26;
 
         pub fn address(port: u16) -> SockAddr {
             SockAddr {
@@ -2077,19 +2085,56 @@ mod imp {
             }
             MAX_BODY = max_body.clamp(0, 1 << 30) as usize;
             LOG = log != 0;
-            LISTEN = socket(AF_INET, SOCK_STREAM, 0);
-            if LISTEN < 0 {
-                return failed(b"open a socket for", port);
-            }
+            // At every address of the machine, of the newer kind and the older: one
+            // socket of the newer kind takes both, where the system has the newer; where
+            // it has not, or will not listen so, the socket is of the older kind, as it
+            // always was.
             let on = 1i32;
-            setsockopt(LISTEN, sys::SOL_SOCKET, sys::SO_REUSEADDR, &on, 4);
-            let mut address = sys::address(port as u16);
-            if bind(LISTEN, &address as *const sys::SockAddr as *const u8, 16) != 0 || listen(LISTEN, 1024) != 0 {
-                return failed(b"listen on", port);
+            let both = {
+                let fd = socket(sys::AF_INET6, SOCK_STREAM, 0);
+                let off = 0i32;
+                // A socket's address as the system keeps it: on macOS a length and the
+                // kind in a byte each, on Linux the kind in two; then the port, and
+                // twenty-four bytes that are zero for "any address".
+                let mut address = [0u8; 28];
+                if cfg!(target_os = "macos") {
+                    address[0] = 28;
+                    address[1] = sys::AF_INET6 as u8;
+                } else {
+                    address[..2].copy_from_slice(&(sys::AF_INET6 as u16).to_ne_bytes());
+                }
+                address[2..4].copy_from_slice(&(port as u16).to_be_bytes());
+                if fd >= 0
+                    && setsockopt(fd, sys::IPPROTO_IPV6, sys::IPV6_V6ONLY, &off, 4) == 0
+                    && setsockopt(fd, sys::SOL_SOCKET, sys::SO_REUSEADDR, &on, 4) == 0
+                    && bind(fd, address.as_ptr(), 28) == 0
+                    && listen(fd, 1024) == 0
+                {
+                    fd
+                } else {
+                    if fd >= 0 {
+                        close(fd);
+                    }
+                    -1
+                }
+            };
+            if both >= 0 {
+                LISTEN = both;
+            } else {
+                LISTEN = socket(AF_INET, SOCK_STREAM, 0);
+                if LISTEN < 0 {
+                    return failed(b"open a socket for", port);
+                }
+                setsockopt(LISTEN, sys::SOL_SOCKET, sys::SO_REUSEADDR, &on, 4);
+                let address = sys::address(port as u16);
+                if bind(LISTEN, &address as *const sys::SockAddr as *const u8, 16) != 0 || listen(LISTEN, 1024) != 0 {
+                    return failed(b"listen on", port);
+                }
             }
-            let mut len = 16u32;
-            getsockname(LISTEN, &mut address as *mut sys::SockAddr as *mut u8, &mut len);
-            let port = u16::from_be(address.port) as i64;
+            // The port is in the same place in an address of either kind.
+            let (mut bound, mut len) = ([0u8; 28], 28u32);
+            getsockname(LISTEN, bound.as_mut_ptr(), &mut len);
+            let port = u16::from_be_bytes([bound[2], bound[3]]) as i64;
             fcntl(LISTEN, F_SETFL, fcntl(LISTEN, F_GETFL) | sys::O_NONBLOCK);
             // As many connections as the system allows this process.
             let mut limit = [0u64; 2];

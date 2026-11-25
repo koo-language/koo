@@ -550,6 +550,8 @@ A URL that begins `https` is asked over TLS, and the server's certificate must b
 
 ## 10.9 What Is Not There
 
+The server listens at every address of its machine, of both kinds, IPv4 and IPv6, where the machine has both. The client and the database package reach only addresses of the older kind yet: a host that has none but an IPv6 address is not found.
+
 The server speaks HTTP/1.1. It does not speak HTTPS or HTTP/2; where those are needed, it runs behind a proxy that does, which is how most services are deployed in any case. A body, of a request or a response, is handled whole, and cannot yet be read or written a piece at a time.
 
 The client keeps a connection that has carried a request, for a minute, and uses it for the next request to the same server, so that a service which asks another all day does not make a connection each time. An answer that sends the client elsewhere, with a status of 301, 302, 303, 307 or 308, is returned like any other, with the new place in its `location` header, unless the request says how many such answers to follow: `http.get(url, redirects: 5)`. The time given is for the whole journey. On the way, what says who is asking (`Authorization`, `Cookie`) is not passed to a server other than the one it was sent to, and a request that began over `https` is not sent on in the open: it stops at the answer that would have sent it there. A body that is not text is sent with `http.fetch("POST", url, bytes: data)`, and had from an answer with `reply.bytes()`. The specification describes more; this book will describe it when it can be run.

@@ -1939,6 +1939,20 @@ fn a_server_answers_requests() {
     );
     has(&get(port, "/names"), &["\r\n\r\nnone, none, none"]);
     has(&get(port, "/names?&&a+b=1"), &["\r\n\r\nnone, 1, none"]);
+    // The server listens at addresses of both kinds, where the machine has both.
+    if std::net::TcpListener::bind("[::1]:0").is_ok() {
+        use std::io::{Read, Write};
+        let mut stream = std::net::TcpStream::connect(("::1", port)).expect("the server listens at ::1");
+        stream
+            .set_read_timeout(Some(std::time::Duration::from_secs(5)))
+            .unwrap();
+        stream
+            .write_all(b"GET /self/six HTTP/1.1\r\nHost: test\r\nConnection: close\r\n\r\n")
+            .unwrap();
+        let mut answer = String::new();
+        let _ = stream.read_to_string(&mut answer);
+        has(&answer, &["200 OK", "\r\n\r\nGET /self/six"]);
+    }
     // A request as text is its method and its path.
     has(&get(port, "/self/ada?x=1"), &["\r\n\r\nGET /self/ada"]);
     // A header that a handler sets and the server writes too is there once.
