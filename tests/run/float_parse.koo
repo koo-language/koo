@@ -1,0 +1,25 @@
+// `float.parse` reads a number that a float holds, and nothing else: not the words
+// for what is not a number, and not a number too large to be one.
+
+fn main() {
+    for text in ["2.5", "-1e3", "nan", "NaN", "inf", "-inf", "infinity", "Infinity", "1e999", "1e308", " 1", "0x10", ""] {
+        match float.parse(text) {
+            x => print("`{text}` = {x}")
+            ! e => print("`{text}` is not a float")
+        }
+    }
+}
+
+//= `2.5` = 2.5
+//= `-1e3` = -1000.0
+//= `nan` is not a float
+//= `NaN` is not a float
+//= `inf` is not a float
+//= `-inf` is not a float
+//= `infinity` is not a float
+//= `Infinity` is not a float
+//= `1e999` is not a float
+//= `1e308` = 1e308
+//= ` 1` is not a float
+//= `0x10` is not a float
+//= `` is not a float

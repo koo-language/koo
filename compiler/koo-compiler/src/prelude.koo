@@ -2380,7 +2380,7 @@ fn (self: SqlRow) ints(column: string) -> [int] ! SqlError {
 fn (self: SqlRow) floats(column: string) -> [float] ! SqlError {
     var out: [float] = []
     for item in self._array(column, "a float")? {
-        out.push(float.parse(item) else fail s__not(column, "an array of floats", item))
+        out.push(s__float(item) else fail s__not(column, "an array of floats", item))
     }
     return out
 }
@@ -2423,6 +2423,18 @@ fn (self: SqlRow) _text(column: string) -> string? ! SqlError {
     fail s__other("the row has no column `{column}`")
 }
 
+/// A float as the database writes one, which may be one of the three that are not
+/// numbers: a column can hold them, though no text from elsewhere is read as one.
+fn s__float(text: string) -> float? {
+    if text == "NaN" { return 0.0 / 0.0 }
+    if text == "Infinity" { return 1.0 / 0.0 }
+    if text == "-Infinity" { return -1.0 / 0.0 }
+    match float.parse(text) {
+        value => return value
+        ! e => return none
+    }
+}
+
 fn s__null(column: string) -> SqlError {
     return s__other("the column `{column}` is NULL")
 }
@@ -2442,7 +2454,7 @@ fn (self: SqlRow) maybe_int(column: string) -> int? ! SqlError {
 
 fn (self: SqlRow) maybe_float(column: string) -> float? ! SqlError {
     text := self._text(column)? else return none
-    return float.parse(text) else fail s__not(column, "a float", text)
+    return s__float(text) else fail s__not(column, "a float", text)
 }
 
 fn (self: SqlRow) maybe_bool(column: string) -> bool? ! SqlError {

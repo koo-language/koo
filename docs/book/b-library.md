@@ -30,7 +30,7 @@ A method that is marked `var` changes the value it is called on, and can be call
 
 | `float` | |
 | --- | --- |
-| `float.parse(s: string) -> float ! ParseError` | the number that the text is |
+| `float.parse(s: string) -> float ! ParseError` | the number that the text is; `nan` and `inf` are not numbers, and neither is one too large for a float |
 | `float.from(n: int) -> float` | the nearest `float` to an integer |
 | `x.abs() -> float`, `x.sqrt() -> float` | the absolute value, the square root |
 | `x.min(other: float) -> float`, `x.max`, `x.clamp(low, high)` | as for `int` |

@@ -1,0 +1,20 @@
+// A column of the database can hold the floats that are not numbers, and they are
+// read from it, alone and in an array, though `float.parse` reads none of them. Run
+// against a PostgreSQL server whose address is in KOO_TEST_POSTGRES (see
+// `a_database_answers_queries` in compiler/koo/tests/programs.rs).
+
+import std/os
+import std/sql
+import std/sql/postgres
+
+fn main() ! sql.Error {
+    db := postgres.connect(os.env("KOO_TEST_POSTGRES") else "")?
+    nan := 0.0 / 0.0
+    up := 1.0 / 0.0
+    row := db.query_row("select {nan}::float8 as a, {up}::float8 as b, {-up}::float8 as c, {[nan, up, 1.5]}::float8[] as d")?
+    print("{row.float("a")?} {row.float("b")?} {row.float("c")?} {row.floats("d")?}")
+    print(float.parse("NaN") else -1.0)
+}
+
+//= NaN inf -inf [NaN, inf, 1.5]
+//= -1.0

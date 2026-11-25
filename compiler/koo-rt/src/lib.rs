@@ -612,7 +612,13 @@ pub unsafe extern "C" fn koo_int_parse(s: *const Header, out: *mut i64) -> bool 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn koo_float_parse(s: *const Header, out: *mut f64) -> bool {
     let text = unsafe { bytes(s) };
-    let parsed = core::str::from_utf8(text).ok().and_then(|t| t.parse::<f64>().ok());
+    // A number, and one that a float holds: neither the words for what is not a
+    // number (`nan`, `inf`), which a text from outside has no business saying, nor a
+    // number so large that it could only be read as one without end.
+    let parsed = core::str::from_utf8(text)
+        .ok()
+        .and_then(|t| t.parse::<f64>().ok())
+        .filter(|value| value.is_finite());
     match parsed {
         Some(value) => {
             unsafe { *out = value };
