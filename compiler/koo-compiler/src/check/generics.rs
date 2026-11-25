@@ -940,12 +940,17 @@ impl<'a> Checker<'a> {
     /// declared on a generic type (`fn (self: Cell<T>) name()`) is made for this instance
     /// of the type the first time it is asked for.
     pub(super) fn method_of(&mut self, ty: &Ty, name: &str) -> Option<FnId> {
-        let owner = self.owner_of(ty)?;
-        let key = (owner, name.to_string());
-        if let Some(&id) = self.methods.get(&key) {
+        if let Some(owner) = self.owner_of(ty)
+            && let Some(&id) = self.methods.get(&(owner, name.to_string()))
+        {
             return Some(id);
         }
-        let (_, args) = self.instance_of.get(ty)?.clone();
+        // A list or an optional has the methods the prelude gives every one of them,
+        // each made for what this one holds.
+        let args = match ty {
+            Ty::List(inner) | Ty::Optional(inner) => vec![(**inner).clone()],
+            _ => self.instance_of.get(ty)?.1.clone(),
+        };
         let template = self.generic_method(ty, name)?;
         // A method with type parameters of its own is not one function.
         if self.templates[template].params.len() != args.len() {
@@ -955,7 +960,9 @@ impl<'a> Checker<'a> {
         let id = self.instantiate(template, args, Span::default());
         self.diags.truncate(diags);
         let id = id?;
-        self.methods.insert(key, id);
+        if let Some(owner) = self.owner_of(ty) {
+            self.methods.insert((owner, name.to_string()), id);
+        }
         Some(id)
     }
 

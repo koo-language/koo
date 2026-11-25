@@ -1,0 +1,60 @@
+// A list or an optional satisfies an interface that names one of the methods the
+// library gives it, as a type of the program does with its own.
+
+interface Summed {
+    fn sum() -> int
+}
+
+interface Cut {
+    fn slice(from: int, to: int) -> [int]
+}
+
+interface Shrinks {
+    fn (self: var) remove(index: int) -> int
+}
+
+interface Joined {
+    fn join(separator: string) -> string
+}
+
+interface Present {
+    fn is_some() -> bool
+}
+
+fn total<T: Summed>(xs: T) -> int {
+    return xs.sum()
+}
+
+fn head<T: Cut>(xs: T) -> [int] {
+    return xs.slice(0, 2)
+}
+
+fn drop_first<T: Shrinks>(xs: var T) -> int {
+    return xs.remove(0)
+}
+
+fn line<T: Joined>(xs: T) -> string {
+    return xs.join(", ")
+}
+
+fn there<T: Present>(x: T) -> bool {
+    return x.is_some()
+}
+
+fn main() {
+    var xs := [4, 5, 6]
+    print(total(xs))
+    print(head(xs))
+    print(drop_first(var xs))
+    print(xs)
+    print(line(["a", "b"]))
+    maybe: int? = 3
+    print(there(maybe))
+}
+
+//= 15
+//= [4, 5]
+//= 4
+//= [5, 6]
+//= a, b
+//= true
