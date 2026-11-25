@@ -1,0 +1,41 @@
+// A handle as text says which actor it is of: the type of the actor and a number.
+// An actor with a method `to_string` is asked for its own.
+
+actor Counter {
+    var n: int = 0
+
+    fn bump() -> int {
+        n += 1
+        return n
+    }
+}
+
+actor Named {
+    name: string
+
+    fn to_string() -> string {
+        return "named {name}"
+    }
+}
+
+type Team = { lead: Counter, others: [Counter] }
+
+fn main() {
+    a := Counter.start()
+    b := Counter.start()
+    print(a)
+    print("{b} {[a, b]}")
+    print(Team { lead: a, others: [b] })
+    print(a == a)
+    print(a == b)
+    print(Named.start(name: "x").to_string())
+    print(a.bump())
+}
+
+//= Counter#0
+//= Counter#1 [Counter#0, Counter#1]
+//= Team { lead: Counter#0, others: [Counter#1] }
+//= true
+//= false
+//= named x
+//= 1

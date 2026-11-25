@@ -677,8 +677,13 @@ impl<'a> Checker<'a> {
             Ty::Error(id) => Some(&self.program.errors[*id].fields),
             _ => None,
         };
+        // Which actor a handle is of, and where the actor lives, is what the handle is
+        // made of, and not for a program to read.
+        let inside = !self.body_in_prelude
+            && matches!(&base.ty, Ty::Struct(id) if self.handles.contains(id))
+            && matches!(field_name, "id" | "home");
         if let Some(fields) = fields {
-            return match fields.iter().position(|f| f.name == field_name) {
+            return match fields.iter().position(|f| f.name == field_name).filter(|_| !inside) {
                 Some(index) => {
                     let ty = fields[index].ty.clone();
                     self.mk(ExprKind::Field(Box::new(base), index), ty, span)
@@ -1264,11 +1269,13 @@ impl<'a> Checker<'a> {
         };
         if let Target::Struct(id) = target
             && !self.body_in_prelude
-            && self.is_opaque(&Ty::Struct(id))
+            && (self.is_opaque(&Ty::Struct(id)) || self.handles.contains(&id))
         {
             let name = self.ty_name(&Ty::Struct(id));
             let help = if self.is_time_type(&Ty::Struct(id)) {
                 "its fields are its own: write a duration as `250ms`, and get a time from `time.now()`, `Time.from_unix(seconds)` or `Time.parse(text)`"
+            } else if self.handles.contains(&id) {
+                "a handle is what `start` returns: it is made by starting an actor, and by nothing else"
             } else if self.program.structs[id].name == "HttpResponse" {
                 "a response is made by `http.text`, `http.json`, `http.status`, `http.send`, `http.bytes`, `http.file` or `http.redirect`, and changed by `.header(...)`, `.cookie(...)` and `.with_status(...)`"
             } else if self.program.structs[id].name == "HttpRequest" {

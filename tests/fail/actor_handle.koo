@@ -1,0 +1,24 @@
+// What a handle is made of inside is the library's: a program neither reads it nor
+// makes a handle of it.
+
+actor Counter {
+    var n: int = 0
+
+    fn bump() -> int {
+        n += 1
+        return n
+    }
+}
+
+fn main() {
+    a := Counter.start()
+    print(a.id)
+    print(a.home)
+    print(a.send.id)
+    b := Counter { id: 0, home: "", send: a.send, try_send: a.try_send }
+}
+
+//! error `Counter` has no field `id`
+//! error `Counter` has no field `home`
+//! error `Counter.send` has no field `id`
+//! error `Counter` cannot be built from its fields

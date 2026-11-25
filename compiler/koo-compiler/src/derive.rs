@@ -893,6 +893,19 @@ impl<'a> Deriver<'a> {
             self.unwritten.push("has no function `start`".to_string());
             return false;
         }
+        // A handle as text says which actor it is of, and no more: what it is made of
+        // is the support library's. An actor with a method `to_string` has that.
+        let shown = if actor
+            .methods
+            .iter()
+            .any(|method| method.decl.sig.name.name == "to_string")
+        {
+            String::new()
+        } else {
+            format!(
+                "fn (self: {name}) to_string() -> string {{\n    return \"{name}#{{self.id.bit_and(4294967295)}}\"\n}}\n\n"
+            )
+        };
         let elsewhere = match unsendable {
             Some(field) => format!(
                 "    if __actor_elsewhere() {{\n        panic(\"an actor `{name}` cannot be started by a handler of a server \
@@ -928,7 +941,7 @@ impl<'a> Deriver<'a> {
              _ => j__skip(text, var at)?\n        }}\n    }}\n    \
              the_id := id else fail j__missing(\"id\")\n    the_home := home else fail j__missing(\"home\")\n    \
              return {lower}___handle(the_id, the_home)\n}}\n\n\
-             fn {name}.start({given}) -> {name} {{\n{elsewhere}{kept}    cell__: [{state}] = [{state} {{ {set} }}]\n    \
+             {shown}fn {name}.start({given}) -> {name} {{\n{elsewhere}{kept}    cell__: [{state}] = [{state} {{ {set} }}]\n    \
              return {lower}___handle(__actor_new(\"{name}\", cell__, {mailbox}), __actor_home())\n}}\n\n\
              fn (self: {name}) stop() {{\n    if not __actor_local(self.home) {{\n        \
              __actor_ask(self.home, \"{name} {{self.id}} stop\", \"[]\")\n        return\n    }}\n    \

@@ -176,6 +176,10 @@ pub(crate) struct Checker<'a> {
     /// types and actors (`derive.rs`), which stands with the prelude but has the
     /// program's names in it.
     in_derived: bool,
+    /// The types that are handles of actors: `Counter`, and what `counter.send` and
+    /// `counter.try_send` are. Which actor a handle is of, and where the actor lives,
+    /// are fields of it that no program reads or writes.
+    handles: HashSet<StructId>,
     /// The functions of the library that are told where they were called: the last
     /// parameter of each, `location`, is filled in by the compiler and is no
     /// program's to give. A function the compiler wrote for an actor is not one,
@@ -286,6 +290,7 @@ impl<'a> Checker<'a> {
             plain_generic_methods: HashMap::new(),
             in_prelude: false,
             in_derived: false,
+            handles: HashSet::new(),
             located: HashSet::new(),
             enclosing: Vec::new(),
             lambda: None,
@@ -494,6 +499,16 @@ impl<'a> Checker<'a> {
             Ty::Struct(_) if self.map_types(ty).is_some() => {
                 let (key, value) = self.map_types(ty).unwrap();
                 format!("[{}: {}]", self.ty_name(&key), self.ty_name(&value))
+            }
+            // What `handle.send` and `handle.try_send` are has a name of the compiler's
+            // making, and is shown as a program writes it.
+            Ty::Struct(id) if self.handles.contains(id) => {
+                let name = &self.program.structs[*id].name;
+                match name.strip_prefix("Actor") {
+                    Some(rest) if rest.ends_with("Send") => format!("{}.send", &rest[..rest.len() - 4]),
+                    Some(rest) if rest.ends_with("Try") => format!("{}.try_send", &rest[..rest.len() - 3]),
+                    _ => name.clone(),
+                }
             }
             Ty::Struct(id) => self.shown_name(&self.program.structs[*id].name, *id < self.prelude_types.0),
             Ty::Enum(id) => self.shown_name(&self.program.enums[*id].name, *id < self.prelude_enums),

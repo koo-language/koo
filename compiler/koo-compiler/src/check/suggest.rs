@@ -92,6 +92,8 @@ impl<'a> Checker<'a> {
                 .fields
                 .iter()
                 .map(|f| f.name.clone())
+                // What a handle is made of inside is not a program's to name.
+                .filter(|name| !self.handles.contains(id) || !matches!(name.as_str(), "id" | "home"))
                 .collect(),
             Ty::Error(id) => self.program.errors[*id].fields.iter().map(|f| f.name.clone()).collect(),
             Ty::Struct(_) | Ty::List(_) | Ty::Str => vec!["len".to_string()],

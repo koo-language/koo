@@ -94,6 +94,7 @@ impl<'a> Checker<'a> {
         });
         self.program.structs[handle].fields = fields;
         self.defaults[handle] = vec![None, None, None, None];
+        self.handles.extend([handle, send, attempt]);
         let mut fields: Vec<FieldDef> = Vec::new();
         let mut defaults = Vec::new();
         for field in &decl.fields {

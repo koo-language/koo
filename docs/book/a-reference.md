@@ -375,7 +375,7 @@ A type satisfies the interface if it has a method of each name with the paramete
 
 declares an actor, and the type `Name` of its handles. In the body of a method, the fields are in scope as names; a field declared with `var` may be assigned to, and the other methods may be called by their names.
 
-`Name.start(field: expression, ...)` creates an actor, with a value for each field that has no default, and returns a handle. For a handle `h`:
+`Name.start(field: expression, ...)` creates an actor, with a value for each field that has no default, and returns a handle. A handle is a value like another: it is copied, compared with `==`, kept in a list or a structure, and sent in a message; as text it is the actor's type and a number, `Counter#3`, unless the actor has a method `to_string`. For a handle `h`:
 
 - `h.method(arguments)` *asks*: it executes the method with exclusive use of the actor's fields and yields its result, waiting first for any other execution of a method of that actor, and for every message told to the actor before, to end;
 - `h.send.method(arguments)` *tells*, and is allowed for a method with no return type and no error set: the method will be executed later, on another thread, after the messages told to that actor earlier. If as many messages are waiting for the actor as its mailbox holds, the thread waits until there are fewer;
