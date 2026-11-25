@@ -369,6 +369,7 @@ fn main() {
 | `os.args() -> [string]` | the arguments of the program |
 | `os.env(name: string) -> string?` | the value of an environment variable |
 | `os.exit(status: int)` | ends the program with a status |
+| `T.from_env() -> T ! EnvError` | with no import, for a structure `T` whose fields are `int`, `float`, `bool`, `string`, `Duration` or optionals of them: each field from the environment variable of its name in capitals (Section 8.5) |
 
 ## B.13 `std/http`
 
@@ -378,7 +379,7 @@ fn main() {
 | `var` `app.get(path: string, handler)`, `post`, `put`, `patch`, `delete`, `any` | adds a route for a method, or for all |
 | `var` `app.route(method: string, path: string, handler)` | adds a route for a method given by name |
 | `var` `app.files(path: string, directory: string)` | serves the files of a directory under a path |
-| `app.serve(port: int = 8080, workers: int = 0, max_body: int = 1048576, log: bool = false) ! http.Error` | answers requests until the program is told to stop |
+| `app.serve(port: int, workers: int, max_body: int = 1048576, log: bool = false) ! http.Error` | answers requests until the program is told to stop; a `port` that is not given is what the environment variable `PORT` says, or 8080, and `workers` what `WEB_CONCURRENCY` says, or one for each processor |
 
 A handler is a `fn(http.Request) -> http.Response ! Failure`.
 

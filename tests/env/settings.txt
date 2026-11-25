@@ -1,0 +1,2 @@
+Config { database_url: "postgres://db/app", port: 9000, workers: 4, debug: true, timeout: 250ms, ratio: 0.25, sentry_dsn: none, retries: 3 }
+REGION: the environment variable `REGION` is not set

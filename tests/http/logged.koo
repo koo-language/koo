@@ -4,7 +4,6 @@
 
 import std/http
 import std/log
-import std/os
 
 fn main() ! http.Error {
     var app := http.App.new()
@@ -21,6 +20,6 @@ fn main() ! http.Error {
         none_here: [int] = []
         return http.text("{none_here[1]}")
     })
-    port := int.parse(os.env("PORT") else "") else 8080
-    app.serve(port: port, workers: 1, log: true)?
+    // It listens where the environment variable PORT says.
+    app.serve(workers: 1, log: true)?
 }

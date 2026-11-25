@@ -2,6 +2,6 @@
 {"level":"info","message":"GET /hello/Ada 200","method":"GET","path":"/hello/Ada","status":200,"bytes":12,"ms":0}
 {"level":"error","message":"GET /fail: ParseError { input: \"x\" }"}
 {"level":"info","message":"GET /fail 500","method":"GET","path":"/fail","status":500,"bytes":22,"ms":0}
-{"level":"error","message":"panic: index out of range","at":"logged.koo:22"}
+{"level":"error","message":"panic: index out of range","at":"logged.koo:21"}
 {"level":"info","message":"GET /panic 500","method":"GET","path":"/panic","status":500,"bytes":22,"ms":0}
 {"level":"info","message":"GET /nowhere 404","method":"GET","path":"/nowhere","status":404,"bytes":10,"ms":0}

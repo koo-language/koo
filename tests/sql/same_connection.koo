@@ -1,0 +1,20 @@
+// A connection that is good is used again, and not replaced: fifty-one statements,
+// one connection.
+
+import std/os
+import std/sql
+import std/sql/postgres
+
+fn main() ! sql.Error {
+    db := postgres.connect(os.env("KOO_TEST_POSTGRES") else "", pool: 1)?
+    var pids: Set<int> = Set.new()
+    for i in 0..50 {
+        pids.insert(db.query_row("select pg_backend_pid() as pid, {i}::int as i")?.int("pid")?)
+    }
+    db.transaction(tx -> {
+        pids.insert(tx.query_row("select pg_backend_pid() as pid")?.int("pid")?)
+    })?
+    print("{pids.len} connection for 51 statements")
+}
+
+//= 1 connection for 51 statements

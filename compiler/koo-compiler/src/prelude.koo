@@ -1521,13 +1521,34 @@ fn (self: var HttpApp) any(path: string, handler: take fn(HttpRequest) -> HttpRe
 /// A request's body may be `max_body` bytes, 1 MB unless more is asked for. With `log`,
 /// a line is written to standard error for each request: its method and path, the
 /// status of the answer, the size of it and the time it took.
-fn (self: HttpApp) serve(port: int = 8080, workers: int = 0, max_body: int = 1048576, log: bool = false) ! HttpError {
+fn (self: HttpApp) serve(port: int = -1, workers: int = 0, max_body: int = 1048576, log: bool = false) ! HttpError {
+    // Where to listen, and with how many workers, is the environment's to say when the
+    // program does not: `PORT`, and `WEB_CONCURRENCY`.
+    var at := port
+    if port < 0 {
+        at = 8080
+        if text := os__env("PORT") {
+            at = int.parse(text.trim()) else fail HttpError {
+                kind: HttpErrorKind.Listen,
+                message: "the environment variable `PORT` is `{text}`, which is not a port",
+            }
+        }
+    }
+    var processes := workers
+    if workers == 0 {
+        if text := os__env("WEB_CONCURRENCY") {
+            processes = int.parse(text.trim()) else fail HttpError {
+                kind: HttpErrorKind.Listen,
+                message: "the environment variable `WEB_CONCURRENCY` is `{text}`, which is not a number of workers",
+            }
+        }
+    }
     __http_reset()
     for i in 0..self.paths.len {
         __http_route(self.methods[i], self.paths[i])
     }
     logged := if log { 1 } else { 0 }
-    if __http_listen(port, workers, max_body, logged) < 0 {
+    if __http_listen(at, processes, max_body, logged) < 0 {
         fail HttpError { kind: HttpErrorKind.Listen, message: __last_error() }
     }
     while true {
@@ -1775,6 +1796,88 @@ fn http__put(url: string, body: string, content_type: string = "application/json
 
 fn http__patch(url: string, body: string, content_type: string = "application/json", headers: [string: string] = [:], timeout: Duration = 30s) -> HttpReply ! HttpError {
     return http__fetch("PATCH", url, body, h__typed(headers, content_type), timeout)?
+}
+
+// ---- the environment as a struct ---------------------------------------------------------
+//
+// `Type.from_env()` is written for a struct of settings (`derive.rs`) out of these.
+
+/// What is wrong with the environment a program was started in: a variable that is not
+/// set, or one whose value is not of the type that is wanted.
+error EnvError { name: string, message: string }
+
+fn (self: EnvError) to_string() -> string { return self.message }
+
+/// Fails if any of the variables is not set, naming all that are not.
+fn e__require(names: [string]) ! EnvError {
+    var missing: [string] = []
+    for name in names {
+        if os__env(name).is_none() { missing.push(name) }
+    }
+    if missing.len == 1 {
+        fail EnvError { name: missing[0], message: "the environment variable `{missing[0]}` is not set" }
+    }
+    if missing.len > 1 {
+        fail EnvError {
+            name: missing[0],
+            message: "the environment variables `" + missing.join("`, `") + "` are not set",
+        }
+    }
+}
+
+fn e__not(name: string, what: string, text: string) -> EnvError {
+    return EnvError { name, message: "the environment variable `{name}` is `{text}`, which is not {what}" }
+}
+
+fn e__unset(name: string) -> EnvError {
+    return EnvError { name, message: "the environment variable `{name}` is not set" }
+}
+
+fn e__maybe_string(name: string) -> string? ! EnvError {
+    return os__env(name)
+}
+
+fn e__maybe_int(name: string) -> int? ! EnvError {
+    text := os__env(name) else return none
+    return int.parse(text.trim()) else fail e__not(name, "an int", text)
+}
+
+fn e__maybe_float(name: string) -> float? ! EnvError {
+    text := os__env(name) else return none
+    return float.parse(text.trim()) else fail e__not(name, "a float", text)
+}
+
+fn e__maybe_bool(name: string) -> bool? ! EnvError {
+    text := os__env(name) else return none
+    said := text.trim().to_lower()
+    if said == "true" or said == "1" or said == "yes" or said == "on" { return true }
+    if said == "false" or said == "0" or said == "no" or said == "off" { return false }
+    fail e__not(name, "a bool: `true` or `false`", text)
+}
+
+fn e__maybe_duration(name: string) -> Duration? ! EnvError {
+    text := os__env(name) else return none
+    return Duration.parse(text.trim()) else fail e__not(name, "a duration such as `250ms` or `30s`", text)
+}
+
+fn e__string(name: string) -> string ! EnvError {
+    return os__env(name) else fail e__unset(name)
+}
+
+fn e__int(name: string) -> int ! EnvError {
+    return e__maybe_int(name)? else fail e__unset(name)
+}
+
+fn e__float(name: string) -> float ! EnvError {
+    return e__maybe_float(name)? else fail e__unset(name)
+}
+
+fn e__bool(name: string) -> bool ! EnvError {
+    return e__maybe_bool(name)? else fail e__unset(name)
+}
+
+fn e__duration(name: string) -> Duration ! EnvError {
+    return e__maybe_duration(name)? else fail e__unset(name)
 }
 
 // ---- std/log ----------------------------------------------------------------------------

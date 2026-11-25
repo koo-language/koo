@@ -471,7 +471,19 @@ impl<'a> Checker<'a> {
                     _ => false,
                 };
                 let message = format!("`{}` has no function `{}`", type_name.name, name.name);
-                if is_method {
+                // The functions the compiler writes for a type that can have them.
+                let written = match name.name.as_str() {
+                    "from_env" => Some(
+                        "`from_env` is written for a struct whose every field is an `int`, a `float`, a `bool`, a `string` or a `Duration`, or an optional of one: each is read from the environment variable of its name in capitals",
+                    ),
+                    "from_row" => Some(
+                        "`from_row` is written for a struct whose every field is an `int`, a `float`, a `bool`, a `string` or a `Time`, or an optional of one: each is read from the column of its name (Section 10.3)",
+                    ),
+                    _ => None,
+                };
+                if let (Some(help), Some(Owner::Struct(_))) = (written, owner) {
+                    self.error_help(name.span, message, help);
+                } else if is_method {
                     self.error_help(
                         name.span,
                         message,

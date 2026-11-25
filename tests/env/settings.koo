@@ -1,0 +1,25 @@
+// The settings of a program, read from its environment as a struct.
+
+type Config = {
+    database_url: string,
+    port: int = 8080,
+    workers: int = 4,
+    debug: bool = false,
+    timeout: Duration = 5s,
+    ratio: float = 0.5,
+    sentry_dsn: string?,
+    retries: int?,
+}
+
+type Needs = { api_key: string, region: string, zone: string? }
+
+fn main() {
+    match Config.from_env() {
+        config => print(config)
+        ! e => print("{e.name}: {e}")
+    }
+    match Needs.from_env() {
+        needs => print(needs)
+        ! e => print("{e.name}: {e}")
+    }
+}

@@ -439,6 +439,46 @@ fn a_failing_database_is_survived() {
     assert!(failures.is_empty(), "\n{}", failures.join("\n\n"));
 }
 
+/// `Type.from_env()` reads a struct of settings from the environment: `tests/env/*.koo`
+/// are run with the environment that the file of the same name with `.env` lists, a
+/// variable to a line, and print what the file with `.txt` holds.
+#[test]
+fn settings_come_from_the_environment() {
+    let bless = std::env::var_os("KOO_BLESS").is_some();
+    let mut failures = Vec::new();
+    for path in programs("tests/env") {
+        let given = std::fs::read_to_string(path.with_extension("env")).unwrap_or_default();
+        let mut command = Command::new(env!("CARGO_BIN_EXE_koo"));
+        command.arg("run").arg(&path).env("KOO_LEAKS", "1");
+        for line in given.lines() {
+            if let Some((name, value)) = line.split_once('=') {
+                command.env(name, value);
+            }
+        }
+        let output = command.output().expect("koo runs");
+        let found = String::from_utf8_lossy(&output.stdout).to_string();
+        let expected_path = path.with_extension("txt");
+        let expected = std::fs::read_to_string(&expected_path).unwrap_or_default();
+        if !output.status.success() {
+            failures.push(format!(
+                "{}: it fails\n{}",
+                path.display(),
+                String::from_utf8_lossy(&output.stderr)
+            ));
+        } else if found != expected {
+            if bless {
+                std::fs::write(&expected_path, &found).unwrap();
+            } else {
+                failures.push(format!(
+                    "{}: not as expected\n--- expected\n{expected}--- found\n{found}",
+                    path.display()
+                ));
+            }
+        }
+    }
+    assert!(failures.is_empty(), "\n{}", failures.join("\n\n"));
+}
+
 /// With `KOO_LOG=json` each line of the log is an object, with the values of the line as
 /// members: `tests/log/*.koo` are run so, with the time left out, and what they write to
 /// the standard error output is what the file of the same name with `.json` holds.
@@ -640,6 +680,14 @@ fn run_listing(dir: &Path, source: &str, tags: &[(String, String)]) -> Outcome {
             // The time of a line of the log would be different at every run.
             .env("KOO_LOG_TIME", "off")
             .env("KOO_LOG", if as_json { "json" } else { "text" })
+            // The environment the book says the program is started in.
+            .envs(
+                told("env")
+                    .unwrap_or_default()
+                    .lines()
+                    .filter_map(|line| line.split_once('='))
+                    .map(|(name, value)| (name.to_string(), value.to_string())),
+            )
             .args(if as_json { &["run", "main.koo"][..] } else { &[][..] })
             .env("KOO_LEAKS", "1")
             .env("NO_COLOR", "1")
@@ -812,7 +860,8 @@ fn run_listing(dir: &Path, source: &str, tags: &[(String, String)]) -> Outcome {
 ///
 /// A block tagged `koo` is a program. The blocks after it, up to the next program, say
 /// what it does: `input` is what it reads, `args` its arguments, one to a line, `file
-/// name` a file that is beside it when it runs, `text`
+/// name` a file that is beside it when it runs, `env` variables of its environment, one
+/// `NAME=value` to a line, `text`
 /// what it prints, `panic` what a panic writes (the program then ends with status 101),
 /// `stderr` what it writes when `main` fails (status 1), `log` what it writes to standard
 /// error when it ends well all the same (and `json` the same with its log asked for as
@@ -835,8 +884,8 @@ fn the_book_is_true() {
     let mut texts: Vec<Vec<String>> = Vec::new();
     let mut blocks: Vec<Vec<Block>> = Vec::new();
     let mut listings: Vec<Listing> = Vec::new();
-    const TOLD: [&str; 10] = [
-        "input", "args", "text", "panic", "stderr", "log", "json", "error", "test", "http",
+    const TOLD: [&str; 11] = [
+        "input", "args", "env", "text", "panic", "stderr", "log", "json", "error", "test", "http",
     ];
     for (page, path) in pages.iter().enumerate() {
         let lines: Vec<String> = std::fs::read_to_string(path)

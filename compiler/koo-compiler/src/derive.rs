@@ -838,7 +838,7 @@ impl<'a> Deriver<'a> {
 /// What the compiler writes for a program: the JSON functions of its types, and what
 /// carries messages to its actors and back. Nothing is written for a program that never
 /// says `json` and has no actor: nothing is made that nothing uses.
-pub fn derive(package: &File, json: bool, rows: bool) -> Derived {
+pub fn derive(package: &File, json: bool, rows: bool, envs: bool) -> Derived {
     let has_actors = package.items.iter().any(|item| matches!(item.kind, ItemKind::Actor(_)));
     let types = json || has_actors;
     let mut deriver = Deriver {
@@ -1022,6 +1022,77 @@ pub fn derive(package: &File, json: bool, rows: bool) -> Derived {
             }
         }
     }
+    // `Type.from_env()`, for a program that says `from_env`: a struct whose every field
+    // is what a variable of the environment can say is read from the environment, each
+    // field from the variable of its name in capitals. A field with a default keeps it
+    // if its variable is not set, an optional one is `none`, and any other must be set.
+    if envs {
+        let mut names: Vec<&str> = deriver.structs.keys().copied().collect();
+        names.sort_unstable();
+        for name in names {
+            let fields = deriver.structs[name];
+            let kinds: Option<Vec<(&Field, &str, bool)>> = fields
+                .iter()
+                .map(|field| {
+                    let (ty, optional) = match &deriver.resolved(&field.ty).kind {
+                        TypeKind::Optional(inner) => (deriver.resolved(inner), true),
+                        _ => (deriver.resolved(&field.ty), false),
+                    };
+                    let kind = match &ty.kind {
+                        TypeKind::Named { path, args } if path.len() == 1 && args.is_empty() => {
+                            match path[0].name.as_str() {
+                                "int" => "int",
+                                "float" => "float",
+                                "bool" => "bool",
+                                "string" => "string",
+                                "Duration" => "duration",
+                                _ => return None,
+                            }
+                        }
+                        _ => return None,
+                    };
+                    Some((field, kind, optional))
+                })
+                .collect();
+            let Some(kinds) = kinds.filter(|kinds| !kinds.is_empty()) else {
+                continue;
+            };
+            let variable = |field: &Field| field.name.name.to_uppercase();
+            let required: Vec<String> = kinds
+                .iter()
+                .filter(|(field, _, optional)| !optional && field.default.is_none())
+                .map(|(field, _, _)| format!("\"{}\"", variable(field)))
+                .collect();
+            let given: Vec<String> = kinds
+                .iter()
+                .filter(|(field, _, _)| field.default.is_none())
+                .map(|(field, kind, optional)| {
+                    let maybe = if *optional { "maybe_" } else { "" };
+                    format!("{}: e__{maybe}{kind}(\"{}\")?", field.name.name, variable(field))
+                })
+                .collect();
+            let defaulted: Vec<String> = kinds
+                .iter()
+                .filter(|(field, _, _)| field.default.is_some())
+                .map(|(field, kind, _)| {
+                    format!(
+                        "    if value := e__maybe_{kind}(\"{}\")? {{ result.{} = value }}\n",
+                        variable(field),
+                        field.name.name
+                    )
+                })
+                .collect();
+            let binding = if defaulted.is_empty() { "result" } else { "var result" };
+            let _ = write!(
+                deriver.out,
+                "fn {name}.from_env() -> {name} ! EnvError {{\n    e__require([{}])?\n    \
+                 {binding} := {name} {{ {} }}\n{}    return result\n}}\n\n",
+                required.join(", "),
+                given.join(", "),
+                defaulted.concat()
+            );
+        }
+    }
     // What every program has, whether or not it has an actor: where a message from
     // another process is handed to the actor it is for, and what stops the actors that
     // are still running when `main` returns, the last declared first.
@@ -1064,7 +1135,7 @@ mod tests {
                       type Holder = { handler: Handler }\n";
         let parsed = koo_syntax::parse_file(source);
         assert!(parsed.diagnostics.is_empty(), "{:?}", parsed.diagnostics);
-        let derived = derive(&parsed.file, true, false).source;
+        let derived = derive(&parsed.file, true, false, false).source;
         let again = koo_syntax::parse_file(&derived);
         assert!(again.diagnostics.is_empty(), "{:#?}\n{derived}", again.diagnostics);
         for name in ["Line", "Status", "Payment", "Order"] {
@@ -1072,6 +1143,6 @@ mod tests {
         }
         // A function cannot be JSON, and neither can what holds one.
         assert!(!derived.contains("Handler") && !derived.contains("Holder"));
-        assert!(!derive(&parsed.file, false, false).source.contains("from_json"));
+        assert!(!derive(&parsed.file, false, false, false).source.contains("from_json"));
     }
 }

@@ -39,7 +39,10 @@ fn main() ! sql.Error {
     level := sql.Isolation.Strict
     log.info(text)
     log.shout("loud")
+    listed := Listed.from_env()
 }
+
+type Listed = { names: [string] }
 
 //! error expected `sql.Query`, found `string`
 //! error a value in a query cannot have a format
@@ -53,3 +56,4 @@ fn main() ! sql.Error {
 //! error `sql.Isolation` has no variant `Strict`
 //! error expected `log.Message`, found `string`
 //! error the package `log` has no function `shout`
+//! error `Listed` has no function `from_env`

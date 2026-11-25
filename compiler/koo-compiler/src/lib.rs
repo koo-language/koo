@@ -56,7 +56,8 @@ pub fn compile_sources(sources: &SourceMap, tests: bool) -> Result<String, Vec<D
     // types, if it says `json`, and what carries messages to its actors.
     let json = sources.files().iter().any(|file| file.src.contains("json"));
     let rows = sources.files().iter().any(|file| file.src.contains("from_row"));
-    let written = derive::derive(&package, json, rows);
+    let envs = sources.files().iter().any(|file| file.src.contains("from_env"));
+    let written = derive::derive(&package, json, rows, envs);
     let derived = koo_syntax::parse_file(&written.source);
     assert!(
         derived.diagnostics.is_empty(),

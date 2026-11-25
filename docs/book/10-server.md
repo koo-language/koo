@@ -358,8 +358,8 @@ Consider `add`. It computes the number of the new order from the length of the l
 
 | | | |
 | --- | --- | --- |
-| `port:` | the port to listen on | 8080 |
-| `workers:` | how many processes answer requests; 0 means one for each processor | 0 |
+| `port:` | the port to listen on | what the environment variable `PORT` says, and 8080 if it is not set |
+| `workers:` | how many processes answer requests | what `WEB_CONCURRENCY` says, and one for each processor if it is not set |
 | `max_body:` | the largest body of a request that is accepted, in bytes | 1048576 |
 | `log:` | whether to write a line on standard error for each request | `false` |
 

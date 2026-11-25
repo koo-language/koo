@@ -235,9 +235,12 @@ unsafe extern "C" {
     fn kill(process: i32, signal: i32) -> i32;
 }
 
+/// An interrupt is not passed on: one typed at a terminal goes to the program as well as
+/// to this process, and the program must not get it twice. A hang-up or a request to
+/// end is, since it was sent to this process alone.
 extern "C" fn pass_on(stop: i32) {
     let running = RUNNING.load(std::sync::atomic::Ordering::Relaxed);
-    if running > 0 {
+    if running > 0 && stop != 2 {
         unsafe { kill(running, stop) };
     }
 }
