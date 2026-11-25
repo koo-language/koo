@@ -464,6 +464,7 @@ A `sql.Query` is written as a string literal where one is expected: the values i
 | `row.maybe_int(column: string) -> int? ! sql.Error`, and `maybe_float`, `maybe_bool`, `maybe_string`, `maybe_time` | the value of a column, or `none` if it is NULL |
 | `row.ints(column: string) -> [int] ! sql.Error`, and `floats`, `bools`, `strings` | a column that is an array of one dimension, as a list; fails if it is NULL or has a NULL in it |
 | `row.columns() -> [string]` | the names of the columns |
+| `"{row}"` | the row as text, each column with what it holds as the database wrote it: `{id: "1", note: NULL}` |
 | `T.from_row(row: sql.Row) -> T ! sql.Error` | for a structure `T` whose fields are of the five types or optionals of them: each field from the column of its name |
 
 `sql.Error` has the fields `kind: sql.ErrorKind`, `message: string` and `code: string`, and `sql.ErrorKind` is an enumeration: `Connection`, `Constraint`, `Syntax`, `Serialization`, `Timeout`, `NoRows`, `Other`. Chapter 11 has programs that use these.

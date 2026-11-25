@@ -2379,6 +2379,17 @@ type SqlRow = { _names: [string], _values: [string?] }
 /// The names of the columns.
 fn (self: SqlRow) columns() -> [string] { return self._names }
 
+/// A row as text: each column with what it holds, as the database wrote it.
+fn (self: SqlRow) to_string() -> string {
+    var out := "\{"
+    for i in 0..self._names.len {
+        if i > 0 { out += ", " }
+        out += self._names[i] + ": "
+        if value := self._values[i] { out += __repr(value) } else { out += "NULL" }
+    }
+    return out + "}"
+}
+
 fn (self: SqlRow) _text(column: string) -> string? ! SqlError {
     for i in 0..self._names.len {
         if self._names[i] == column { return self._values[i] }
