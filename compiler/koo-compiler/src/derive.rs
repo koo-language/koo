@@ -56,6 +56,12 @@ const UNREADABLE: &str = "else e => panic(\"a message between actors could not b
 
 struct Deriver<'a> {
     structs: HashMap<&'a str, &'a [Field]>,
+    /// The structures with type parameters, each with the names of its parameters: a
+    /// `Page<T>` has JSON for every `T` that has.
+    generics: HashMap<&'a str, (Vec<&'a str>, &'a [Field])>,
+    /// The type parameters of the generic structure being written, which stand for
+    /// types that have JSON; empty when no such structure is.
+    params: Vec<&'a str>,
     /// The error types with fields, and the names that stand for several errors.
     error_sets: HashMap<&'a str, &'a [Type]>,
     actors: Vec<&'a ActorDecl>,
@@ -194,7 +200,12 @@ impl<'a> Deriver<'a> {
         match &self.resolved(ty).kind {
             TypeKind::Named { path, args } if path.len() == 1 && args.is_empty() => {
                 let name = path[0].name.as_str();
-                BUILT_IN.contains(&name) || self.ok.contains(name)
+                BUILT_IN.contains(&name) || self.ok.contains(name) || self.params.contains(&name)
+            }
+            // A generic structure that has JSON, of types that have.
+            TypeKind::Named { path, args } if path.len() == 1 => {
+                let name = path[0].name.as_str();
+                self.generics.contains_key(name) && self.ok.contains(name) && args.iter().all(|arg| self.holds(arg))
             }
             TypeKind::List(element) => self.holds(element),
             TypeKind::Optional(inner) => {
@@ -225,7 +236,11 @@ impl<'a> Deriver<'a> {
     /// A type as it is written.
     fn written(&self, ty: &'a Type) -> String {
         match &self.resolved(ty).kind {
-            TypeKind::Named { path, .. } => path[0].name.clone(),
+            TypeKind::Named { path, args } if args.is_empty() => path[0].name.clone(),
+            TypeKind::Named { path, args } => {
+                let args: Vec<String> = args.iter().map(|arg| self.written(arg)).collect();
+                format!("{}<{}>", path[0].name, args.join(", "))
+            }
             TypeKind::List(element) => format!("[{}]", self.written(element)),
             TypeKind::Optional(inner) => format!("{}?", self.written(inner)),
             TypeKind::Map(_, value) => format!("[string: {}]", self.written(value)),
@@ -299,8 +314,17 @@ impl<'a> Deriver<'a> {
                 "bool" => "j__bool(text, var at)".to_string(),
                 "string" => "j__str(text, var at)".to_string(),
                 "byte" => "j__byte(text, var at)".to_string(),
-                name => format!("{name}._json_read(text, var at)"),
+                _ => format!("{}._json_read(text, var at)", self.written(ty)),
             },
+            // In a generic structure a list or a map may hold what a type parameter
+            // stands for, and is read by the functions the prelude has for every list
+            // and map; an optional is read by its field itself (`read_fields`).
+            TypeKind::List(element) if !self.params.is_empty() => {
+                format!("List<{}>._json_read(text, var at)", self.written(element))
+            }
+            TypeKind::Map(_, value) if !self.params.is_empty() => {
+                format!("Map<string, {}>._json_read(text, var at)", self.written(value))
+            }
             _ => {
                 let key = self.written(ty);
                 let number = match self.readers.get(&key) {
@@ -475,7 +499,12 @@ impl<'a> Deriver<'a> {
         out.push_str("    while j__more(text, var at, 125, var first)? {\n        key := j__key(text, var at)?\n");
         out.push_str("        match key {\n");
         for (index, field) in &shown {
-            let (name, read) = (&self.key(field), self.reader(&field.ty));
+            let read = if !self.params.is_empty() && self.is_optional(&field.ty) {
+                format!("got{index}._json_read_optional(text, var at)")
+            } else {
+                self.reader(&field.ty)
+            };
+            let name = &self.key(field);
             let _ = write!(
                 out,
                 "            \"{name}\" => {{\n                \
@@ -960,8 +989,20 @@ impl<'a> Deriver<'a> {
         true
     }
 
-    fn a_struct(&mut self, name: &'a str, fields: &'a [Field]) {
-        self.rename = self.renames.get(name).copied().unwrap_or(Rename::Snake);
+    fn a_struct(&mut self, bare: &'a str, fields: &'a [Field]) {
+        self.rename = self.renames.get(bare).copied().unwrap_or(Rename::Snake);
+        // A structure with type parameters is written once, for whatever they are.
+        self.params = self
+            .generics
+            .get(bare)
+            .map(|(params, _)| params.clone())
+            .unwrap_or_default();
+        let full = if self.params.is_empty() {
+            bare.to_string()
+        } else {
+            format!("{bare}<{}>", self.params.join(", "))
+        };
+        let name = full.as_str();
         let writes = self.write_fields(fields, &|_, field| format!("self.{}", field.name.name), false);
         let _ = write!(
             self.out,
@@ -973,6 +1014,7 @@ impl<'a> Deriver<'a> {
             "fn {name}._json_read(text: string, at: var int) -> {name} ! JsonError {{\n{reads}}}\n\n"
         );
         self.entry_points(name);
+        self.params.clear();
     }
 
     fn an_enum(&mut self, decl: &'a EnumDecl) {
@@ -1068,6 +1110,8 @@ pub fn derive(package: &File, json: bool, rows: bool, envs: bool) -> Derived {
         error_sets: HashMap::new(),
         actors: Vec::new(),
         mailboxes: HashMap::new(),
+        generics: HashMap::new(),
+        params: Vec::new(),
         renames: HashMap::new(),
         rename: Rename::Snake,
         unwritten: Vec::new(),
@@ -1193,6 +1237,18 @@ pub fn derive(package: &File, json: bool, rows: bool, envs: bool) -> Derived {
             }
         }
         match &item.kind {
+            ItemKind::Type(decl)
+                if !decl.type_params.is_empty()
+                    && !decl.resource
+                    && !hand_written.contains(decl.name.name.as_str())
+                    && !theirs.contains_key(decl.name.name.as_str()) =>
+            {
+                if let TypeBody::Struct(fields) = &decl.body {
+                    let params = decl.type_params.iter().map(|param| param.name.name.as_str()).collect();
+                    deriver.generics.insert(&decl.name.name, (params, fields));
+                    order.push(&decl.name.name);
+                }
+            }
             ItemKind::Type(decl) if decl.type_params.is_empty() && !decl.resource => match &decl.body {
                 TypeBody::Struct(fields) if !hand_written.contains(decl.name.name.as_str()) => {
                     deriver.structs.insert(&decl.name.name, fields);
@@ -1269,19 +1325,32 @@ pub fn derive(package: &File, json: bool, rows: bool, envs: bool) -> Derived {
     handles.extend(["Duration", "Time"]);
     deriver.ok.extend(handles.iter().copied());
     loop {
-        let struck: Vec<&str> = order
-            .iter()
-            .copied()
-            .filter(|name| deriver.ok.contains(name))
-            .filter(|name| match (deriver.structs.get(name), deriver.enums.get(name)) {
-                (Some(fields), _) => !deriver.fields_hold(fields, None),
-                (_, Some(decl)) => !decl.variants.iter().all(|variant| {
-                    let rename = deriver.renames.get(name).copied().unwrap_or(Rename::Snake);
-                    deriver.fields_hold(variant.fields.as_deref().unwrap_or(&[]), Some(rename))
-                }),
-                _ => !handles.contains(name),
-            })
-            .collect();
+        let mut struck: Vec<&str> = Vec::new();
+        for name in order.iter().copied() {
+            if !deriver.ok.contains(name) {
+                continue;
+            }
+            let held = if let Some((params, fields)) = deriver.generics.get(name).cloned() {
+                // What its type parameters stand for has JSON, or the structure is
+                // not asked for JSON with them.
+                deriver.params = params;
+                let held = deriver.fields_hold(fields, None);
+                deriver.params.clear();
+                held
+            } else if let Some(fields) = deriver.structs.get(name).copied() {
+                deriver.fields_hold(fields, None)
+            } else if let Some(decl) = deriver.enums.get(name).copied() {
+                let rename = deriver.renames.get(name).copied().unwrap_or(Rename::Snake);
+                decl.variants
+                    .iter()
+                    .all(|variant| deriver.fields_hold(variant.fields.as_deref().unwrap_or(&[]), Some(rename)))
+            } else {
+                handles.contains(&name)
+            };
+            if !held {
+                struck.push(name);
+            }
+        }
         if struck.is_empty() {
             break;
         }
@@ -1294,7 +1363,9 @@ pub fn derive(package: &File, json: bool, rows: bool, envs: bool) -> Derived {
             continue;
         }
         let before = deriver.out.len();
-        if let Some(fields) = deriver.structs.get(name).copied() {
+        if let Some((_, fields)) = deriver.generics.get(name).cloned() {
+            deriver.a_struct(name, fields);
+        } else if let Some(fields) = deriver.structs.get(name).copied() {
             deriver.a_struct(name, fields);
         } else if let Some(decl) = deriver.enums.get(name).copied() {
             deriver.an_enum(decl);

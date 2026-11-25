@@ -725,8 +725,9 @@ impl<'a> Checker<'a> {
         self.type_env = saved;
 
         let id = self.sigs.len();
-        // What the compiler writes for a program's types has no generic function, so
-        // one of the prelude's is the library's own.
+        // What the compiler writes for a program's generic types reads and writes JSON,
+        // and none of it ends with a `location`: a generic function that does is the
+        // library's own.
         let located = prelude && super::takes_location(&params);
         if located {
             self.located.insert(id);

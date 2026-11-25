@@ -1,0 +1,41 @@
+// A structure with type parameters has JSON for whatever its parameters are, if they
+// have: alone, and as a field of another structure.
+
+type Item = { sku: string, qty: int = 1 }
+
+@json(rename: camel)
+type Page<T> = { items: [T], next_page: int?, total: int = 0, first: T?, by_name: [string: T] = [:] }
+
+type Pair<A, B> = { left: A, right: B }
+
+type Answer = { page: Page<Item>, pairs: [Pair<string, int>] }
+
+fn main() ! JsonError {
+    page := Page<Item> { items: [Item { sku: "a" }], next_page: 2, total: 9, first: none }
+    text := page.to_json()
+    print(text)
+    print(Page<Item>.from_json(text)?)
+    print(Page<int>.from_json("\{\"items\": [1, 2], \"first\": 7, \"byName\": \{\"x\": 3}}")?)
+    pair := Pair<string, [int]> { left: "k", right: [1, 2] }
+    print(pair.to_json())
+    print(Pair<string, [int]>.from_json(pair.to_json())?)
+    answer := Answer { page, pairs: [Pair<string, int> { left: "a", right: 1 }] }
+    print(answer.to_json())
+    print(Answer.from_json(answer.to_json())?)
+    match Page<Item>.from_json("\{\"items\": [\{\"sku\": 5}]}") {
+        p => print(p)
+        ! e => print("{e.path}: {e.message}")
+    }
+    again: Page<Item> = Page<Item>.from_json(text)?
+    print(again.items.len)
+}
+
+//= {"items":[{"sku":"a","qty":1}],"nextPage":2,"total":9,"byName":{}}
+//= Page<Item> { items: [Item { sku: "a", qty: 1 }], next_page: 2, total: 9, first: none, by_name: [:] }
+//= Page<int> { items: [1, 2], next_page: none, total: 0, first: 7, by_name: ["x": 3] }
+//= {"left":"k","right":[1,2]}
+//= Pair<string, [int]> { left: "k", right: [1, 2] }
+//= {"page":{"items":[{"sku":"a","qty":1}],"nextPage":2,"total":9,"byName":{}},"pairs":[{"left":"a","right":1}]}
+//= Answer { page: Page<Item> { items: [Item { sku: "a", qty: 1 }], next_page: 2, total: 9, first: none, by_name: [:] }, pairs: [Pair<string, int> { left: "a", right: 1 }] }
+//= /items/0/sku: expected a string, found a number
+//= 1
