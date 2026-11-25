@@ -13,6 +13,11 @@ fn main() {
     println!("cargo:rerun-if-changed={}", source.with_file_name("actor.rs").display());
     println!(
         "cargo:rerun-if-changed={}",
+        source.with_file_name("digest.rs").display()
+    );
+    println!("cargo:rerun-if-changed={}", source.with_file_name("pg.rs").display());
+    println!(
+        "cargo:rerun-if-changed={}",
         source.with_file_name("thread.rs").display()
     );
     let rustc = env::var("RUSTC").unwrap_or_else(|_| "rustc".to_string());

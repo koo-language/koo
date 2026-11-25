@@ -40,6 +40,77 @@ impl Checker<'_> {
         matches!(ty, Ty::Struct(_)) && (self.duration_ty().as_ref() == Some(ty) || self.time_ty().as_ref() == Some(ty))
     }
 
+    /// Whether a type is a struct of the prelude whose fields are its own: a duration, a
+    /// time, a query, a row, a pool. A program neither reads those fields nor builds
+    /// the struct from them.
+    pub(super) fn is_opaque(&self, ty: &Ty) -> bool {
+        match ty {
+            Ty::Struct(id) if *id < self.prelude_types.0 => self.program.structs[*id]
+                .fields
+                .iter()
+                .any(|field| field.name.starts_with('_')),
+            _ => false,
+        }
+    }
+
+    /// A string literal where a query is expected (Section 3.3): the text between the
+    /// values, and the values, each as a parameter. Nothing of a value becomes text of
+    /// the statement.
+    pub(super) fn sql_template(&mut self, parts: &[koo_syntax::ast::StrPart], span: Span) -> Option<Expr> {
+        use koo_syntax::ast;
+        let Some(Ty::Struct(query)) = self.prelude_struct("SqlQuery") else {
+            return None;
+        };
+        let mut texts = vec![String::new()];
+        let mut params = Vec::new();
+        for part in parts {
+            match part {
+                ast::StrPart::Lit(text) => texts.last_mut().unwrap().push_str(text),
+                ast::StrPart::Interp { expr, format } => {
+                    if format.is_some() {
+                        self.error_help(
+                            expr.span,
+                            "a value in a query cannot have a format",
+                            "the value is sent to the database as it is, apart from the statement, and not as text (Section 3.3)",
+                        );
+                    }
+                    let value = self.expr(expr, None);
+                    if value.ty.is_unknown() {
+                        continue;
+                    }
+                    let inner = match &value.ty {
+                        Ty::Optional(inner) => inner.as_ref(),
+                        other => other,
+                    };
+                    let known = matches!(inner, Ty::Int | Ty::Float | Ty::Bool | Ty::Str)
+                        || self.time_ty().as_ref() == Some(inner);
+                    if !known {
+                        let found = self.ty_name(&value.ty);
+                        self.error_help(
+                            expr.span,
+                            format!("a `{found}` cannot be a parameter of a query"),
+                            "a parameter is an `int`, a `float`, a `bool`, a `string` or a `Time`, or an optional of one, which is NULL when it is `none` (Section 10.3)",
+                        );
+                        continue;
+                    }
+                    let name = ast::Ident {
+                        name: "_sql".to_string(),
+                        span: expr.span,
+                    };
+                    params.push(self.method_call(value, &name, &[], expr.span, None));
+                    texts.push(String::new());
+                }
+            }
+        }
+        let parts: Vec<Expr> = texts
+            .into_iter()
+            .map(|text| self.mk(ExprKind::Str(text), Ty::Str, span))
+            .collect();
+        let parts = self.mk(ExprKind::ListLit(parts), Ty::list(Ty::Str), span);
+        let params = self.mk(ExprKind::ListLit(params), Ty::list(Ty::optional(Ty::Str)), span);
+        Some(self.mk(ExprKind::StructLit(query, vec![parts, params]), Ty::Struct(query), span))
+    }
+
     /// `1h30min`: a `Duration` of so many nanoseconds. The lexer has seen to it that the
     /// text is digits and units, the units from largest to smallest.
     pub(super) fn duration_literal(&mut self, text: &str, span: Span) -> Expr {

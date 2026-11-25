@@ -219,6 +219,92 @@ fn examples_run() {
     }
 }
 
+/// The address of the PostgreSQL server that the tests of `std/sql` use, if there is one:
+/// the environment variable `KOO_TEST_POSTGRES`, as `postgres://user:password@host/name`.
+/// The tests make and drop tables whose names begin with `koo_`, and a schema named
+/// `koo_book`; without the variable they are skipped.
+fn test_database() -> Option<String> {
+    std::env::var("KOO_TEST_POSTGRES").ok().filter(|url| !url.is_empty())
+}
+
+/// Only one test at a time uses the database.
+static DATABASE: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+/// The address at which a program of the book or the tour finds a database of its own,
+/// in the schema `koo_book`, if the tests have a server to use.
+fn book_database() -> Option<String> {
+    test_database().map(|url| {
+        let joint = if url.contains('?') { '&' } else { '?' };
+        format!("{url}{joint}options=-csearch_path%3Dkoo_book")
+    })
+}
+
+/// Empties the schema `koo_book`, with a program written into `dir` for the purpose.
+fn empty_book_database(dir: &Path, url: &str) -> Result<(), String> {
+    let path = dir.join("empty.koo");
+    std::fs::write(
+        &path,
+        "import std/os\nimport std/sql\nimport std/sql/postgres\n\nfn main() ! sql.Error {\n    \
+         db := postgres.connect(os.env(\"DATABASE_URL\") else \"\")?\n    \
+         db.exec(\"drop schema if exists koo_book cascade\")?\n    \
+         db.exec(\"create schema koo_book\")?\n}\n",
+    )
+    .unwrap();
+    let output = Command::new(env!("CARGO_BIN_EXE_koo"))
+        .arg("run")
+        .arg(&path)
+        .env("DATABASE_URL", url)
+        .output()
+        .expect("koo runs");
+    if output.status.success() {
+        Ok(())
+    } else {
+        Err(format!(
+            "the database cannot be emptied:\n{}",
+            String::from_utf8_lossy(&output.stderr)
+        ))
+    }
+}
+
+/// The programs in `tests/sql` do, against a real database, what they say they do.
+#[test]
+fn a_database_answers_queries() {
+    let Some(url) = test_database() else {
+        eprintln!("KOO_TEST_POSTGRES is not set: the tests of `std/sql` against a database are skipped");
+        return;
+    };
+    let _alone = DATABASE.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    let mut failures = Vec::new();
+    for path in programs("tests/sql") {
+        let source = std::fs::read_to_string(&path).unwrap();
+        let expected = expectation(&source);
+        let name = path.file_name().unwrap().to_string_lossy().to_string();
+        for release in [false, true] {
+            let mut command = Command::new(env!("CARGO_BIN_EXE_koo"));
+            command
+                .arg("run")
+                .arg(&path)
+                .env("KOO_LEAKS", "1")
+                .env("KOO_TEST_POSTGRES", &url);
+            if release {
+                command.arg("--release");
+            }
+            let output = command.output().expect("koo runs");
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            let mode = if release { "release" } else { "debug" };
+            if stdout != expected.stdout || output.status.code() != Some(expected.exit) {
+                failures.push(format!(
+                    "{name} ({mode}): exit status {:?}\n--- expected\n{}--- found\n{stdout}--- stderr\n{stderr}",
+                    output.status.code(),
+                    expected.stdout
+                ));
+            }
+        }
+    }
+    assert!(failures.is_empty(), "\n{}", failures.join("\n\n"));
+}
+
 /// `koo test` runs the tests of each file in `tests/test` and reports them as expected.
 /// `TESTFILE` in an expected line stands for the path of the file.
 #[test]
@@ -365,11 +451,21 @@ fn run_listing(dir: &Path, source: &str, tags: &[(String, String)]) -> Outcome {
             .find(|(found, _)| found == tag)
             .map(|(_, text)| text.clone())
     };
+    // A program that uses a database is given an empty one, in a schema of its own, at
+    // the address it reads from `DATABASE_URL`. Without a database to give, it is only
+    // checked, and what the book says it does is not compared.
+    let uses_database = source.contains("import std/sql") && !has("error");
+    let database = book_database().filter(|_| uses_database);
+    let _alone = database
+        .as_ref()
+        .map(|_| DATABASE.lock().unwrap_or_else(|poisoned| poisoned.into_inner()));
+    let database_url = database.clone().unwrap_or_default();
     let koo = |args: &[&str], input: Option<String>| {
         let mut command = Command::new(env!("CARGO_BIN_EXE_koo"));
         command
             .args(args)
             .current_dir(dir)
+            .env("DATABASE_URL", &database_url)
             .env("KOO_LEAKS", "1")
             .env("NO_COLOR", "1")
             .stdin(std::process::Stdio::piped())
@@ -392,6 +488,19 @@ fn run_listing(dir: &Path, source: &str, tags: &[(String, String)]) -> Outcome {
         found: Vec::new(),
         wrong: Vec::new(),
     };
+    if uses_database {
+        if database.is_none() {
+            let (_, stderr, status) = koo(&["check", "main.koo"], None);
+            if status != Some(0) {
+                outcome.wrong.push(format!("the compiler refuses it:\n{stderr}"));
+            }
+            return outcome;
+        }
+        if let Err(wrong) = empty_book_database(dir, &database_url) {
+            outcome.wrong.push(wrong);
+            return outcome;
+        }
+    }
     if let Some(asked) = told("http") {
         // A server: it is started, sent the requests the book lists, each a line that
         // begins with `> `, and what it answers is written after each: the status, then
@@ -412,6 +521,7 @@ fn run_listing(dir: &Path, source: &str, tags: &[(String, String)]) -> Outcome {
         }
         let server = Command::new(dir.join("server"))
             .current_dir(dir)
+            .env("DATABASE_URL", &database_url)
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null())
             .spawn()
@@ -700,13 +810,37 @@ fn tour_programs_print_what_the_tour_says() {
         let expected = &expected[..expected.find("```").expect("a closed block")];
         let path = dir.join(format!("block{count}.koo"));
         std::fs::write(&path, source).unwrap();
+        let line = source.lines().next().unwrap_or("");
+        // A program that uses a database is run against an empty one, if the tests
+        // have a server, and is otherwise only checked.
+        let mut database = String::new();
+        let mut _alone = None;
+        if source.contains("import std/sql/postgres") {
+            let Some(url) = book_database() else {
+                let output = Command::new(env!("CARGO_BIN_EXE_koo"))
+                    .arg("check")
+                    .arg(&path)
+                    .output()
+                    .expect("koo runs");
+                assert!(
+                    output.status.success(),
+                    "the tour program beginning `{line}` is refused:\n{}",
+                    String::from_utf8_lossy(&output.stderr)
+                );
+                count += 1;
+                continue;
+            };
+            _alone = Some(DATABASE.lock().unwrap_or_else(|poisoned| poisoned.into_inner()));
+            empty_book_database(&dir, &url).unwrap_or_else(|wrong| panic!("{wrong}"));
+            database = url;
+        }
         let output = Command::new(env!("CARGO_BIN_EXE_koo"))
             .arg("run")
             .arg(&path)
             .env("KOO_LEAKS", "1")
+            .env("DATABASE_URL", &database)
             .output()
             .expect("koo runs");
-        let line = source.lines().next().unwrap_or("");
         assert!(
             output.status.success(),
             "the tour program beginning `{line}` failed:\n{}",

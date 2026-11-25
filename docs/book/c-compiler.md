@@ -145,9 +145,9 @@ The [specification](../../SPEC.md) describes more than the compiler builds. For 
 
 *Concurrency.* Of the concurrency that the specification describes, actors are built, as Chapter 9 describes them, with the limits listed in Section 9.11. Tasks, `spawn`, `scope`, channels and `select` are not.
 
-*Packages.* A program is one package. One package of your own cannot yet import another, and there is no package manager. The standard packages are `std/io`, `std/os`, `std/time`, `std/http` and `std/test`.
+*Packages.* A program is one package. One package of your own cannot yet import another, and there is no package manager. The standard packages are `std/io`, `std/os`, `std/time`, `std/http`, `std/sql`, `std/sql/postgres` and `std/test`.
 
-*The library.* There are no random numbers, no network client, no database, and no way to read a file except whole.
+*The library.* There are no random numbers, no network client except the one that speaks to PostgreSQL, and no way to read a file except whole. Section 11.7 lists what `std/sql` leaves out.
 
 *Targets.* The compiler builds for the machine it runs on: macOS on arm64, and Linux on x86-64 and arm64. It does not build for another machine than its own, or for WebAssembly.
 
@@ -155,6 +155,6 @@ The [specification](../../SPEC.md) describes more than the compiler builds. For 
 
 The compiler is new, and it would be wrong to end a book that claims exactness without saying how much the claim covers.
 
-What is checked, every time the compiler's tests are run: every program in this book is built and run, and what it does is compared with what the book says, as the Preface described. Some two hundred other programs are checked as well: those that should run are built with and without optimization, and fail the tests if they print the wrong thing or end with memory still allocated, and those that should be refused are compared with the messages they should get. The test programs with actors are also run under ThreadSanitizer, which reports nothing.
+What is checked, every time the compiler's tests are run: every program in this book is built and run, and what it does is compared with what the book says, as the Preface described. Some two hundred other programs are checked as well: those that should run are built with and without optimization, and fail the tests if they print the wrong thing or end with memory still allocated, and those that should be refused are compared with the messages they should get. The test programs with actors are also run under ThreadSanitizer, which reports nothing. The programs of Chapter 11, and others that use a database, are run when the tests are given a PostgreSQL server to use, each against a database with nothing in it; without one they are only checked by the compiler.
 
 What is not: a compiler is a large program, this one has had few users, and it has not been tested at the scale that finds the rare bug. If a program of yours behaves in a way that this book says it should not, the book is right about the language and the compiler is wrong, and its authors would like to hear of it.

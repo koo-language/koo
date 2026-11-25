@@ -421,7 +421,9 @@ koo build --release --static server.koo
 
 The server speaks HTTP/1.1. It does not speak HTTPS or HTTP/2; where those are needed, it runs behind a proxy that does, which is how most services are deployed in any case. A body, of a request or a response, is handled whole, and cannot yet be read or written a piece at a time. And while a handler waits for something slow, the other requests that its worker has accepted wait with it.
 
-There is no HTTP client in the library yet, and no database package. The specification describes all of these; this book will describe them when they can be run.
+There is no HTTP client in the library yet. The specification describes all of these; this book will describe them when they can be run.
+
+What a server keeps for longer than it runs, it keeps in a database, and that is the subject of the next chapter.
 
 **Exercise 10-1.** Add to the orders service a route that deletes an order, and one that changes the quantity of one of its items. What should each answer when the order does not exist?
 

@@ -113,7 +113,16 @@ impl<'a> Checker<'a> {
                 self.unknown(span)
             }
             ast::ExprKind::RawStr(text) => self.mk(ExprKind::Str(text.clone()), Ty::Str, span),
-            ast::ExprKind::Str(parts) => self.string(parts, span),
+            ast::ExprKind::Str(parts) => {
+                // Where a query is expected, the literal is one (`check/time.rs`).
+                let wanted = expected.is_some_and(
+                    |ty| matches!(ty, Ty::Struct(id) if self.program.structs[*id].name == "SqlQuery" && self.is_opaque(ty)),
+                );
+                match wanted.then(|| self.sql_template(parts, span)).flatten() {
+                    Some(query) => query,
+                    None => self.string(parts, span),
+                }
+            }
             ast::ExprKind::Bool(value) => self.mk(ExprKind::Bool(*value), Ty::Bool, span),
             ast::ExprKind::None => {
                 // `none` is the outermost absence of the expected type (Section 4.8).
@@ -565,6 +574,25 @@ impl<'a> Checker<'a> {
     }
 
     fn field(&mut self, base: &ast::Expr, name: &ast::Ident, span: Span, expected: Option<&Ty>) -> Expr {
+        // `sql.Isolation.Serializable`: a variant of an enum of a standard package.
+        if let ast::ExprKind::Field {
+            base: package,
+            name: type_name,
+        } = &base.kind
+            && let ast::ExprKind::Name(package) = &package.kind
+            && type_name.is_upper()
+            && self.resolve_local(&package.name).is_none()
+            && let Some(full) = self.package_type(&[package.clone(), type_name.clone()])
+        {
+            let of = ast::Expr {
+                kind: ast::ExprKind::Name(ast::Ident {
+                    name: full,
+                    span: type_name.span,
+                }),
+                span: base.span,
+            };
+            return self.field(&of, name, span, expected);
+        }
         // `Payment.Cash`: a variant written with its enum.
         if let ast::ExprKind::Name(type_name) = &base.kind
             && type_name.is_upper()
@@ -577,7 +605,7 @@ impl<'a> Checker<'a> {
                         let known = self.program.enums[id].variants.iter().map(|v| v.name.clone()).collect();
                         self.error_near(
                             name.span,
-                            format!("`{}` has no variant `{}`", type_name.name, name.name),
+                            format!("`{}` has no variant `{}`", self.ty_name(&Ty::Enum(id)), name.name),
                             &name.name,
                             known,
                             None,
@@ -600,7 +628,7 @@ impl<'a> Checker<'a> {
                             let known = self.program.enums[id].variants.iter().map(|v| v.name.clone()).collect();
                             self.error_near(
                                 name.span,
-                                format!("`{}` has no variant `{}`", type_name.name, name.name),
+                                format!("`{}` has no variant `{}`", self.ty_name(&Ty::Enum(id)), name.name),
                                 &name.name,
                                 known,
                                 None,
@@ -632,7 +660,7 @@ impl<'a> Checker<'a> {
         } else {
             name.name.as_str()
         };
-        let hidden = private || (self.is_time_type(&base.ty) && !self.body_in_prelude);
+        let hidden = private || (self.is_opaque(&base.ty) && !self.body_in_prelude);
         if hidden && name.name.starts_with('_') {
             let found = self.ty_name(&base.ty);
             self.error(name.span, format!("`{found}` has no field `{}`", name.name));
@@ -711,7 +739,7 @@ impl<'a> Checker<'a> {
                                 (ErrSet::Of(ids), ErrSet::Of(declared)) => ids
                                     .iter()
                                     .filter(|id| !declared.contains(id))
-                                    .map(|&id| self.program.errors[id].name.clone())
+                                    .map(|&id| self.ty_name(&Ty::Error(id)))
                                     .collect(),
                                 _ => vec!["Failure".to_string()],
                             };
@@ -764,6 +792,8 @@ impl<'a> Checker<'a> {
             }
             Ty::Unknown => self.unknown(span),
             Ty::Never => value,
+            // The result of a function that, this time, has no errors to pass on.
+            _ if self.without_errors() => value,
             other => {
                 let found = self.ty_name(&other);
                 self.error(span, format!("`?` needs a result or an optional, found `{found}`"));
@@ -1137,6 +1167,22 @@ impl<'a> Checker<'a> {
             Error(ErrorId),
             Variant(EnumId, usize),
         }
+        // `http.Response { ... }`: a struct of a standard package.
+        if let ast::ExprKind::Field { base, name } = &ty.kind
+            && let ast::ExprKind::Name(package) = &base.kind
+            && name.is_upper()
+            && self.resolve_local(&package.name).is_none()
+            && let Some(full) = self.package_type(&[package.clone(), name.clone()])
+        {
+            let of = ast::Expr {
+                kind: ast::ExprKind::Name(ast::Ident {
+                    name: full,
+                    span: ty.span,
+                }),
+                span: ty.span,
+            };
+            return self.struct_literal(&of, fields, span, expected);
+        }
         let target = match &ty.kind {
             ast::ExprKind::Name(name) => {
                 let variant = match expected.map(peel) {
@@ -1200,14 +1246,15 @@ impl<'a> Checker<'a> {
         };
         if let Target::Struct(id) = target
             && !self.body_in_prelude
-            && self.is_time_type(&Ty::Struct(id))
+            && self.is_opaque(&Ty::Struct(id))
         {
             let name = self.ty_name(&Ty::Struct(id));
-            self.error_help(
-                span,
-                format!("`{name}` cannot be built from its fields"),
-                "its fields are its own: write a duration as `250ms`, and get a time from `time.now()`, `Time.from_unix(seconds)` or `Time.parse(text)`",
-            );
+            let help = if self.is_time_type(&Ty::Struct(id)) {
+                "its fields are its own: write a duration as `250ms`, and get a time from `time.now()`, `Time.from_unix(seconds)` or `Time.parse(text)`"
+            } else {
+                "its fields are its own: a query is written as a string literal where one is expected, and a pool and its rows come from the database"
+            };
+            self.error_help(span, format!("`{name}` cannot be built from its fields"), help);
             return self.unknown(span);
         }
         if let Target::Struct(id) = target
@@ -1242,7 +1289,11 @@ impl<'a> Checker<'a> {
         for field in fields {
             let Some(index) = defs.iter().position(|d| d.name == field.name.name) else {
                 let known = defs.iter().map(|d| d.name.clone()).collect();
-                let message = format!("`{type_name}` has no field `{}`", field.name.name);
+                let shown = match target {
+                    Target::Struct(id) => self.ty_name(&Ty::Struct(id)),
+                    _ => type_name.clone(),
+                };
+                let message = format!("`{shown}` has no field `{}`", field.name.name);
                 self.error_near(field.name.span, message, &field.name.name, known, None);
                 if let Some(value) = &field.value {
                     self.expr(value, None);
@@ -1290,7 +1341,11 @@ impl<'a> Checker<'a> {
             }
         }
         if !missing.is_empty() {
-            self.error(span, format!("`{type_name}` is missing {}", list_fields(&missing)));
+            let shown = match target {
+                Target::Struct(id) => self.ty_name(&Ty::Struct(id)),
+                _ => type_name.clone(),
+            };
+            self.error(span, format!("`{shown}` is missing {}", list_fields(&missing)));
             let quoted: Vec<String> = missing.iter().map(|name| format!("`{name}: ...`")).collect();
             self.label(format!("add {}", quoted.join(", ")));
             let base = type_name.split('<').next().unwrap_or("").to_string();
@@ -1321,10 +1376,14 @@ impl<'a> Checker<'a> {
         // it succeeds with.
         let hint = expected.filter(|_| matches!(inner.kind, ast::ExprKind::Call { .. }));
         let value = self.expr(inner, hint);
+        // The result of a function that, this time, has no errors.
+        let absent =
+            !matches!(value.ty, Ty::Optional(_) | Ty::Result(..) | Ty::Unknown | Ty::Never) && self.without_errors();
         let (ok, set) = match value.ty.clone() {
             Ty::Optional(inner) => (*inner, None),
             Ty::Result(ok, set) => (*ok, Some(set)),
             Ty::Unknown | Ty::Never => (Ty::Unknown, None),
+            _ if absent => (Ty::Unknown, None),
             other => {
                 let found = self.ty_name(&other);
                 self.error(
@@ -1340,15 +1399,19 @@ impl<'a> Checker<'a> {
                 (Ty::Unknown, None)
             }
         };
-        if value.ty == Ty::Never {
-            // The operand never arrives, so neither does the alternative. It is still
-            // checked, in a scope of its own.
+        if value.ty == Ty::Never || absent {
+            // The operand never arrives, or always does, so the alternative is never
+            // used. It is still checked, in a scope of its own.
+            let reported = self.diags.len();
             self.scopes.push(HashMap::new());
             if let Some(name) = binding {
                 self.declare(name, Ty::Unknown, false, LocalKind::Owned);
             }
             self.body(alt, true, None);
             self.scopes.pop();
+            if absent {
+                self.diags.truncate(reported);
+            }
             return value;
         }
         self.scopes.push(HashMap::new());
@@ -1360,7 +1423,12 @@ impl<'a> Checker<'a> {
                     ErrSet::Of(ids) if ids.len() == 1 => Ty::Error(ids[0]),
                     _ => Ty::Failure,
                 };
-                Some(self.declare(name, ty, false, LocalKind::Owned))
+                let several = ty == Ty::Failure;
+                let local = self.declare(name, ty, false, LocalKind::Owned);
+                if several {
+                    self.caught.insert(local, set.clone());
+                }
+                Some(local)
             }
             (Some(name), None) => {
                 if !value.ty.is_unknown() {

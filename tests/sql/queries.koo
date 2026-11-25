@@ -1,0 +1,59 @@
+// Run against a PostgreSQL server whose address is in KOO_TEST_POSTGRES (see
+// `a_database_answers_queries` in compiler/koo/tests/programs.rs).
+
+import std/os
+import std/sql
+import std/sql/postgres
+
+fn main() ! sql.Error {
+    url := os.env("KOO_TEST_POSTGRES") else ""
+    db := postgres.connect(url)?
+    db.exec("drop table if exists koo_orders")?
+    db.exec("create table koo_orders (id serial primary key, customer text not null, total double precision, paid boolean not null default false, placed timestamptz not null, note text)")?
+    placed := Time.parse("2026-03-01T09:30:00Z") else Time.from_unix(0)
+    customer := "Robert'); drop table koo_orders;--"
+    note: string? = none
+    print(db.exec("insert into koo_orders (customer, total, placed, note) values ({customer}, {19.5}, {placed}, {note})")?)
+    print(db.exec("insert into koo_orders (customer, total, paid, placed, note) values ({"Ada"}, {40.0}, {true}, {placed + 2h}, {"gift"})")?)
+    rows := db.query("select * from koo_orders order by id")?
+    for row in rows {
+        print("{row.int("id")?} {row.string("customer")?} {row.float("total")?} {row.bool("paid")?} {row.time("placed")?} {row.maybe_string("note")?}")
+    }
+    print(rows[0].columns())
+    wanted := 2
+    one := db.query_one("select customer from koo_orders where id = {wanted}")?
+    if row := one { print(row.string("customer")?) }
+    print(db.query_one("select customer from koo_orders where id = {99}")?.is_none())
+    match db.query_row("select 1 where false") {
+        row => print("a row?")
+        ! e => print("{e.kind}: {e.message}")
+    }
+    match db.exec("insert into koo_orders (id, customer, placed) values ({1}, {"dup"}, {placed})") {
+        n => print(n)
+        ! e => print("{e.kind} {e.code}: {e.message}")
+    }
+    match db.query("selec nonsense") {
+        r => print(r.len)
+        ! e => print("{e.kind} {e.code}: {e.message}")
+    }
+    print(db.query("select count(*) as n from koo_orders")?[0].int("n")?)
+    var q: sql.Query = "select id from koo_orders where total > {10.0}"
+    q.append(" and paid = {true}")
+    print(q.text())
+    print(db.query(q)?.len)
+    db.exec("drop table koo_orders")?
+}
+
+//= 1
+//= 1
+//= 1 Robert'); drop table koo_orders;-- 19.5 false 2026-03-01T09:30:00Z none
+//= 2 Ada 40.0 true 2026-03-01T11:30:00Z gift
+//= ["id", "customer", "total", "paid", "placed", "note"]
+//= Ada
+//= true
+//= NoRows: the query returned no row
+//= Constraint 23505: duplicate key value violates unique constraint "koo_orders_pkey"
+//= Syntax 42601: syntax error at or near "selec"
+//= 2
+//= select id from koo_orders where total > $1 and paid = $2
+//= 1

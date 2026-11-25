@@ -1,0 +1,53 @@
+// What `std/sql` does without a database: a query keeps its values apart from its text,
+// and an address that leads nowhere is an error that says why.
+
+import std/sql
+import std/sql/postgres
+
+fn show(query: sql.Query) {
+    print(query.text())
+}
+
+fn find(name: string, limit: int?) -> sql.Query {
+    var query: sql.Query = "select * from users where name = {name}"
+    if n := limit {
+        query.append(" limit {n}")
+    }
+    return query
+}
+
+fn main() {
+    name := "Robert'); drop table students;--"
+    show("select * from students where name = {name} and year > {2020}")
+    show("select 1")
+    show("insert into t (a, b, c, d) values ({1.5}, {true}, {"x"}, {Time.from_unix(0)})")
+    show(find("ada", none))
+    show(find("ada", 10))
+    show(sql.Query.raw("select " + "2"))
+    maybe: string? = none
+    show("update t set note = {maybe} where id = {7}")
+
+    for url in [
+        "mysql://localhost/app",
+        "postgres://app@localhost:1/app",
+        "postgres://app@localhost:port/app",
+        "postgres://app@db.example.com/app?sslmode=require",
+    ] {
+        match postgres.connect(url) {
+            db => print("connected?")
+            ! e => print("{e.kind}: {e}")
+        }
+    }
+}
+
+//= select * from students where name = $1 and year > $2
+//= select 1
+//= insert into t (a, b, c, d) values ($1, $2, $3, $4)
+//= select * from users where name = $1
+//= select * from users where name = $1 limit $2
+//= select 2
+//= update t set note = $1 where id = $2
+//= Connection: the address of a database begins with `postgres://`: `postgres://user:password@host:5432/name`
+//= Connection: cannot connect to localhost:1: Connection refused
+//= Connection: `port` is not a port
+//= Connection: this address asks for TLS, which `std/sql` does not speak yet: connect over a trusted network with `sslmode=disable`

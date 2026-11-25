@@ -251,6 +251,48 @@ So the first line of a function is the whole truth about how it can fail. The se
 
 Notice what the `?` does for the reader. In `address`, the two lines that may leave the function early are the two that have a `?` at the end. A line without one runs to completion, always. With exceptions, every line is under suspicion.
 
+Sometimes a function has something of its own to do before the error goes on its way: to give back what it had taken, or to write down that it failed. Then it handles the error as in the last section, and fails with it again. An error that was caught by `! e` or by `else e =>` may be given to `fail` just as it is, whichever of several types it has, provided that the function's error set has them all.
+
+```koo
+error Missing { key: string }
+
+fn number(settings: [string: string], key: string) -> int ! Missing | ParseError {
+    text := settings[key] else fail Missing { key }
+    return int.parse(text)?
+}
+
+fn port(settings: [string: string], problems: var [string]) -> int ! Missing | ParseError {
+    match number(settings, "port") {
+        port => return port
+        ! e => {
+            problems.push("no port: {e}")
+            fail e
+        }
+    }
+}
+
+fn main() {
+    var problems: [string] = []
+    good := ["port": "8080"]
+    bad := ["port": "eighty"]
+    empty: [string: string] = [:]
+    for settings in [good, bad, empty] {
+        print(port(settings, var problems) else 0)
+    }
+    for problem in problems {
+        print(problem)
+    }
+}
+```
+
+```text
+8080
+0
+0
+no port: ParseError { input: "eighty" }
+no port: Missing { key: "port" }
+```
+
 ## 7.4 Error Sets
 
 When several functions fail in the same ways, it is tedious to repeat the list. An error declaration can name a set:
@@ -295,6 +337,65 @@ fn main() {
 -1 is negative
 failed: ParseError { input: "many" }
 ```
+
+**The errors of a function that is passed.** A function that is given another function to call can fail, as a rule, in whatever ways that function can. Its error set cannot be written as a list, because it is a different list at every call. So it is written as a type parameter (Section 6.8): a name declared in the angle brackets and used after a `!` stands for the errors of the function that is passed.
+
+```koo
+error Refused { attempt: int }
+error GaveUp { after: int }
+
+// Calls `body` until it succeeds, `times` times at the most.
+fn retry<T, E>(times: int, body: fn(int) -> T ! E) -> T ! E | GaveUp {
+    for attempt in 1..=times {
+        match body(attempt) {
+            value => return value
+            ! e => print("attempt {attempt} failed: {e}")
+        }
+    }
+    fail GaveUp { after: times }
+}
+
+fn connect(attempt: int) -> string ! Refused {
+    if attempt < 3 {
+        fail Refused { attempt }
+    }
+    return "connected at attempt {attempt}"
+}
+
+fn main() {
+    for times in [5, 2] {
+        match retry(times, connect) {
+            said => print(said)
+            ! GaveUp { after } => print("gave up after {after}")
+            ! e: Refused => print("refused")
+        }
+    }
+    print(retry(3, attempt -> attempt * 10) else 0)
+}
+```
+
+```text
+attempt 1 failed: Refused { attempt: 1 }
+attempt 2 failed: Refused { attempt: 2 }
+connected at attempt 3
+attempt 1 failed: Refused { attempt: 1 }
+attempt 2 failed: Refused { attempt: 2 }
+gave up after 2
+10
+```
+
+In `retry(times, connect)` the parameter `E` is `Refused`, so the call is a `string ! Refused | GaveUp`, and the `match` on it must have an arm for each of the two, as it has. In the last call the function passed is a lambda that cannot fail. There `E` stands for no error at all, the call is an `int ! GaveUp`, and the arm of `retry` that deals with an error of `body` is not part of the function that is made for that call.
+
+A function that only passes the errors on, doing something before or after, is written the same way, with `?` or with the `fail e` of Section 7.3:
+
+    fn timed<T, E>(what: string, body: fn() -> T ! E) -> T ! E {
+        started := time.uptime()
+        value := body()?
+        print("{what} took {time.uptime() - started}")
+        return value
+    }
+
+Where the declaration of a function parameter lists its errors instead, as in `body: fn() -> int ! Missing | ParseError`, the list says how the function may fail and not how it must: a lambda that fails with one of the two, or with neither, may be passed.
 
 ## 7.5 Errors Are Values
 

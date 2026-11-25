@@ -404,7 +404,42 @@ A handler is a `fn(http.Request) -> http.Response ! Failure`.
 
 `http.Error` has the field `message: string`. Chapter 10 has programs that use these.
 
-## B.14 `std/test`
+## B.14 `std/sql`
+
+`std/sql/postgres` has one function:
+
+| | |
+| --- | --- |
+| `postgres.connect(url: string, pool: int = 10) -> sql.Pool ! sql.Error` | connects to the database at `postgres://user:password@host:port/database`, with at most `pool` connections |
+
+A `sql.Query` is written as a string literal where one is expected: the values in braces become parameters of the statement, each an `int`, a `float`, a `bool`, a `string` or a `Time`, or an optional of one, which is NULL when it is `none`.
+
+| `sql.Query` | |
+| --- | --- |
+| `sql.Query.raw(text: string) -> sql.Query` | a statement that is all text, with no parameters |
+| `var` `query.append(more: sql.Query)` | adds a query to the end of this one, with its parameters |
+| `query.text() -> string` | the statement as it is sent, with `$1`, `$2` and so on for the parameters |
+
+| `sql.Pool` and `sql.Tx` | |
+| --- | --- |
+| `db.exec(query: sql.Query) -> int ! sql.Error` | runs a statement, and returns the number of rows it changed |
+| `db.query(query: sql.Query) -> [sql.Row] ! sql.Error` | runs a statement, and returns its rows |
+| `db.query_one(query: sql.Query) -> sql.Row? ! sql.Error` | the first row, if there is one |
+| `db.query_row(query: sql.Query) -> sql.Row ! sql.Error` | the first row; fails with the kind `NoRows` if there is none |
+| `db.transaction(body: fn(sql.Tx) -> T ! E, isolation: sql.Isolation = sql.Isolation.ReadCommitted) -> T ! E \| sql.Error` | of a pool only: runs `body` in a transaction, which is kept if `body` returns and undone if it fails |
+
+`sql.Isolation` is an enumeration: `ReadCommitted`, `RepeatableRead`, `Serializable`.
+
+| `sql.Row` | |
+| --- | --- |
+| `row.int(column: string) -> int ! sql.Error`, and `float`, `bool`, `string`, `time` | the value of a column; fails if it is NULL |
+| `row.maybe_int(column: string) -> int? ! sql.Error`, and `maybe_float`, `maybe_bool`, `maybe_string`, `maybe_time` | the value of a column, or `none` if it is NULL |
+| `row.columns() -> [string]` | the names of the columns |
+| `T.from_row(row: sql.Row) -> T ! sql.Error` | for a structure `T` whose fields are of the five types or optionals of them: each field from the column of its name |
+
+`sql.Error` has the fields `kind: sql.ErrorKind`, `message: string` and `code: string`, and `sql.ErrorKind` is an enumeration: `Connection`, `Constraint`, `Syntax`, `Serialization`, `Timeout`, `NoRows`, `Other`. Chapter 11 has programs that use these.
+
+## B.15 `std/test`
 
 | | |
 | --- | --- |

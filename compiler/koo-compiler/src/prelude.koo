@@ -1556,6 +1556,386 @@ fn (self: HttpApp) serve(port: int = 8080, workers: int = 0, max_body: int = 104
     }
 }
 
+// ---- std/sql ----------------------------------------------------------------------------
+//
+// A database is reached through the support library (`koo-rt/src/pg.rs`), which sends a
+// statement and its parameters apart and keeps the answer for the thread to read.
+
+enum SqlErrorKind { Connection, Constraint, Syntax, Serialization, Timeout, NoRows, Other }
+
+/// Why a database did not do what was asked: `code` is the five characters by which
+/// PostgreSQL names the error, when it is the server that refused.
+error SqlError { kind: SqlErrorKind, message: string, code: string }
+
+/// An error of a database as a person would be told of it: what went wrong, and the
+/// server's code for it if it has one.
+fn (self: SqlError) to_string() -> string {
+    if self.code == "" { return self.message }
+    return "{self.message} ({self.code})"
+}
+
+fn s__error() -> SqlError {
+    kind := match __sql_kind() {
+        1 => SqlErrorKind.Connection
+        2 => SqlErrorKind.Constraint
+        3 => SqlErrorKind.Syntax
+        4 => SqlErrorKind.Serialization
+        5 => SqlErrorKind.Timeout
+        _ => SqlErrorKind.Other
+    }
+    return SqlError { kind, message: __sql_error(), code: __sql_code() }
+}
+
+fn s__other(message: string) -> SqlError {
+    return SqlError { kind: SqlErrorKind.Other, message, code: "" }
+}
+
+/// A statement: its text in pieces, and between each two pieces a parameter, which is
+/// text or NULL. A string literal with values in it, where a query is expected, is made
+/// one by the compiler (Section 3.3), so that a value is never part of the text.
+type SqlQuery = { _parts: [string], _params: [string?] }
+
+/// A statement that is all text, for one that a program has put together itself. What
+/// is in the text is the program's to answer for.
+fn SqlQuery.raw(text: string) -> SqlQuery {
+    return SqlQuery { _parts: [text], _params: [] }
+}
+
+/// Adds another query to the end of this one, parameters and all.
+fn (self: var SqlQuery) append(more: SqlQuery) {
+    last := self._parts.len - 1
+    self._parts[last] = self._parts[last] + more._parts[0]
+    self._parts.extend(more._parts.skip(1))
+    self._params.extend(more._params)
+}
+
+/// The statement as it is sent: `$1`, `$2` and so on where the parameters go.
+fn (self: SqlQuery) text() -> string {
+    var out := self._parts[0]
+    for i in 0..self._params.len {
+        out += "${i + 1}" + self._parts[i + 1]
+    }
+    return out
+}
+
+fn (self: int) _sql() -> string? { return "{self}" }
+fn (self: float) _sql() -> string? { return "{self}" }
+fn (self: string) _sql() -> string? { return self }
+fn (self: Time) _sql() -> string? { return self.to_string() }
+
+fn (self: bool) _sql() -> string? {
+    if self { return "true" }
+    return "false"
+}
+
+fn (self: T?) _sql() -> string? {
+    if value := self { return value._sql() }
+    return none
+}
+
+/// A row of an answer: a value, or NULL, for each column.
+type SqlRow = { _names: [string], _values: [string?] }
+
+/// The names of the columns.
+fn (self: SqlRow) columns() -> [string] { return self._names }
+
+fn (self: SqlRow) _text(column: string) -> string? ! SqlError {
+    for i in 0..self._names.len {
+        if self._names[i] == column { return self._values[i] }
+    }
+    fail s__other("the row has no column `{column}`")
+}
+
+fn s__null(column: string) -> SqlError {
+    return s__other("the column `{column}` is NULL")
+}
+
+fn s__not(column: string, what: string, text: string) -> SqlError {
+    return s__other("the column `{column}` holds `{text}`, which is not {what}")
+}
+
+fn (self: SqlRow) maybe_string(column: string) -> string? ! SqlError {
+    return self._text(column)?
+}
+
+fn (self: SqlRow) maybe_int(column: string) -> int? ! SqlError {
+    text := self._text(column)? else return none
+    return int.parse(text) else fail s__not(column, "an int", text)
+}
+
+fn (self: SqlRow) maybe_float(column: string) -> float? ! SqlError {
+    text := self._text(column)? else return none
+    return float.parse(text) else fail s__not(column, "a float", text)
+}
+
+fn (self: SqlRow) maybe_bool(column: string) -> bool? ! SqlError {
+    text := self._text(column)? else return none
+    if text == "t" or text == "true" { return true }
+    if text == "f" or text == "false" { return false }
+    fail s__not(column, "a bool", text)
+}
+
+fn (self: SqlRow) maybe_time(column: string) -> Time? ! SqlError {
+    text := self._text(column)? else return none
+    return s__time(text) else fail s__not(column, "a time", text)
+}
+
+fn (self: SqlRow) string(column: string) -> string ! SqlError {
+    return self.maybe_string(column)? else fail s__null(column)
+}
+
+fn (self: SqlRow) int(column: string) -> int ! SqlError {
+    return self.maybe_int(column)? else fail s__null(column)
+}
+
+fn (self: SqlRow) float(column: string) -> float ! SqlError {
+    return self.maybe_float(column)? else fail s__null(column)
+}
+
+fn (self: SqlRow) bool(column: string) -> bool ! SqlError {
+    return self.maybe_bool(column)? else fail s__null(column)
+}
+
+fn (self: SqlRow) time(column: string) -> Time ! SqlError {
+    return self.maybe_time(column)? else fail s__null(column)
+}
+
+/// A time as PostgreSQL writes one: `2026-01-31 12:00:00.5+00`, or without an offset,
+/// which is then taken for UTC.
+fn s__time(text: string) -> Time? {
+    b := text.bytes()
+    if b.len < 19 { return none }
+    for i in 0..b.len {
+        if int.from(b[i]) > 127 { return none }
+    }
+    var end := 19
+    while end < b.len and int.from(b[end]) != 43 and int.from(b[end]) != 45 {
+        end += 1
+    }
+    var zone := text.slice(end, text.len)
+    if zone == "" {
+        zone = "Z"
+    } else if zone.len == 3 {
+        zone += ":00"
+    }
+    written := text.slice(0, 10) + "T" + text.slice(11, end) + zone
+    match Time.parse(written) {
+        time => return time
+        ! e => return none
+    }
+}
+
+/// The connections of a program to a database. It is a handle: a copy is the same pool.
+type SqlPool = { _id: int }
+
+/// Opens a PostgreSQL database: `postgres://user:password@host:5432/name`. At most
+/// `pool` statements run at once, each on a connection of its own.
+fn postgres__connect(url: string, pool: int = 10) -> SqlPool ! SqlError {
+    id := __sql_open(url, pool)
+    if id < 0 { fail s__error() }
+    return SqlPool { _id: id }
+}
+
+/// Sends a statement, in a transaction or, with zero for one, on any connection.
+fn s__send(db: int, transaction: int, query: SqlQuery) ! SqlError {
+    var values: [string] = []
+    var nulls := ""
+    for param in query._params {
+        if value := param {
+            values.push(value)
+            nulls += "f"
+        } else {
+            values.push("")
+            nulls += "t"
+        }
+    }
+    if not __sql_run(db, transaction, query.text(), values, nulls) { fail s__error() }
+}
+
+/// The rows of the statement that the thread last sent.
+fn s__rows() -> [SqlRow] {
+    var names: [string] = []
+    for c in 0..__sql_cols() {
+        names.push(__sql_name(c))
+    }
+    var rows: [SqlRow] = []
+    for r in 0..__sql_rows() {
+        var values: [string?] = []
+        for c in 0..names.len {
+            if __sql_null(r, c) {
+                values.push(none)
+            } else {
+                values.push(__sql_value(r, c))
+            }
+        }
+        rows.push(SqlRow { _names: names, _values: values })
+    }
+    return rows
+}
+
+fn s__no_row() -> SqlError {
+    return SqlError { kind: SqlErrorKind.NoRows, message: "the query returned no row", code: "" }
+}
+
+/// Runs a statement, and returns the rows it produced.
+fn (self: SqlPool) query(query: SqlQuery) -> [SqlRow] ! SqlError {
+    s__send(self._id, 0, query)?
+    return s__rows()
+}
+
+/// The first row of what a statement produces, if it produces any.
+fn (self: SqlPool) query_one(query: SqlQuery) -> SqlRow? ! SqlError {
+    s__send(self._id, 0, query)?
+    return s__rows().first()
+}
+
+/// The first row of a statement that must produce one.
+fn (self: SqlPool) query_row(query: SqlQuery) -> SqlRow ! SqlError {
+    s__send(self._id, 0, query)?
+    return s__rows().first() else fail s__no_row()
+}
+
+/// Runs a statement, and returns how many rows it changed.
+fn (self: SqlPool) exec(query: SqlQuery) -> int ! SqlError {
+    s__send(self._id, 0, query)?
+    return __sql_affected()
+}
+
+/// How far a transaction is kept apart from the others that run beside it, as
+/// PostgreSQL names the three levels.
+enum SqlIsolation { ReadCommitted, RepeatableRead, Serializable }
+
+/// A transaction: statements of which the database does all, or none. It has one
+/// connection to itself from its first statement to its last.
+type SqlTx = { _db: int, _id: int }
+
+fn (self: SqlTx) query(query: SqlQuery) -> [SqlRow] ! SqlError {
+    s__send(self._db, self._id, query)?
+    return s__rows()
+}
+
+fn (self: SqlTx) query_one(query: SqlQuery) -> SqlRow? ! SqlError {
+    s__send(self._db, self._id, query)?
+    return s__rows().first()
+}
+
+fn (self: SqlTx) query_row(query: SqlQuery) -> SqlRow ! SqlError {
+    s__send(self._db, self._id, query)?
+    return s__rows().first() else fail s__no_row()
+}
+
+fn (self: SqlTx) exec(query: SqlQuery) -> int ! SqlError {
+    s__send(self._db, self._id, query)?
+    return __sql_affected()
+}
+
+/// Runs `body` in a transaction. If `body` returns, what it did is kept, and its value
+/// is the value of the call; if it fails, what it did is undone, and the call fails
+/// with the same error.
+fn (self: SqlPool) transaction<T, E>(body: fn(SqlTx) -> T ! E, isolation: SqlIsolation = SqlIsolation.ReadCommitted) -> T ! E | SqlError {
+    level := match isolation {
+        SqlIsolation.ReadCommitted => 0
+        SqlIsolation.RepeatableRead => 1
+        SqlIsolation.Serializable => 2
+    }
+    id := __sql_begin(self._id, level)
+    if id == 0 { fail s__error() }
+    match body(SqlTx { _db: self._id, _id: id }) {
+        value => {
+            if not __sql_end(self._id, id, true) { fail s__error() }
+            return value
+        }
+        ! e => {
+            __sql_end(self._id, id, false)
+            fail e
+        }
+    }
+}
+
+// ---- the library's errors as messages --------------------------------------------------
+//
+// A method of an actor may fail with an error of the library's, and the error may have
+// to go to another process as text, like one of the program's own (`derive.rs`).
+
+/// Reads an object whose members are strings, and returns those of the names given.
+fn j__strings(text: string, at: var int, names: [string]) -> [string] ! JsonError {
+    var values: [string?] = []
+    for i in 0..names.len {
+        values.push(none)
+    }
+    var first := true
+    j__open(text, var at, 123)?
+    while j__more(text, var at, 125, var first)? {
+        key := j__key(text, var at)?
+        if i := names.index_of(key) {
+            value := j__str(text, var at)?
+            values[i] = value
+        } else {
+            j__skip(text, var at)?
+        }
+    }
+    var out: [string] = []
+    for i in 0..names.len {
+        out.push(values[i] else fail j__missing(names[i]))
+    }
+    return out
+}
+
+fn (self: IoError) _json_write(out: var string) {
+    out += "\{\"message\":" + __json_quote(self.message) + "}"
+}
+
+fn IoError._json_read(text: string, at: var int) -> IoError ! JsonError {
+    fields := j__strings(text, var at, ["message"])?
+    return IoError { message: fields[0] }
+}
+
+fn (self: ParseError) _json_write(out: var string) {
+    out += "\{\"input\":" + __json_quote(self.input) + "}"
+}
+
+fn ParseError._json_read(text: string, at: var int) -> ParseError ! JsonError {
+    fields := j__strings(text, var at, ["input"])?
+    return ParseError { input: fields[0] }
+}
+
+fn (self: JsonError) _json_write(out: var string) {
+    out += "\{\"message\":" + __json_quote(self.message) + ",\"path\":" + __json_quote(self.path) + "}"
+}
+
+fn JsonError._json_read(text: string, at: var int) -> JsonError ! JsonError {
+    fields := j__strings(text, var at, ["message", "path"])?
+    return JsonError { message: fields[0], path: fields[1] }
+}
+
+fn (self: HttpError) _json_write(out: var string) {
+    out += "\{\"message\":" + __json_quote(self.message) + "}"
+}
+
+fn HttpError._json_read(text: string, at: var int) -> HttpError ! JsonError {
+    fields := j__strings(text, var at, ["message"])?
+    return HttpError { message: fields[0] }
+}
+
+fn (self: SqlError) _json_write(out: var string) {
+    out += "\{\"kind\":\"{self.kind}\",\"message\":" + __json_quote(self.message)
+    out += ",\"code\":" + __json_quote(self.code) + "}"
+}
+
+fn SqlError._json_read(text: string, at: var int) -> SqlError ! JsonError {
+    fields := j__strings(text, var at, ["kind", "message", "code"])?
+    kind := match fields[0] {
+        "Connection" => SqlErrorKind.Connection
+        "Constraint" => SqlErrorKind.Constraint
+        "Syntax" => SqlErrorKind.Syntax
+        "Serialization" => SqlErrorKind.Serialization
+        "Timeout" => SqlErrorKind.Timeout
+        "NoRows" => SqlErrorKind.NoRows
+        _ => SqlErrorKind.Other
+    }
+    return SqlError { kind, message: fields[1], code: fields[2] }
+}
+
 // ---- std/test ---------------------------------------------------------------------------
 
 /// Fails the test unless `ok` holds.

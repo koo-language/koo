@@ -304,6 +304,7 @@ anonymous
 - `fail` returns an error. `?` passes an error on to the caller.
 - `else` turns any error into a value. `match` handles each error separately, and it must cover all of them.
 - A function lists the errors it can return, and the compiler checks the list.
+- An error caught with `! e` or `else e =>` can be passed on after some cleaning up: `fail e`.
 
 ## Lists and lambdas
 
@@ -579,6 +580,46 @@ a circle of area 3.1
 
 A type satisfies an interface by having its methods. Nothing has to be declared. Generic code is compiled once for each type it is used with, so it runs as fast as code written by hand for that type.
 
+A type parameter can also stand for the errors of a function that is passed in, so that one helper serves callers that fail in different ways, or not at all:
+
+```koo
+error Refused { attempt: int }
+error GaveUp { after: int }
+
+fn retry<T, E>(times: int, body: fn(int) -> T ! E) -> T ! E | GaveUp {
+    for attempt in 1..=times {
+        match body(attempt) {
+            value => return value
+            ! e => print("attempt {attempt}: {e}")
+        }
+    }
+    fail GaveUp { after: times }
+}
+
+fn connect(attempt: int) -> string ! Refused {
+    if attempt < 3 { fail Refused { attempt } }
+    return "connected"
+}
+
+fn main() {
+    match retry(5, connect) {
+        said => print(said)
+        ! GaveUp { after } => print("gave up after {after}")
+        ! e: Refused => print("refused")
+    }
+    print(retry(3, attempt -> attempt * 10) else 0)
+}
+```
+
+```text
+attempt 1: Refused { attempt: 1 }
+attempt 2: Refused { attempt: 2 }
+connected
+10
+```
+
+`retry(5, connect)` can fail with `Refused` or `GaveUp`, and the `match` must cover both. The lambda in the last line cannot fail, so that call can fail only with `GaveUp`.
+
 ## Files, arguments and input
 
 ```koo
@@ -735,6 +776,65 @@ The server answers requests on every core: `serve` starts a process for each, al
 It runs on macOS and Linux alike. On Linux, `koo build --release --static` makes a program with nothing left to install, and [`examples/http/Dockerfile`](../examples/http/Dockerfile) puts one in an empty container.
 
 What it does not do yet: HTTPS and HTTP/2 (put it behind a proxy or a platform that speaks them), streaming a body in either direction, and waiting on something slow without holding up the other requests of the same worker. Working servers are in [`examples/http`](../examples/http).
+
+## A database
+
+`std/sql` talks to PostgreSQL. A query is written like a string with values in braces, but it is not a string: the values are sent to the database beside the statement, as parameters, and never become part of the SQL. There is nothing to escape, and nothing to inject.
+
+```koo
+import std/os
+import std/sql
+import std/sql/postgres
+
+type Account = { name: string, balance: int }
+
+error Insufficient { balance: int, wanted: int }
+
+fn transfer(db: sql.Pool, from: string, to: string, amount: int) ! Insufficient | sql.Error {
+    db.transaction(tx -> {
+        row := tx.query_row("select * from accounts where name = {from} for update")?
+        account := Account.from_row(row)?
+        if account.balance < amount {
+            fail Insufficient { balance: account.balance, wanted: amount }
+        }
+        tx.exec("update accounts set balance = balance - {amount} where name = {from}")?
+        tx.exec("update accounts set balance = balance + {amount} where name = {to}")?
+    })?
+}
+
+fn main() ! sql.Error {
+    db := postgres.connect(os.env("DATABASE_URL") else "postgres://localhost/bank")?
+    db.exec("create table accounts (name text primary key, balance int not null)")?
+    db.exec("insert into accounts values ({"ada"}, {100}), ({"bob"}, {20})")?
+
+    for amount in [30, 500] {
+        match transfer(db, "ada", "bob", amount) {
+            () => print("moved {amount}")
+            ! Insufficient { balance, wanted } => print("only {balance} there, not {wanted}")
+            ! e: sql.Error => print("the database said: {e}")
+        }
+    }
+    for row in db.query("select * from accounts order by name")? {
+        print(Account.from_row(row)?)
+    }
+}
+```
+
+```text
+moved 30
+only 70 there, not 500
+Account { name: "ada", balance: 70 }
+Account { name: "bob", balance: 50 }
+```
+
+- `postgres.connect` returns a pool of connections. It is safe to hand to every handler of a server and every actor; each statement takes a connection and gives it back.
+- `exec` returns the number of rows changed, `query` a list of rows, `query_one` the first row or `none`, and `query_row` a row that must be there.
+- `Account.from_row(row)` reads a struct from a row, each field from the column of its name. A row also gives one value at a time: `row.int("balance")`.
+- `db.transaction` commits when its function returns and rolls back when it fails, and fails with the function's own error: here `Insufficient` or a `sql.Error`.
+- Every failure of the database is a `sql.Error`, whose `kind` says which sort: `Connection`, `Constraint`, `Syntax`, `Serialization`, `Timeout`, `NoRows`.
+- Passing a `string` where a query is wanted is a compile error. `sql.Query.raw(text)` is there for the rare statement that must be built as text.
+
+The program reads the address of its database from `DATABASE_URL`, as `postgres://user:password@host:5432/name`. [Chapter 11 of the book](book/11-database.md) has the rest.
 
 ## Actors
 
@@ -1013,4 +1113,4 @@ None of them can corrupt memory. Errors you expect, such as a missing file or ba
 
 ## What is not here yet
 
-The compiler does not build these parts of the specification yet, and says so if you use them: importing one package of your own from another, most of the standard library (SQL, time, an HTTP client), tasks, channels and `select`, interface values (a list of different shapes), `Decimal`, resources and `defer`, and the WebAssembly targets. The [README](../README.md) keeps the current list.
+The compiler does not build these parts of the specification yet, and says so if you use them: importing one package of your own from another, parts of the standard library (an HTTP client, TLS, random numbers), tasks, channels and `select`, interface values (a list of different shapes), `Decimal`, resources and `defer`, and the WebAssembly targets. The [README](../README.md) keeps the current list.

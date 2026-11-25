@@ -1364,6 +1364,7 @@ pub unsafe extern "C" fn koo_actor_recover() {
         LEAKED.store(true, Relaxed);
         let me = me();
         me.waiting_for.store(0, Release);
+        crate::pg::abandon();
         let mark = if me.guard.is_null() { 0 } else { (*me.guard).mark };
         koo_guard_done();
         while me.held_len > mark {

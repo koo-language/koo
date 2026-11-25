@@ -428,7 +428,26 @@ impl<'a> Deriver<'a> {
                 TypeKind::Named { path, args } if path.len() == 1 && args.is_empty() => path[0].name.as_str(),
                 _ => "",
             };
-            if let Some(set) = self.error_sets.get(name).filter(|_| rounds < 256) {
+            // An error of the library's, which the prelude writes and reads.
+            let library = match &ty.kind {
+                TypeKind::Named { path, args } if args.is_empty() => {
+                    let path: Vec<&str> = path.iter().map(|part| part.name.as_str()).collect();
+                    match path.as_slice() {
+                        ["IoError"] => Some("IoError"),
+                        ["ParseError"] => Some("ParseError"),
+                        ["JsonError"] => Some("JsonError"),
+                        ["sql", "Error"] => Some("SqlError"),
+                        ["http", "Error"] => Some("HttpError"),
+                        _ => None,
+                    }
+                }
+                _ => None,
+            };
+            if let Some(library) = library.filter(|library| !self.structs.contains_key(library)) {
+                if !names.iter().any(|known| known == library) {
+                    names.push(library.to_string());
+                }
+            } else if let Some(set) = self.error_sets.get(name).filter(|_| rounds < 256) {
                 waiting.extend(set.iter());
             } else if self.structs.contains_key(name) && self.ok.contains(name) {
                 if !names.iter().any(|known| known == name) {
@@ -819,7 +838,7 @@ impl<'a> Deriver<'a> {
 /// What the compiler writes for a program: the JSON functions of its types, and what
 /// carries messages to its actors and back. Nothing is written for a program that never
 /// says `json` and has no actor: nothing is made that nothing uses.
-pub fn derive(package: &File, json: bool) -> Derived {
+pub fn derive(package: &File, json: bool, rows: bool) -> Derived {
     let has_actors = package.items.iter().any(|item| matches!(item.kind, ItemKind::Actor(_)));
     let types = json || has_actors;
     let mut deriver = Deriver {
@@ -963,6 +982,46 @@ pub fn derive(package: &File, json: bool) -> Derived {
             deriver.an_enum(decl);
         }
     }
+    // `Type.from_row(row)`, for a program that says `from_row`: a struct whose every
+    // field is what a column can hold is read from a row of a database, each field from
+    // the column of its name (Section 10.3).
+    if rows {
+        let mut names: Vec<&str> = deriver.structs.keys().copied().collect();
+        names.sort_unstable();
+        for name in names {
+            let fields = deriver.structs[name];
+            let read: Option<Vec<String>> = fields
+                .iter()
+                .map(|field| {
+                    let (ty, maybe) = match &deriver.resolved(&field.ty).kind {
+                        TypeKind::Optional(inner) => (deriver.resolved(inner), "maybe_"),
+                        _ => (deriver.resolved(&field.ty), ""),
+                    };
+                    let kind = match &ty.kind {
+                        TypeKind::Named { path, args } if path.len() == 1 && args.is_empty() => {
+                            match path[0].name.as_str() {
+                                "int" => "int",
+                                "float" => "float",
+                                "bool" => "bool",
+                                "string" => "string",
+                                "Time" => "time",
+                                _ => return None,
+                            }
+                        }
+                        _ => return None,
+                    };
+                    Some(format!("{0}: row.{maybe}{kind}(\"{0}\")?", field.name.name))
+                })
+                .collect();
+            if let Some(read) = read.filter(|read| !read.is_empty()) {
+                let _ = write!(
+                    deriver.out,
+                    "fn {name}.from_row(row: SqlRow) -> {name} ! SqlError {{\n    return {name} {{ {} }}\n}}\n\n",
+                    read.join(", ")
+                );
+            }
+        }
+    }
     // What every program has, whether or not it has an actor: where a message from
     // another process is handed to the actor it is for, and what stops the actors that
     // are still running when `main` returns, the last declared first.
@@ -1005,7 +1064,7 @@ mod tests {
                       type Holder = { handler: Handler }\n";
         let parsed = koo_syntax::parse_file(source);
         assert!(parsed.diagnostics.is_empty(), "{:?}", parsed.diagnostics);
-        let derived = derive(&parsed.file, true).source;
+        let derived = derive(&parsed.file, true, false).source;
         let again = koo_syntax::parse_file(&derived);
         assert!(again.diagnostics.is_empty(), "{:#?}\n{derived}", again.diagnostics);
         for name in ["Line", "Status", "Payment", "Order"] {
@@ -1013,6 +1072,6 @@ mod tests {
         }
         // A function cannot be JSON, and neither can what holds one.
         assert!(!derived.contains("Handler") && !derived.contains("Holder"));
-        assert!(!derive(&parsed.file, false).source.contains("from_json"));
+        assert!(!derive(&parsed.file, false, false).source.contains("from_json"));
     }
 }

@@ -1,0 +1,50 @@
+import std/sql
+import std/sql/postgres
+
+type Point = { x: int, y: int }
+
+error Low { need: int }
+error Bad { why: string }
+
+fn risky(n: int) -> int ! Low | Bad {
+    if n > 100 { fail Low { need: n } }
+    return n
+}
+
+fn narrow(n: int) -> int ! Low {
+    match risky(n) {
+        value => return value
+        ! e => fail e
+    }
+}
+
+fn main() ! sql.Error {
+    db := postgres.connect("postgres://localhost/app")?
+    name := "ada"
+    text := "select * from users where name = '" + name + "'"
+    db.query(text)?
+    db.exec("update t set x = {3.14159:.2}")?
+    db.exec("insert into t values ({Point { x: 1, y: 2 }})")?
+    db.exec("insert into t values ({[1, 2]})")?
+    q := sql.Query { _parts: ["x"], _params: [] }
+    rows := db.query("select 1")?
+    print(rows[0]._values)
+    db.query("select 1", 5)?
+    db.transaction(tx -> {
+        if name == "" { fail Bad { why: "no name" } }
+        tx.exec("delete from users where name = {name}")?
+    })?
+    print(narrow(1) else 0)
+    level := sql.Isolation.Strict
+}
+
+//! error expected `sql.Query`, found `string`
+//! error a value in a query cannot have a format
+//! error a `Point` cannot be a parameter of a query
+//! error a `[int]` cannot be a parameter of a query
+//! error `sql.Query` cannot be built from its fields
+//! error `sql.Row` has no field `_values`
+//! error `sql.Pool.query` takes 1 argument, found 2
+//! error `?` propagates `Bad`, which is not in this function's error set
+//! error this error may be `Bad`, which is not in this function's error set
+//! error `sql.Isolation` has no variant `Strict`

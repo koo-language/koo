@@ -1,0 +1,153 @@
+// Run against a PostgreSQL server whose address is in KOO_TEST_POSTGRES (see
+// `a_database_answers_queries` in compiler/koo/tests/programs.rs).
+
+import std/os
+import std/sql
+import std/sql/postgres
+
+error Insufficient { account: string, balance: int, wanted: int }
+
+fn transfer(db: sql.Pool, from: string, to: string, amount: int) ! Insufficient | sql.Error {
+    db.transaction(tx -> {
+        balance := tx.query_row("select balance from koo_accounts where name = {from} for update")?.int("balance")?
+        tx.exec("update koo_accounts set balance = balance + {amount} where name = {to}")?
+        if balance < amount {
+            fail Insufficient { account: from, balance, wanted: amount }
+        }
+        tx.exec("update koo_accounts set balance = balance - {amount} where name = {from}")?
+    })?
+}
+
+fn balances(db: sql.Pool) -> string ! sql.Error {
+    var out: [string] = []
+    for row in db.query("select name, balance from koo_accounts order by name")? {
+        out.push("{row.string("name")?}={row.int("balance")?}")
+    }
+    return out.join(" ")
+}
+
+actor Teller {
+    db: sql.Pool
+
+    // Moves `amount` from ada to bob, `times` times; the rows are always changed in the
+    // same order, so that no two tellers wait for each other.
+    fn pay(amount: int, times: int) {
+        for i in 0..times {
+            db.transaction(tx -> {
+                tx.exec("update koo_accounts set balance = balance - {amount} where name = {"ada"}")?
+                tx.exec("update koo_accounts set balance = balance + {amount} where name = {"bob"}")?
+            }) else e => print("pay failed: {e}")
+        }
+    }
+
+    fn crash() {
+        db.transaction(tx -> {
+            tx.exec("update koo_accounts set balance = 0")?
+            xs: [int] = []
+            print(xs[3])
+        }) else e => print("failed")
+    }
+
+    fn done() -> bool {
+        return true
+    }
+}
+
+fn main() ! sql.Error | Insufficient {
+    url := os.env("KOO_TEST_POSTGRES") else ""
+    db := postgres.connect(url, pool: 3)?
+    db.exec("drop table if exists koo_accounts")?
+    db.exec("create table koo_accounts (name text primary key, balance int not null)")?
+    db.exec("insert into koo_accounts values ({"ada"}, {100}), ({"bob"}, {20})")?
+
+    // Kept as a whole, or undone as a whole when the function fails.
+    transfer(db, "ada", "bob", 30)?
+    print(balances(db)?)
+    match transfer(db, "bob", "ada", 500) {
+        () => print("moved")
+        ! Insufficient { account, balance, wanted } => print("{account} has {balance}, not {wanted}")
+        ! e: sql.Error => print("database: {e}")
+    }
+    print(balances(db)?)
+
+    // The value of the function is the value of the transaction.
+    total := db.transaction(tx -> tx.query_row("select sum(balance) as s from koo_accounts")?.int("s")?)?
+    print(total)
+
+    // A statement that fails ends the transaction, even if its error is swallowed.
+    db.transaction(tx -> {
+        tx.exec("insert into koo_accounts values ({"ada"}, {1})") else e => 0
+    }) else e => print("swallowed: {e}")
+
+    // Eight actors on as many threads, and three connections between them.
+    db.exec("update koo_accounts set balance = {1000}")?
+    var tellers: [Teller] = []
+    for i in 0..8 {
+        tellers.push(Teller.start(db: db))
+    }
+    for i in 0..8 {
+        if i % 2 == 0 {
+            tellers[i].send.pay(1, 40)
+        } else {
+            tellers[i].send.pay(-1, 25)
+        }
+    }
+    for teller in tellers {
+        teller.done()
+    }
+    print(balances(db)?)
+
+    // A panic in a transaction undoes it, and the pool has its connection back.
+    tellers[0].send.crash()
+    tellers[0].done()
+    for i in 0..5 {
+        db.transaction(tx -> tx.exec("update koo_accounts set balance = balance + 0")?)?
+    }
+    print(balances(db)?)
+
+    // A transaction is over when the function given to `transaction` returns.
+    var stale: [sql.Tx] = []
+    db.transaction(tx -> {
+        stale.push(tx)
+    })?
+    match stale[0].exec("update koo_accounts set balance = 0") {
+        n => print("ran")
+        ! e => print(e.message)
+    }
+
+    // Two transactions that would not have done the same one after the other: the
+    // database refuses the second, and says so in a way a program can tell.
+    first := db.transaction(a -> {
+        seen := a.query_row("select sum(balance) as s from koo_accounts")?.int("s")?
+        db.transaction(b -> {
+            b.query_row("select sum(balance) as s from koo_accounts")?
+            b.exec("update koo_accounts set balance = balance + 1 where name = {"ada"}")?
+        }, isolation: sql.Isolation.Serializable)?
+        a.exec("update koo_accounts set balance = {seen} where name = {"bob"}")?
+        return seen
+    }, isolation: sql.Isolation.Serializable)
+    match first {
+        seen => print("kept {seen}")
+        ! e => {
+            match e.kind {
+                sql.ErrorKind.Serialization => print("try again: {e.code}")
+                _ => print("other: {e}")
+            }
+            print(e.kind == sql.ErrorKind.Serialization)
+        }
+    }
+    print(balances(db)?)
+    db.exec("drop table koo_accounts")?
+}
+
+//= ada=70 bob=50
+//= bob has 50, not 500
+//= ada=70 bob=50
+//= 120
+//= swallowed: the transaction was undone, not kept: a statement in it had failed, and the database does nothing more in a transaction after that
+//= ada=940 bob=1060
+//= ada=940 bob=1060
+//= this transaction is over: it is used only inside the function given to `transaction`
+//= try again: 40001
+//= true
+//= ada=941 bob=1060

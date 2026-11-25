@@ -193,6 +193,72 @@ pub const INTRINSICS: &[Intrinsic] = &[
         params: &[],
         ret: I::Int,
     },
+    // Databases (`std/sql`, `koo-rt/src/pg.rs`).
+    Intrinsic {
+        name: "sql_open",
+        params: &[I::Str, I::Int],
+        ret: I::Int,
+    },
+    Intrinsic {
+        name: "sql_run",
+        params: &[I::Int, I::Int, I::Str, I::Strs, I::Str],
+        ret: I::Bool,
+    },
+    Intrinsic {
+        name: "sql_begin",
+        params: &[I::Int, I::Int],
+        ret: I::Int,
+    },
+    Intrinsic {
+        name: "sql_end",
+        params: &[I::Int, I::Int, I::Bool],
+        ret: I::Bool,
+    },
+    Intrinsic {
+        name: "sql_rows",
+        params: &[],
+        ret: I::Int,
+    },
+    Intrinsic {
+        name: "sql_cols",
+        params: &[],
+        ret: I::Int,
+    },
+    Intrinsic {
+        name: "sql_affected",
+        params: &[],
+        ret: I::Int,
+    },
+    Intrinsic {
+        name: "sql_name",
+        params: &[I::Int],
+        ret: I::Str,
+    },
+    Intrinsic {
+        name: "sql_value",
+        params: &[I::Int, I::Int],
+        ret: I::Str,
+    },
+    Intrinsic {
+        name: "sql_null",
+        params: &[I::Int, I::Int],
+        ret: I::Bool,
+    },
+    Intrinsic {
+        name: "sql_error",
+        params: &[],
+        ret: I::Str,
+    },
+    Intrinsic {
+        name: "sql_code",
+        params: &[],
+        ret: I::Str,
+    },
+    Intrinsic {
+        name: "sql_kind",
+        params: &[],
+        ret: I::Int,
+    },
     // The clock (`std/time`).
     Intrinsic {
         name: "time_now",

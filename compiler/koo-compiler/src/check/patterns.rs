@@ -43,6 +43,21 @@ impl<'a> Checker<'a> {
         let ty = scrutinee.ty.clone();
         let mut checked: Vec<Arm> = Vec::new();
         for arm in arms {
+            if arm.error && !matches!(ty, Ty::Result(..) | Ty::Unknown) && self.without_errors() {
+                // An arm for the errors of a function that, this time, has none.
+                let reported = self.diags.len();
+                self.scopes.push(HashMap::new());
+                for pattern in &arm.patterns {
+                    self.arm_pattern(pattern, &Ty::Unknown, true);
+                }
+                if let Some(guard) = &arm.guard {
+                    self.expr(guard, None);
+                }
+                self.body(&arm.body, value, expected);
+                self.scopes.pop();
+                self.diags.truncate(reported);
+                continue;
+            }
             self.scopes.push(HashMap::new());
             let mut patterns = Vec::new();
             for pattern in &arm.patterns {
@@ -167,7 +182,11 @@ impl<'a> Checker<'a> {
                 fields: Vec::new(),
             },
             ast::PatternKind::Bind { name, ty: None } => {
+                let several = any_binding_ty == Ty::Failure;
                 let binding = self.declare(name, any_binding_ty, false, LocalKind::Owned);
+                if several {
+                    self.caught.insert(binding, set.clone());
+                }
                 Pattern::Err {
                     error: None,
                     binding: Some(binding),
@@ -327,12 +346,26 @@ impl<'a> Checker<'a> {
                 let name = path.last().unwrap();
                 match ty {
                     Ty::Enum(id) => {
-                        if path.len() == 2 && path[0].name != self.program.enums[*id].name {
-                            let expected = self.program.enums[*id].name.clone();
-                            self.error(path[0].span, format!("expected a variant of `{expected}`"));
+                        // `sql.ErrorKind.Constraint`: an enum of a standard package.
+                        let enum_name = match path.as_slice() {
+                            [package, of, _] => match self.package_type(&[package.clone(), of.clone()]) {
+                                Some(full) => Some((full, package.span)),
+                                None => {
+                                    self.unsupported(span, "types from other packages are");
+                                    return Pattern::Wildcard;
+                                }
+                            },
+                            [of, _] => Some((of.name.clone(), of.span)),
+                            _ => None,
+                        };
+                        if let Some((written, at)) = enum_name
+                            && written != self.program.enums[*id].name
+                        {
+                            let expected = self.ty_name(ty);
+                            self.error(at, format!("expected a variant of `{expected}`"));
                             return Pattern::Wildcard;
                         }
-                        if path.len() > 2 {
+                        if path.len() > 3 {
                             self.unsupported(span, "types from other packages are");
                             return Pattern::Wildcard;
                         }
@@ -376,6 +409,8 @@ impl<'a> Checker<'a> {
                 }
             }
             ast::PatternKind::Tuple(parts) => match ty {
+                // `()` is the one value of a function that returns nothing.
+                Ty::Unit if parts.is_empty() => Pattern::Wildcard,
                 Ty::Tuple(types) if types.len() == parts.len() => {
                     let types = types.clone();
                     Pattern::Tuple(

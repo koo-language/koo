@@ -203,6 +203,8 @@ pub struct Thread {
     pub held_cap: usize,
     pub guard: *mut Guard,
     pub spare_guard: *mut Guard,
+    /// What the thread keeps of its last query of a database (`pg.rs`).
+    pub sql: *mut u8,
     /// The kind of the last answer from an actor of another process.
     pub answer_kind: [u8; 104],
     pub answer_kind_len: usize,

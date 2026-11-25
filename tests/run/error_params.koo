@@ -1,0 +1,198 @@
+// A type parameter written after `!` stands for the errors of a function that is passed
+// (Section 6.3), and an error that was caught can be passed on with `fail`.
+
+error Low { need: int }
+error Bad { why: string }
+error Busy { tries: int }
+
+fn risky(n: int) -> int ! Low | Bad {
+    if n > 100 { fail Low { need: n } }
+    if n < 0 { fail Bad { why: "negative {n}" } }
+    return n * 2
+}
+
+// An error of one of several kinds, caught and passed on.
+fn careful(n: int) -> int ! Low | Bad | Busy {
+    match risky(n) {
+        value => return value
+        ! e => {
+            print("cleaning up after {e}")
+            fail e
+        }
+    }
+}
+
+fn with_else(n: int) -> int ! Low | Bad {
+    value := risky(n) else e => {
+        print("else saw {e}")
+        fail e
+    }
+    return value
+}
+
+// The errors of `body` are fixed by the declaration: a lambda that fails with one of
+// them, or with none, is still a function that may fail with them.
+fn within<T>(body: fn(int) -> T ! Bad | Low) -> T ! Bad | Low {
+    match body(7) {
+        value => {
+            print("kept")
+            return value
+        }
+        ! e => {
+            print("undone")
+            fail e
+        }
+    }
+}
+
+// The errors of `body` are whatever the function passed fails with.
+fn retry<T, E>(times: int, body: fn(int) -> T ! E) -> T ! E | Busy {
+    for attempt in 1..times {
+        match body(attempt) {
+            value => return value
+            ! e => print("attempt {attempt} failed: {e}")
+        }
+    }
+    fail Busy { tries: times }
+}
+
+fn guarded<T, E>(body: fn() -> T ! E) -> T ! E {
+    match body() {
+        value => return value
+        ! e => {
+            print("guarded saw {e}")
+            fail e
+        }
+    }
+}
+
+fn passed_on<T, E>(body: fn() -> T ! E) -> T ! E {
+    value := body()?
+    return value
+}
+
+fn or_else<E>(body: fn() -> int ! E) -> int {
+    return body() else e => -1
+}
+
+fn flaky(attempt: int) -> string ! Low | Bad {
+    if attempt == 1 { fail Low { need: 2 } }
+    if attempt == 2 { fail Bad { why: "twice" } }
+    return "done on {attempt}"
+}
+
+fn double(n: int) -> int {
+    return n * 2
+}
+
+fn nothing() ! Bad {
+    fail Bad { why: "nothing" }
+}
+
+fn main() ! Bad | Low | Busy {
+    for n in [1, 500, -3] {
+        match careful(n) {
+            v => print(v)
+            ! Low { need } => print("low {need}")
+            ! Bad { why } => print("bad {why}")
+            ! e: Busy => print("busy")
+        }
+        match with_else(n) {
+            v => print(v)
+            ! e => print("failed: {e}")
+        }
+    }
+    kept := (x: int) -> {
+        v := risky(x) else e => {
+            fail e
+        }
+        return v + 1
+    }
+    match kept(500) {
+        v => print(v)
+        ! Low { need } => print("lambda low {need}")
+        ! e: Bad => print("lambda bad")
+    }
+
+    var total := 0
+    n := within(x -> {
+        if x > 100 { fail Low { need: x } }
+        total += x
+        return x * 2
+    })?
+    print("{n} {total}")
+    within(x -> {
+        if x > 1 { fail Bad { why: "no" } }
+    }) else e => print("failed: {e}")
+    print(within(x -> x + 1)?)
+
+    print(retry(5, flaky)?)
+    match retry(3, flaky) {
+        text => print(text)
+        ! Busy { tries } => print("gave up after {tries}")
+        ! e => print("other {e}")
+    }
+    print(retry(2, double) else e => -1)
+    print(retry(2, a -> a * 10) else e => -1)
+    one := retry(4, a -> {
+        if a < 3 { fail Low { need: 3 } }
+        return a
+    })?
+    print(one)
+
+    // A function that cannot fail leaves the handling of its errors out.
+    print(guarded(() -> 5))
+    print(passed_on(() -> "plain"))
+    print(or_else(() -> 9))
+    print(or_else(() -> risky(-1)?))
+    guarded(() -> {
+        fail Bad { why: "inside" }
+    }) else e => print("outside: {e.why}")
+    match guarded(nothing) {
+        () => print("nothing happened")
+        ! e => print("nothing: {e.why}")
+    }
+    match passed_on(() -> risky(1000)?) {
+        v => print(v)
+        ! Low { need } => print("passed on low {need}")
+        ! e: Bad => print("passed on bad")
+    }
+}
+
+//= 2
+//= 2
+//= cleaning up after Low { need: 500 }
+//= low 500
+//= else saw Low { need: 500 }
+//= failed: Low { need: 500 }
+//= cleaning up after Bad { why: "negative -3" }
+//= bad negative -3
+//= else saw Bad { why: "negative -3" }
+//= failed: Bad { why: "negative -3" }
+//= lambda low 500
+//= kept
+//= 14 7
+//= undone
+//= failed: Bad { why: "no" }
+//= kept
+//= 8
+//= attempt 1 failed: Low { need: 2 }
+//= attempt 2 failed: Bad { why: "twice" }
+//= done on 3
+//= attempt 1 failed: Low { need: 2 }
+//= attempt 2 failed: Bad { why: "twice" }
+//= gave up after 3
+//= 2
+//= 10
+//= attempt 1 failed: Low { need: 3 }
+//= attempt 2 failed: Low { need: 3 }
+//= 3
+//= 5
+//= plain
+//= 9
+//= -1
+//= guarded saw Bad { why: "inside" }
+//= outside: inside
+//= guarded saw Bad { why: "nothing" }
+//= nothing: nothing
+//= passed on low 1000

@@ -686,7 +686,7 @@ impl<'a> Checker<'a> {
         }
     }
 
-    fn method_call(
+    pub(super) fn method_call(
         &mut self,
         receiver: Expr,
         name: &ast::Ident,
@@ -1368,14 +1368,28 @@ impl<'a> Checker<'a> {
             Some(ret) => self.resolve_bound(ret, names, env).unwrap_or(Ty::Unknown),
             None => Ty::Unit,
         };
-        let ret = if errors.is_empty() || ok.is_unknown() {
+        // The errors the function may fail with, when the declaration says: then a
+        // lambda that fails with fewer of them is still one that may fail with them.
+        let open = super::generics::errors_unbound(errors, names, env);
+        let saved = std::mem::replace(&mut self.type_env, env.clone());
+        let ret = if errors.is_empty() || open {
+            ok
+        } else if ok.is_unknown() {
+            self.lambda_errors = match self.result_of(Ty::Unit, errors) {
+                Ty::Result(_, set) => Some(set),
+                _ => None,
+            };
             ok
         } else {
-            Ty::Result(Box::new(ok), self.resolve_error_set(errors))
+            self.result_of(ok, errors)
         };
+        self.type_env = saved;
+        // With the errors still to be found, the whole of what the lambda returns is.
+        let ret = if open { Ty::Unknown } else { ret };
         let expected = Ty::Fn(Box::new(FnTy { params: wanted, ret }));
         self.function_argument_context(value, lends);
         let checked = self.expr(value, Some(&expected));
+        self.lambda_errors = None;
         self.next_lambda_is_block = false;
         self.lent_fn_ok = false;
         checked

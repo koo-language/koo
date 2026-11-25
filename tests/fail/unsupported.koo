@@ -1,4 +1,4 @@
-import std/sql
+import std/crypto
 
 pub interface Shape {
     fn area() -> float
@@ -15,7 +15,7 @@ fn main() {
     scope { print("x") }
     defer { print("y") }
 }
-//! error the package `std/sql` is not part of this compiler yet
+//! error the package `std/crypto` is not part of this compiler yet
 //! error generic actors, and actors that declare what they satisfy, are not supported by this compiler yet
 //! error distinct types are not supported by this compiler yet
 //! error `Decimal` is not supported by this compiler yet

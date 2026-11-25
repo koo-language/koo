@@ -293,7 +293,7 @@ The sequence is a range, a list, a map or a set. It is evaluated once. The block
     return expression
     fail expression
 
-`return` ends the function, with the value of the expression as its result if the function has a return type. `fail` ends the function with an error, which must be of one of the types of the function's error set. A function that has a return type must end every path through its body with a `return`, a `fail`, or a call of `panic`.
+`return` ends the function, with the value of the expression as its result if the function has a return type. `fail` ends the function with an error, which must be of one of the types of the function's error set. The error may be a variable that an error arm of a `match`, or an `else`, bound to an error of any of several types; then every one of those types must be in the set. A function that has a return type must end every path through its body with a `return`, a `fail`, or a call of `panic`.
 
 ## A.7 Declarations of Functions and Types
 
@@ -318,7 +318,7 @@ and is called as `value.name(arguments)`. A method with a `var` receiver may be 
 
 is called as `Type.name(arguments)`.
 
-A function or method may have *type parameters*, written in angle brackets after its name, each optionally with a constraint: `fn largest<T: Ordered>(items: [T]) -> T?`. A constraint is an interface (A.7.5) or one of `Equatable`, `Ordered` and `Hashable`. A parameter whose type is written as an interface is an abbreviation for a parameter of a new type parameter with that constraint. The type arguments of a call are inferred from its arguments.
+A function or method may have *type parameters*, written in angle brackets after its name, each optionally with a constraint: `fn largest<T: Ordered>(items: [T]) -> T?`. A constraint is an interface (A.7.5) or one of `Equatable`, `Ordered` and `Hashable`. A type parameter written after a `!`, in the type of a function parameter and in the function's own error set, as in `fn retry<T, E>(body: fn() -> T ! E) -> T ! E`, stands for the errors of the function that is passed, which may be none. A parameter whose type is written as an interface is an abbreviation for a parameter of a new type parameter with that constraint. The type arguments of a call are inferred from its arguments.
 
 The function `main`, with no parameters and no return type, is where execution begins. It may have an error set.
 

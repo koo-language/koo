@@ -1,0 +1,57 @@
+// Run against a PostgreSQL server whose address is in KOO_TEST_POSTGRES (see
+// `a_database_answers_queries` in compiler/koo/tests/programs.rs).
+
+import std/os
+import std/sql
+import std/sql/postgres
+
+type Order = { id: int, customer: string, total: float?, paid: bool, placed: Time, note: string? }
+
+error NotFound { id: int }
+
+fn find(db: sql.Pool, id: int) -> Order ! NotFound | sql.Error {
+    row := db.query_one("select * from koo_orders2 where id = {id}")? else fail NotFound { id }
+    return Order.from_row(row)?
+}
+
+actor Auditor {
+    db: sql.Pool
+    var seen: int = 0
+
+    fn count_paid() -> int ! sql.Error {
+        seen += 1
+        return db.query_row("select count(*) as n from koo_orders2 where paid")?.int("n")?
+    }
+}
+
+fn main() ! sql.Error | NotFound {
+    url := os.env("KOO_TEST_POSTGRES") else ""
+    db := postgres.connect(url, pool: 4)?
+    db.exec("drop table if exists koo_orders2")?
+    db.exec("create table koo_orders2 (id serial primary key, customer text not null, total double precision, paid boolean not null default false, placed timestamptz not null default now(), note text)")?
+    for i in 0..5 {
+        db.exec("insert into koo_orders2 (customer, total, paid, note) values ({"customer {i}"}, {float.from(i) * 1.5}, {i % 2 == 0}, {if i == 3 { "rush" } else { "" }})")?
+    }
+    order := find(db, 4)?
+    print("{order.id} {order.customer} {order.total} {order.paid} {order.note}")
+    orders := db.query("select * from koo_orders2 where total >= {3.0} order by id")?
+    for row in orders {
+        o := Order.from_row(row)?
+        print(o.to_json().len > 20)
+    }
+    match find(db, 77) {
+        o => print(o.id)
+        ! NotFound { id } => print("no order {id}")
+        ! e: sql.Error => print(e.message)
+    }
+    auditor := Auditor.start(db: db)
+    print(auditor.count_paid()?)
+    db.exec("drop table koo_orders2")?
+}
+
+//= 4 customer 3 4.5 false rush
+//= true
+//= true
+//= true
+//= no order 77
+//= 3

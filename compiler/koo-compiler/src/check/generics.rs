@@ -64,6 +64,36 @@ pub(super) struct Pending<'a> {
     pub origin: Option<(Span, String)>,
 }
 
+/// The errors a type parameter stands for when it is written after a `!`: those of the
+/// function that was passed where the parameter is, kept as a type. No errors at all is
+/// `Never`, one is the error's type, and several are a result that has only errors.
+pub(super) fn errors_as_ty(set: Option<&ErrSet>) -> Ty {
+    match set {
+        None => Ty::Never,
+        Some(ErrSet::Any) => Ty::Failure,
+        Some(ErrSet::Of(ids)) if ids.len() == 1 => Ty::Error(ids[0]),
+        Some(set) => Ty::Result(Box::new(Ty::Never), set.clone()),
+    }
+}
+
+/// The reverse of `errors_as_ty`; nothing for a type that is not errors.
+pub(super) fn errors_of(ty: &Ty) -> Option<ErrSet> {
+    match ty {
+        Ty::Never | Ty::Unknown => Some(ErrSet::Of(Vec::new())),
+        Ty::Failure => Some(ErrSet::Any),
+        Ty::Error(id) => Some(ErrSet::Of(vec![*id])),
+        Ty::Result(ok, set) if **ok == Ty::Never => Some(set.clone()),
+        _ => None,
+    }
+}
+
+/// The names in a list of error types, as `free_names` finds them in a type.
+fn free_error_names(errors: &[ast::Type], known: &dyn Fn(&str) -> bool, out: &mut Vec<String>) {
+    for error in errors {
+        free_names(error, known, out);
+    }
+}
+
 /// The names in a type that are not known types: the type parameters a receiver binds.
 fn free_names(ty: &ast::Type, known: &dyn Fn(&str) -> bool, out: &mut Vec<String>) {
     match &ty.kind {
@@ -81,16 +111,42 @@ fn free_names(ty: &ast::Type, known: &dyn Fn(&str) -> bool, out: &mut Vec<String
             free_names(value, known, out);
         }
         ast::TypeKind::Tuple(types) => types.iter().for_each(|t| free_names(t, known, out)),
-        ast::TypeKind::Result { ok, .. } => free_names(ok, known, out),
-        ast::TypeKind::Fn { params, ret, .. } => {
+        ast::TypeKind::Result { ok, errors } => {
+            free_names(ok, known, out);
+            free_error_names(errors, known, out);
+        }
+        ast::TypeKind::Fn {
+            params, ret, errors, ..
+        } => {
             params.iter().for_each(|(_, t)| free_names(t, known, out));
             if let Some(ret) = ret {
                 free_names(ret, known, out);
             }
+            free_error_names(errors, known, out);
         }
         ast::TypeKind::Array(inner, _) => free_names(inner, known, out),
         ast::TypeKind::Struct(_) => {}
     }
+}
+
+/// Gives the type parameters written in an error set the errors of an actual function.
+fn bind_errors(errors: &[ast::Type], actual: Option<&ErrSet>, params: &[String], env: &mut HashMap<String, Ty>) {
+    for error in errors {
+        if let ast::TypeKind::Named { path, args } = &error.kind
+            && path.len() == 1
+            && args.is_empty()
+            && params.iter().any(|p| *p == path[0].name)
+        {
+            env.entry(path[0].name.clone()).or_insert_with(|| errors_as_ty(actual));
+        }
+    }
+}
+
+/// Whether the errors written after a type mention a type parameter with no argument yet.
+pub(super) fn errors_unbound(errors: &[ast::Type], params: &[String], env: &HashMap<String, Ty>) -> bool {
+    let mut names = Vec::new();
+    free_error_names(errors, &|name| !params.iter().any(|p| p == name), &mut names);
+    names.iter().any(|name| !env.contains_key(name))
 }
 
 /// Whether a type as written mentions a type parameter that has no argument yet.
@@ -101,6 +157,14 @@ fn mentions_unbound(ty: &ast::Type, params: &[String], env: &HashMap<String, Ty>
 }
 
 impl<'a> Checker<'a> {
+    /// Whether this is a function with a type parameter for errors that stands, this
+    /// time, for none (`fn retry<T, E>(body: fn() -> T ! E)` given a function that cannot
+    /// fail). What the function does with the errors of `body` is then written for
+    /// something that cannot happen, and is left out.
+    pub(super) fn without_errors(&self) -> bool {
+        self.type_env.values().any(|ty| *ty == Ty::Never)
+    }
+
     pub(super) fn is_type_name(&self, name: &str) -> bool {
         self.type_names.contains_key(name)
             || self.generic_types.contains_key(name)
@@ -396,7 +460,15 @@ impl<'a> Checker<'a> {
 
         let id = self.templates.len();
         let display = match (&owner, target) {
-            (Some(_), Some((ty, _))) => format!("{}.{}", type_text(ty), sig.name.name),
+            (Some(_), Some((ty, _))) => {
+                let on = type_text(ty);
+                let on = if self.in_prelude {
+                    self.shown_name(&on, true)
+                } else {
+                    on
+                };
+                format!("{on}.{}", sig.name.name)
+            }
             _ => sig.name.name.clone(),
         };
         let name = sig.name.name.clone();
@@ -512,8 +584,11 @@ impl<'a> Checker<'a> {
                 Ty::Optional(actual) => self.bind(inner, actual, params, env),
                 other => self.bind(inner, other, params, env),
             },
-            ast::TypeKind::Result { ok, .. } => match actual {
-                Ty::Result(actual, _) => self.bind(ok, actual, params, env),
+            ast::TypeKind::Result { ok, errors } => match actual {
+                Ty::Result(actual, set) => {
+                    self.bind(ok, actual, params, env);
+                    bind_errors(errors, Some(set), params, env);
+                }
                 other => self.bind(ok, other, params, env),
             },
             ast::TypeKind::Tuple(types) => {
@@ -545,6 +620,13 @@ impl<'a> Checker<'a> {
                             other => other.clone(),
                         };
                         self.bind(ret, &actual_ret, params, env);
+                    }
+                    // `fn(T) -> U ! E`: `E` is what the function fails with, which may
+                    // be nothing.
+                    match &actual.ret {
+                        Ty::Result(_, set) => bind_errors(errors, Some(set), params, env),
+                        Ty::Unknown => {}
+                        _ => bind_errors(errors, None, params, env),
                     }
                 }
             }
@@ -746,7 +828,7 @@ impl<'a> Checker<'a> {
                         .map(|t| self.resolve_type(t))
                         .unwrap_or(Ty::Unit);
                     let wanted_ret = match &member.sig.errors {
-                        ast::ErrorSpec::Set(types) => Ty::Result(Box::new(wanted_ok), self.resolve_error_set(types)),
+                        ast::ErrorSpec::Set(types) => self.result_of(wanted_ok, types),
                         _ => wanted_ok,
                     };
                     self.type_env = saved;

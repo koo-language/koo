@@ -35,7 +35,9 @@
 use core::fmt::Write;
 
 pub mod actor;
+pub mod digest;
 pub mod http;
+pub mod pg;
 pub mod thread;
 
 unsafe extern "C" {
@@ -194,8 +196,10 @@ pub unsafe extern "C" fn koo_free(p: *mut u8) {
 pub unsafe extern "C" fn koo_exit_main() {
     unsafe {
         koo_flush();
-        // What the actors of the program needed of the system is given back.
+        // What the actors of the program needed of the system is given back, and the
+        // connections to its databases are closed.
         actor::at_exit();
+        pg::at_exit();
         // The message of the last input or output error is the library's own, and so is a
         // string that was read from JSON and never collected: each thread's.
         thread::every(|thread| {

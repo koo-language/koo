@@ -19,6 +19,7 @@ pub(super) struct Enclosing {
     locals: Vec<Local>,
     used: Vec<bool>,
     declared_at: Vec<Span>,
+    caught: HashMap<LocalId, ErrSet>,
     scopes: Vec<HashMap<String, LocalId>>,
     ret: Ty,
     loops: usize,
@@ -59,6 +60,7 @@ impl<'a> Checker<'a> {
         std::mem::swap(&mut self.locals, &mut other.locals);
         std::mem::swap(&mut self.used, &mut other.used);
         std::mem::swap(&mut self.declared_at, &mut other.declared_at);
+        std::mem::swap(&mut self.caught, &mut other.caught);
         std::mem::swap(&mut self.here, &mut other.here);
         std::mem::swap(&mut self.scopes, &mut other.scopes);
         std::mem::swap(&mut self.ret, &mut other.ret);
@@ -182,14 +184,25 @@ impl<'a> Checker<'a> {
 
         // An expression body needs one pass: its type is the return type. A block body
         // whose return type is not known is checked twice, first to find that type.
+        let allowed = self.lambda_errors.take();
         let ret = match (&known_ret, body) {
             (Some(ret), _) => ret.clone(),
-            (None, ast::Body::Stmt(stmt)) if matches!(stmt.kind, ast::StmtKind::Expr(_)) => Ty::Unknown,
+            (None, ast::Body::Stmt(stmt)) if allowed.is_none() && matches!(stmt.kind, ast::StmtKind::Expr(_)) => {
+                Ty::Unknown
+            }
             (None, _) => {
                 let diags = self.diags.len();
                 let probe = self.lambda_body(params, &param_types, body, Ty::Unknown, block, true);
                 self.diags.truncate(diags);
-                probe.ret
+                // A lambda that fails with some of the errors it is allowed, or with
+                // none, is a function that may fail with them all.
+                match (probe.ret, allowed) {
+                    (Ty::Result(ok, set), Some(allowed)) if set.within(&allowed) => Ty::Result(ok, allowed),
+                    (ret, Some(allowed)) if !matches!(ret, Ty::Result(..) | Ty::Unknown) => {
+                        Ty::Result(Box::new(if ret == Ty::Never { Ty::Unit } else { ret }), allowed)
+                    }
+                    (ret, _) => ret,
+                }
             }
         };
         let function = self.lambda_body(params, &param_types, body, ret, block, false);

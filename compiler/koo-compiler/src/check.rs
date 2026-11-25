@@ -45,6 +45,7 @@ pub fn check<'a>(
     checker.in_prelude = true;
     let prelude_bodies = checker.declare_file(prelude);
     checker.prelude_types = (checker.program.structs.len(), checker.program.errors.len());
+    checker.prelude_enums = checker.program.enums.len();
     checker.in_prelude = false;
     checker.note_declarations(file);
     let bodies = checker.declare_file(file);
@@ -209,6 +210,12 @@ pub(crate) struct Checker<'a> {
     /// For each local: whether its value is read anywhere, and where it was declared.
     used: Vec<bool>,
     declared_at: Vec<Span>,
+    /// For a variable that holds an error caught from a result (`! e`, `else e =>`) of
+    /// more than one kind: the errors it may be, so that `fail e` can pass it on.
+    caught: HashMap<LocalId, ErrSet>,
+    /// For the lambda about to be checked, whose return type is to be found: the errors
+    /// the function it is passed to lets it fail with.
+    lambda_errors: Option<ErrSet>,
     scopes: Vec<HashMap<String, LocalId>>,
     ret: Ty,
     loops: usize,
@@ -235,6 +242,7 @@ pub(crate) struct Checker<'a> {
     first_declared_error: ErrorId,
     /// How many struct types and how many error types the prelude declares: they come first.
     prelude_types: (StructId, ErrorId),
+    prelude_enums: EnumId,
     /// The default values of parameters (Section 5.3).
     param_defaults: Vec<&'a ast::Expr>,
     /// Statements that take apart the tuple a condition bound: `if (a, b) := e`. They
@@ -288,6 +296,8 @@ impl<'a> Checker<'a> {
             consts: HashMap::new(),
             locals: Vec::new(),
             used: Vec::new(),
+            caught: HashMap::new(),
+            lambda_errors: None,
             declared_at: Vec::new(),
             here: None,
             fn_name: String::new(),
@@ -303,6 +313,7 @@ impl<'a> Checker<'a> {
             parse_error: 0,
             first_declared_error: 0,
             prelude_types: (0, 0),
+            prelude_enums: 0,
             param_defaults: Vec::new(),
             cond_stmts: Vec::new(),
             modules: HashMap::new(),
@@ -458,7 +469,7 @@ impl<'a> Checker<'a> {
                     ErrSet::Any => "Failure".to_string(),
                     ErrSet::Of(ids) => ids
                         .iter()
-                        .map(|&id| self.program.errors[id].name.clone())
+                        .map(|&id| self.ty_name(&Ty::Error(id)))
                         .collect::<Vec<_>>()
                         .join(" | "),
                 };
@@ -472,7 +483,7 @@ impl<'a> Checker<'a> {
                 format!("[{}: {}]", self.ty_name(&key), self.ty_name(&value))
             }
             Ty::Struct(id) => self.shown_name(&self.program.structs[*id].name, *id < self.prelude_types.0),
-            Ty::Enum(id) => self.program.enums[*id].name.clone(),
+            Ty::Enum(id) => self.shown_name(&self.program.enums[*id].name, *id < self.prelude_enums),
             Ty::Error(id) => self.shown_name(&self.program.errors[*id].name, *id < self.prelude_types.1),
             Ty::Failure => "Failure".to_string(),
             Ty::Tuple(types) => format!(
@@ -502,11 +513,16 @@ impl<'a> Checker<'a> {
     }
 
     /// A type's name as the program writes it: the prelude's `HttpRequest` is `http.Request`.
-    fn shown_name(&self, name: &str, prelude: bool) -> String {
-        match name.strip_prefix("Http") {
-            Some(rest) if prelude && rest.starts_with(char::is_uppercase) => format!("http.{rest}"),
-            _ => name.to_string(),
+    pub(crate) fn shown_name(&self, name: &str, prelude: bool) -> String {
+        for (prefix, package) in [("Http", "http"), ("Sql", "sql")] {
+            if let Some(rest) = name.strip_prefix(prefix)
+                && prelude
+                && rest.starts_with(char::is_uppercase)
+            {
+                return format!("{package}.{rest}");
+            }
         }
+        name.to_string()
     }
 
     /// The prelude's name for a type of a standard package that the file imports:
@@ -596,7 +612,7 @@ impl<'a> Checker<'a> {
                 ast::ImportKind::Package { path, .. }
                     if matches!(
                         path.as_str(),
-                        "std/os" | "std/io" | "std/test" | "std/http" | "std/time"
+                        "std/os" | "std/io" | "std/test" | "std/http" | "std/time" | "std/sql" | "std/sql/postgres"
                     ) =>
                 {
                     let key = (self.file_of(import.span), import.binding.clone());
@@ -610,7 +626,7 @@ impl<'a> Checker<'a> {
                     self.error_help(
                         import.span,
                         format!("the package `{path}` is not part of this compiler yet"),
-                        "the standard packages so far are `std/os`, `std/io`, `std/http`, `std/time` and `std/test`",
+                        "the standard packages so far are `std/os`, `std/io`, `std/http`, `std/time`, `std/sql`, `std/sql/postgres` and `std/test`",
                     );
                 }
                 _ => self.unsupported(import.span, "imports of other packages are"),
@@ -1171,7 +1187,7 @@ impl<'a> Checker<'a> {
                 if matches!(ok, Ty::Result(..)) {
                     self.error(ty.span, "a result of a result cannot be written (Section 6.3)");
                 }
-                Ty::Result(Box::new(ok), self.resolve_error_set(errors))
+                self.result_of(ok, errors)
             }
             ast::TypeKind::Tuple(types) if types.is_empty() => Ty::Unit,
             ast::TypeKind::Tuple(types) => {
@@ -1213,7 +1229,7 @@ impl<'a> Checker<'a> {
                 let ret = if errors.is_empty() {
                     ok
                 } else {
-                    Ty::Result(Box::new(ok), self.resolve_error_set(errors))
+                    self.result_of(ok, errors)
                 };
                 Ty::Fn(Box::new(FnTy { params, ret }))
             }
@@ -1221,6 +1237,15 @@ impl<'a> Checker<'a> {
                 self.unsupported(ty.span, "inline struct types are");
                 Ty::Unknown
             }
+        }
+    }
+
+    /// A type with an error set as written after it. The set is empty when it is a type
+    /// parameter that stands for no error at all: then the type is all there is.
+    pub(crate) fn result_of(&mut self, ok: Ty, errors: &[ast::Type]) -> Ty {
+        match self.resolve_error_set(errors) {
+            ErrSet::Of(ids) if ids.is_empty() => ok,
+            set => Ty::Result(Box::new(ok), set),
         }
     }
 
@@ -1246,6 +1271,23 @@ impl<'a> Checker<'a> {
             };
             if name == "Failure" {
                 return ErrSet::Any;
+            }
+            // A type parameter in the place of an error stands for the errors of a
+            // function that was passed (`check/generics.rs`).
+            if let Some(bound) = self.type_env.get(name).cloned() {
+                match generics::errors_of(&bound) {
+                    Some(ErrSet::Any) => return ErrSet::Any,
+                    Some(ErrSet::Of(set)) => ids.extend(set),
+                    None => {
+                        let found = self.ty_name(&bound);
+                        self.error_help(
+                            ty.span,
+                            format!("`{name}` is `{found}` here, which is not an error type"),
+                            "a type parameter written after `!` stands for errors (Section 6.3)",
+                        );
+                    }
+                }
+                continue;
             }
             match self.type_names.get(name) {
                 Some(TypeName::Error(id)) => ids.push(*id),
@@ -1383,7 +1425,7 @@ impl<'a> Checker<'a> {
         let ok = sig.ret.as_ref().map(|ty| self.resolve_type(ty)).unwrap_or(Ty::Unit);
         let ret = match &sig.errors {
             ast::ErrorSpec::None => ok,
-            ast::ErrorSpec::Set(types) => Ty::Result(Box::new(ok), self.resolve_error_set(types)),
+            ast::ErrorSpec::Set(types) => self.result_of(ok, types),
             ast::ErrorSpec::Inferred => {
                 self.unsupported(sig.name.span, "inferred error sets (`!` with nothing after it) are");
                 ok
@@ -1426,7 +1468,14 @@ impl<'a> Checker<'a> {
                     }
                     return None;
                 };
-                let display = format!("{}.{}", self.ty_name(&ty), sig.name.name);
+                // The prelude's `HttpApp.get` is `http.App.get` to the program.
+                let on = self.ty_name(&ty);
+                let on = if self.in_prelude {
+                    self.shown_name(&on, true)
+                } else {
+                    on
+                };
+                let display = format!("{on}.{}", sig.name.name);
                 let key = (owner, sig.name.name.clone());
                 if self.methods.contains_key(&key) || self.type_fns.contains_key(&key) {
                     self.already_declared(sig.name.span, &display, &fn_key(sig));
@@ -1525,6 +1574,7 @@ impl<'a> Checker<'a> {
         self.lent_in_closure.clear();
         self.used.clear();
         self.declared_at.clear();
+        self.caught.clear();
         self.scopes.clear();
         self.scopes.push(HashMap::new());
         self.ret = sig.ret.clone();
@@ -2098,7 +2148,7 @@ impl<'a> Checker<'a> {
             ErrSet::Any => "Failure".to_string(),
             ErrSet::Of(ids) => ids
                 .iter()
-                .map(|&id| self.program.errors[id].name.clone())
+                .map(|&id| self.ty_name(&Ty::Error(id)))
                 .collect::<Vec<_>>()
                 .join(" | "),
         }
@@ -2110,7 +2160,7 @@ impl<'a> Checker<'a> {
             (ErrSet::Of(ids), Ty::Result(_, ErrSet::Of(declared))) => ids
                 .iter()
                 .filter(|id| !declared.contains(id))
-                .map(|&id| self.program.errors[id].name.clone())
+                .map(|&id| self.ty_name(&Ty::Error(id)))
                 .collect::<Vec<_>>()
                 .join(" | "),
             (_, Ty::Result(_, ErrSet::Any)) => String::new(),
@@ -2148,7 +2198,7 @@ impl<'a> Checker<'a> {
             ErrSet::Any => "Failure".to_string(),
             ErrSet::Of(ids) => ids
                 .iter()
-                .map(|&id| self.program.errors[id].name.clone())
+                .map(|&id| self.ty_name(&Ty::Error(id)))
                 .collect::<Vec<_>>()
                 .join(", "),
         };
@@ -2256,6 +2306,49 @@ impl<'a> Checker<'a> {
             }
             ast::StmtKind::Fail(value) => {
                 let value = self.expr(value, None);
+                // An error that was caught, of one of several kinds, is passed on: each
+                // kind it may be must be one the function may fail with.
+                let caught = match &value.kind {
+                    ExprKind::Local(id) if value.ty == Ty::Failure => self.caught.get(id).cloned(),
+                    _ => None,
+                };
+                if let Some(caught) = caught
+                    && matches!(self.ret, Ty::Result(_, ErrSet::Of(_)) | Ty::Unknown)
+                {
+                    match (&self.ret, &caught) {
+                        (Ty::Unknown, _) => self.note_errors(&caught),
+                        (Ty::Result(_, set), _) if caught.within(set) => {}
+                        (Ty::Result(_, set), ErrSet::Of(ids)) => {
+                            let missing: Vec<String> = ids
+                                .iter()
+                                .filter(|id| !set.contains(**id))
+                                .map(|id| format!("`{}`", self.ty_name(&Ty::Error(*id))))
+                                .collect();
+                            let declared = self.error_names(set);
+                            self.error(
+                                value.span,
+                                format!(
+                                    "this error may be {}, which is not in this function's error set",
+                                    missing.join(" or ")
+                                ),
+                            );
+                            self.label(format!("the function may fail only with `{declared}`"));
+                            if self.here.is_none() {
+                                self.help("add it after the `!` in the function's signature (Section 6.3)");
+                            }
+                        }
+                        _ => {
+                            let declared = match &self.ret {
+                                Ty::Result(_, set) => self.error_names(set),
+                                _ => String::new(),
+                            };
+                            self.error(value.span, "this error may be any error at all");
+                            self.label(format!("the function may fail only with `{declared}`"));
+                            self.help("match the errors the function can pass on by their types, or give the function the error set `Failure` (Section 6.3)");
+                        }
+                    }
+                    return self.mk(ExprKind::Fail(Box::new(value)), Ty::Never, stmt.span);
+                }
                 match (&self.ret, &value.ty) {
                     (_, Ty::Unknown) => {}
                     (Ty::Result(_, set), Ty::Error(id)) => {
@@ -2650,6 +2743,11 @@ impl<'a> Checker<'a> {
                 "the value may be an error: `x?` passes the error on to the caller, and `x else fallback` gives a value in its place (Section 6.4)",
             ),
             (Ty::Result(..), Ty::Result(..)) => Some("the errors of the value are not all in the expected error set"),
+            (Ty::Struct(id), Ty::Str) if self.program.structs[*id].name == "SqlQuery" && self.is_opaque(expected) => {
+                Some(
+                    "a query is written as a string literal where one is expected, so that the values in it are sent apart from its text; for text the program has put together itself there is `sql.Query.raw(text)` (Section 10.3)",
+                )
+            }
             _ => None,
         };
         let message = format!("expected `{want}`, found `{found}`");

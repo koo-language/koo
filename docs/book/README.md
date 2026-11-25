@@ -24,6 +24,7 @@ There are exercises throughout. They are part of the text: the quickest way to l
 8. [Input and Output](08-io.md)
 9. [Actors](09-actors.md)
 10. [A Server](10-server.md)
+11. [A Database](11-database.md)
 
 - [Appendix A: Reference Manual](a-reference.md)
 - [Appendix B: The Standard Library](b-library.md)
