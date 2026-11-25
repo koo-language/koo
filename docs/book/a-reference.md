@@ -179,7 +179,7 @@ For durations and times the operators are these, and no others: `Duration + Dura
 
 ### A.5.5 Comparison Operators
 
-`==` and `!=` take two operands of the same type and yield a `bool`. They are defined for every type except functions and types that contain one. Equality is structural: two values are equal when they are the same variant, or have equal fields, elements, or characters. Two maps are equal when they have the same keys with equal values, and two sets when they have the same members; the order in which keys or members were added plays no part. Two floating-point values are compared as IEEE 754 prescribes.
+`==` and `!=` take two operands of the same type and yield a `bool`; where one is an optional and the other a value of the type it may hold, the value is taken as an optional that holds it, so that `name == "ada"` is false for a `name` that is `none`. They are defined for every type except functions and types that contain one. Equality is structural: two values are equal when they are the same variant, or have equal fields, elements, or characters. Two maps are equal when they have the same keys with equal values, and two sets when they have the same members; the order in which keys or members were added plays no part. Two floating-point values are compared as IEEE 754 prescribes.
 
 `<`, `<=`, `>` and `>=` are defined for `int`, `float`, `byte`, `string`, `Duration` and `Time`, and for a type that has a method `compare(other: T) -> int`, in which case `a < b` means `a.compare(b) < 0`, and likewise for the others. Strings are ordered by the values of their bytes.
 

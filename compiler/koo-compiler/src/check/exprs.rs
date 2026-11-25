@@ -891,6 +891,18 @@ impl<'a> Checker<'a> {
         if a.ty == Ty::Never || b.ty == Ty::Never {
             return self.mk(ExprKind::Binary(hir_op, Box::new(a), Box::new(b)), Ty::Never, span);
         }
+        // An optional is compared with a value of what it may hold: `req.query("kind")
+        // == "coffee"` is false when there is no `kind`, as it is when it is another.
+        let (mut a, mut b) = (a, b);
+        if matches!(hir_op, BinOp::Eq | BinOp::Ne) {
+            if a.ty == Ty::optional(b.ty.clone()) {
+                let ty = a.ty.clone();
+                b = self.coerce(b, &ty);
+            } else if b.ty == Ty::optional(a.ty.clone()) {
+                let ty = b.ty.clone();
+                a = self.coerce(a, &ty);
+            }
+        }
         if a.ty != b.ty {
             let (left, right) = (self.ty_name(&a.ty), self.ty_name(&b.ty));
             self.error(

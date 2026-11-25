@@ -1,0 +1,53 @@
+// An optional is compared with a value of what it may hold: equal if it holds that
+// value, and not if it holds another or none.
+
+enum Color { Red, Green }
+type Point = { x: int, y: int }
+
+fn find(name: string) -> string? {
+    if name == "a" { return "coffee" }
+    return none
+}
+
+fn main() {
+    print(find("a") == "coffee")
+    print(find("b") == "coffee")
+    print(find("a") != "tea")
+    print("coffee" == find("a"))
+    n: int? = 3
+    print(n == 3)
+    print(n != 3)
+    print(4 == n)
+    m: int? = none
+    print(m == 0)
+    print(m != 0)
+    c: Color? = Color.Red
+    print(c == Color.Red)
+    print(c == Color.Green)
+    p: Point? = Point { x: 1, y: 2 }
+    print(p == Point { x: 1, y: 2 })
+    f: float? = 1.5
+    print(f == 1.5)
+    xs: [int]? = [1, 2]
+    print(xs == [1, 2])
+    if find("a") == "coffee" and n == 3 { print("both") }
+    nested: int?? = n
+    print(nested == n)
+}
+
+//= true
+//= false
+//= true
+//= true
+//= true
+//= false
+//= false
+//= false
+//= true
+//= true
+//= false
+//= true
+//= true
+//= true
+//= both
+//= true
