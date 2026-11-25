@@ -469,12 +469,65 @@ pub fn this_thread() -> usize {
     unsafe { pthread_self() }
 }
 
-extern "C" fn stack_signal(signal: i32, info: *const u8, _context: *const u8) {
+/// Where the stack pointer and the place in the program are kept in what a signal is
+/// given of the thread it interrupted, and whether that is found through a pointer,
+/// for each system and processor the support library knows; measured with `offsetof`
+/// on each. Elsewhere there is nothing, and a thread that runs out of stack ends its
+/// process.
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+const SAVED: Option<(Option<usize>, usize, usize)> = Some((Some(48), 264, 272));
+#[cfg(all(target_os = "linux", target_arch = "aarch64"))]
+const SAVED: Option<(Option<usize>, usize, usize)> = Some((None, 432, 440));
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+const SAVED: Option<(Option<usize>, usize, usize)> = Some((None, 160, 168));
+#[cfg(not(any(
+    all(target_os = "macos", target_arch = "aarch64"),
+    all(target_os = "linux", target_arch = "aarch64"),
+    all(target_os = "linux", target_arch = "x86_64")
+)))]
+const SAVED: Option<(Option<usize>, usize, usize)> = None;
+
+/// Makes the thread that a signal interrupted go on at `function`, on a stack whose
+/// top is `top`, when the signal has been dealt with. Returns whether it could.
+unsafe fn resume_at(context: *const u8, function: usize, top: usize) -> bool {
+    unsafe {
+        let Some((through, stack_at, place_at)) = SAVED else {
+            return false;
+        };
+        if context.is_null() {
+            return false;
+        }
+        let saved = match through {
+            Some(at) => *(context.add(at) as *const *mut u8),
+            None => context as *mut u8,
+        };
+        if saved.is_null() {
+            return false;
+        }
+        // A function is entered with the stack as a call leaves it: on x86-64 that is
+        // eight bytes below a multiple of sixteen, where the address to return to
+        // would be.
+        let top = if cfg!(target_arch = "x86_64") { top - 8 } else { top };
+        *(saved.add(stack_at) as *mut usize) = top;
+        *(saved.add(place_at) as *mut usize) = function;
+        true
+    }
+}
+
+extern "C" fn stack_signal(signal: i32, info: *const u8, context: *const u8) {
     unsafe {
         let address = *(info.add(ADDRESS_AT) as *const usize);
         let low = me().stack_low;
         if low != 0 && address < low + 4096 && address + BELOW >= low {
             overflowed();
+            // A handler of a server comes back to where it was called, as from any
+            // panic, by way of a stack that has room: the signal is done with first,
+            // and the thread goes on from there.
+            if let Some((function, top)) = crate::http::landing()
+                && resume_at(context, function, top)
+            {
+                return;
+            }
             // A handler of a server that ran out of stack takes its process with it,
             // but not without an answer to the request it was answering.
             crate::http::answer_before_ending();

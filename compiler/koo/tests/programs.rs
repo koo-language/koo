@@ -1523,14 +1523,24 @@ fn handlers_wait_side_by_side() {
         heard,
         "HTTP/1.1 204 No Content;HTTP/1.1 404 Not Found;HTTP/1.1 204 No Content;"
     );
-    // A handler that runs out of stack cannot go on, and its process ends with it;
-    // but the request is answered first, as one that met any other panic is.
+    // A handler that runs out of stack is answered with 500, as one that met any other
+    // panic is, and the handlers that were waiting beside it are answered too; then
+    // the process, which is no longer to be trusted, ends.
     assert!(get(port, "/depth/1000").ends_with("\r\n\r\n1000\n"));
-    let failed = get(port, "/depth/100000000");
+    let (failed, napped) = std::thread::scope(|scope| {
+        let napping: Vec<_> = (0..6).map(|_| scope.spawn(move || get(port, "/nap"))).collect();
+        std::thread::sleep(std::time::Duration::from_millis(100));
+        let failed = get(port, "/depth/100000000");
+        let napped: Vec<String> = napping.into_iter().map(|nap| nap.join().unwrap()).collect();
+        (failed, napped)
+    });
     assert!(
         failed.starts_with("HTTP/1.1 500 ") && failed.ends_with("Internal Server Error\n"),
         "{failed}"
     );
+    for nap in &napped {
+        assert!(nap.starts_with("HTTP/1.1 200 ") && nap.ends_with("rested\n"), "{nap}");
+    }
     let mut server = server;
     let mut ended = None;
     for _ in 0..200 {

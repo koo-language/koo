@@ -38,6 +38,9 @@ mod stub {
         unsafe { new_str(b"") }
     }
     pub unsafe fn answer_before_ending() {}
+    pub unsafe fn landing() -> Option<(usize, usize)> {
+        None
+    }
     #[unsafe(no_mangle)]
     pub unsafe extern "C" fn koo_http_reset() {}
     #[unsafe(no_mangle)]
@@ -1842,6 +1845,53 @@ mod imp {
         }
     }
 
+    /// Whether a handler of this process has run out of stack. The request was answered
+    /// like any that panics, but the process is not to be trusted with more than the
+    /// requests it has in hand: what was cut short may have been in the middle of
+    /// anything.
+    static mut OUT_OF_STACK: bool = false;
+
+    /// A stack to stand on for the moment between a stack that is exhausted and the
+    /// place the handler's panic comes back to.
+    const LANDING: usize = 64 * 1024;
+    static mut LANDING_STACK: [u8; LANDING] = [0; LANDING];
+
+    unsafe extern "C" {
+        fn alarm(seconds: u32) -> u32;
+    }
+
+    /// Where a handler that has run out of stack is to go on, and on what stack: the
+    /// function below, on the stack kept for it. Nothing, if the thread that ran out
+    /// is not answering a request under a guard, and so has nowhere to come back to.
+    #[allow(static_mut_refs)]
+    pub unsafe fn landing() -> Option<(usize, usize)> {
+        unsafe {
+            if SERVING == 0 || SERVING != thread::this_thread() || CONNS.len == 0 || CURRENT.answered || OUT_OF_STACK {
+                return None;
+            }
+            let index = CURRENT.conn;
+            if index >= CONNS.len || !conn(index).handling || thread::me().guard.is_null() {
+                return None;
+            }
+            let top = (LANDING_STACK.as_ptr() as usize + LANDING) & !15;
+            Some((landed as extern "C" fn() -> ! as usize, top))
+        }
+    }
+
+    /// Where the thread goes on after a handler has run out of stack: the panic has
+    /// been said, and what is left is what any panic does, which is to come back to
+    /// where the handler was called, to answer 500 and go on. The process then ends as
+    /// soon as it has answered what it has in hand, and in ten seconds whatever
+    /// happens: the handler may have been stopped in the middle of something that the
+    /// rest of the process needs.
+    extern "C" fn landed() -> ! {
+        unsafe {
+            OUT_OF_STACK = true;
+            alarm(10);
+            crate::actor::leave()
+        }
+    }
+
     unsafe fn start_queue() {
         unsafe {
             SERVING = thread::this_thread();
@@ -1909,6 +1959,14 @@ mod imp {
     #[allow(static_mut_refs)]
     unsafe fn finish() {
         unsafe {
+            // A server of one process that lost a handler to an exhausted stack has
+            // answered what it had in hand, and ends as a program that panicked does,
+            // for whatever runs it to start it again.
+            if OUT_OF_STACK && !CHILD && !SUPERVISOR {
+                koo_flush();
+                crate::actor::remove_socket();
+                crate::koo_exit(101);
+            }
             end_places();
             if !CHILD {
                 for &child in &CHILDREN[..CHILD_COUNT] {
@@ -2294,7 +2352,7 @@ mod imp {
         unsafe {
             crate::thread::me().json_wire = false;
             PANICS += 1;
-            if CHILD && PANICS >= MOST_PANICS {
+            if (CHILD && PANICS >= MOST_PANICS) || OUT_OF_STACK {
                 STOP = true;
             }
         }

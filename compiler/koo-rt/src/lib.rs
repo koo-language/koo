@@ -889,6 +889,8 @@ fn overflowed() {
         let out = unsafe { &mut *core::ptr::addr_of_mut!(STDOUT) };
         write_all(1, &out.data[..out.len]);
         out.len = 0;
+        // The thread may go on, where a handler of a server comes back from this.
+        PRINTING.unlock();
     }
     // This runs where a signal is handled, on a small stack and with whatever the
     // program was in the middle of left as it was: nothing is allocated, and the line
