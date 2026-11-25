@@ -1313,6 +1313,69 @@ fn a_program_asks_another_server() {
     assert!(failures.is_empty(), "\n{}", failures.join("\n\n"));
 }
 
+/// With `KOO_LOG=json`, everything a server writes on the standard error output is a
+/// line of JSON: what the program logs, the log of requests, a handler's failure, a panic.
+#[test]
+fn a_servers_lines_are_json() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let dir = std::env::temp_dir().join(format!("koo-logged-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let executable = dir.join("server");
+    let built = Command::new(env!("CARGO_BIN_EXE_koo"))
+        .arg("build")
+        .arg(root.join("tests/http/logged.koo"))
+        .arg("-o")
+        .arg(&executable)
+        .output()
+        .expect("koo runs");
+    assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
+    let port = std::net::TcpListener::bind("127.0.0.1:0")
+        .unwrap()
+        .local_addr()
+        .unwrap()
+        .port();
+    let log = dir.join("log.txt");
+    let child = Command::new(&executable)
+        .env("PORT", port.to_string())
+        .env("KOO_LOG", "json")
+        .env("KOO_LOG_TIME", "off")
+        .stdout(std::process::Stdio::null())
+        .stderr(std::fs::File::create(&log).unwrap())
+        .spawn()
+        .expect("the server starts");
+    let server = Server(child);
+    for _ in 0..200 {
+        if std::net::TcpStream::connect(("127.0.0.1", port)).is_ok() {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(25));
+    }
+    for path in ["/hello/Ada", "/fail", "/panic", "/nowhere"] {
+        get(port, path);
+    }
+    stop(server, port);
+    // How long a request took is different every time.
+    let mut found = String::new();
+    for line in std::fs::read_to_string(&log).unwrap().lines() {
+        let line = match (line.find("\"ms\":"), line.ends_with('}')) {
+            (Some(at), true) => format!("{}\"ms\":0}}", &line[..at]),
+            _ => line.to_string(),
+        };
+        // And where the program is, on every machine.
+        let source = root.join("tests/http/logged.koo").display().to_string();
+        found.push_str(&line.replace(&source, "logged.koo"));
+        found.push('\n');
+    }
+    let expected_path = root.join("tests/http/logged.json");
+    let expected = std::fs::read_to_string(&expected_path).unwrap_or_default();
+    if found != expected && std::env::var_os("KOO_BLESS").is_some() {
+        std::fs::write(&expected_path, &found).unwrap();
+    } else {
+        assert_eq!(found, expected, "what the server wrote on the standard error output");
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 #[test]
 fn a_server_answers_requests() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
@@ -1525,12 +1588,12 @@ fn a_server_answers_requests() {
     for i in 1..=40 {
         has(&get(port, "/count"), &[&format!("\r\n\r\ncount {i}")]);
     }
-    // A handler that panics ends its worker, which is replaced: the server goes on.
-    for _ in 0..4 {
+    // A handler that panics fails its own request, with 500, and nothing else: the
+    // next request is answered at once, by the same workers.
+    for _ in 0..40 {
         let answer = get(port, "/panic");
-        assert!(!answer.contains("200 OK"), "{answer}");
+        assert!(answer.starts_with("HTTP/1.1 500 "), "{answer}");
     }
-    std::thread::sleep(std::time::Duration::from_millis(2500));
     for i in 0..60 {
         has(&get(port, &format!("/hello/{i}")), &[&format!("Hello, {i}!")]);
     }

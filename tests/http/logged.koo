@@ -1,0 +1,26 @@
+// A server whose every line on the standard error output is read by a program
+// (`a_servers_lines_are_json` in compiler/koo/tests/programs.rs): its own log, the log
+// of requests, a handler that fails, and one that panics.
+
+import std/http
+import std/log
+import std/os
+
+fn main() ! http.Error {
+    var app := http.App.new()
+    app.get("/hello/:name", req -> {
+        name := req.param("name")
+        log.info("greeting {name}")
+        return http.text("Hello, {name}!\n")
+    })
+    app.get("/fail", req -> {
+        n := int.parse("x")?
+        return http.text("{n}")
+    })
+    app.get("/panic", req -> {
+        none_here: [int] = []
+        return http.text("{none_here[1]}")
+    })
+    port := int.parse(os.env("PORT") else "") else 8080
+    app.serve(port: port, workers: 1, log: true)?
+}

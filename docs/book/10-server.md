@@ -363,11 +363,13 @@ Consider `add`. It computes the number of the new order from the length of the l
 | `max_body:` | the largest body of a request that is accepted, in bytes | 1048576 |
 | `log:` | whether to write a line on standard error for each request | `false` |
 
-A server started with the default `workers:` answers requests on every processor of the machine. It does so with *processes*: `serve` starts one worker process for each processor, all of them listening on the one port, and itself stays behind to watch over them. A handler runs in one of the workers. This is why a panic in a handler does not bring a server down. The worker in which it happened ends, with the requests it was in the middle of, and the process that watches starts another in its place.
+A server started with the default `workers:` answers requests on every processor of the machine. It does so with *processes*: `serve` starts one worker process for each processor, all of them listening on the one port, and itself stays behind to watch over them. A handler runs in one of the workers. If a worker dies, the process that watches starts another in its place.
+
+A panic in a handler does not bring a server down, nor even a worker. A panic is a bug in the handler, and what it costs is the request that met it: the panic is written on the standard error output, as always, the client is answered with 500, and the worker goes on to its next request. Whatever the handler was in the middle of is abandoned: a transaction it had open is undone (Section 11.5), and an actor it was asking starts again (Section 9.8).
 
 The actors of the program live in the process that watches, where `main` started them. A handler that asks an actor is asking across processes, which is slower than an ask within one, by a few millionths of a second, but is otherwise the same thing: the workers share the one actor, and the actor still answers one message at a time. That is how the orders of the last section stay in one list though they arrive at several processes.
 
-`workers: 1` keeps everything in one process, with no process watching over it. That is the simplest arrangement to debug, and in it a handler's panic ends the server.
+`workers: 1` keeps everything in one process, with no process watching over it. That is the simplest arrangement to debug.
 
 A server can also hand out the files of a directory:
 

@@ -1540,29 +1540,52 @@ fn (self: HttpApp) serve(port: int = 8080, workers: int = 0, max_body: int = 104
         if route < 0 { break }
         id := __http_id()
         request := HttpRequest { id, method: __http_method(id), path: __http_path(id) }
-        match self.handlers[route](request) {
-            response => {
-                if response.file == "" {
-                    __http_respond(id, response.status, response.content_type, response.headers, response.body)
-                } else {
-                    __http_respond_file(id, response.status, response.content_type, response.headers, response.file)
-                }
+        // A panic in a handler is a bug in it. It ends the request, which is answered
+        // with 500, and not the worker, which has other requests to answer.
+        if __guard() {
+            h__answer(self.handlers[route], request)
+            __guard_done()
+        } else {
+            __actor_recover()
+            __http_respond(id, 500, "text/plain; charset=utf-8", "", "Internal Server Error\n")
+        }
+    }
+}
+
+/// Calls a handler, and sends what it returns, or what its failure calls for.
+fn h__answer(handler: fn(HttpRequest) -> HttpResponse ! Failure, request: HttpRequest) {
+    id := request.id
+    match handler(request) {
+        response => {
+            if response.file == "" {
+                __http_respond(id, response.status, response.content_type, response.headers, response.body)
+            } else {
+                __http_respond_file(id, response.status, response.content_type, response.headers, response.file)
             }
-            // What a client sent that cannot be read is the client's mistake, and it is
-            // told which.
-            ! e: JsonError => {
-                var body := "\{\"error\":"
-                e.message._json_write(var body)
-                body += ",\"path\":"
-                e.path._json_write(var body)
-                body += "}"
-                __http_respond(id, 400, "application/json", "", body)
-            }
-            ! e => {
-                // What else went wrong is for the log, not for the client.
+        }
+        // What a client sent that cannot be read is the client's mistake, and it is
+        // told which.
+        ! e: JsonError => {
+            var body := "\{\"error\":"
+            e.message._json_write(var body)
+            body += ",\"path\":"
+            e.path._json_write(var body)
+            body += "}"
+            __http_respond(id, 400, "application/json", "", body)
+        }
+        ! e => {
+            // What else went wrong is for the log, not for the client.
+            if __log_json() {
+                l__write("error", LogMessage {
+                    _parts: ["{request.method} {request.path}: {e}"],
+                    _shown: [],
+                    _names: [],
+                    _kinds: [],
+                })
+            } else {
                 __eprint("{request.method} {request.path}: {e}")
-                __http_respond(id, 500, "text/plain; charset=utf-8", "", "Internal Server Error\n")
             }
+            __http_respond(id, 500, "text/plain; charset=utf-8", "", "Internal Server Error\n")
         }
     }
 }

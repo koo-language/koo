@@ -138,9 +138,10 @@ fn write_all(fd: i32, mut bytes: &[u8]) {
 }
 
 fn fatal(message: &[u8]) -> ! {
-    unsafe { koo_flush() };
-    write_all(2, message);
-    unsafe { exit(101) }
+    unsafe {
+        log::said(b"error", message, message.trim_ascii_end(), &[]);
+        exit(101)
+    }
 }
 
 unsafe fn bytes<'a>(s: *const Header) -> &'a [u8] {
@@ -234,16 +235,28 @@ pub unsafe extern "C" fn koo_exit_main() {
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn koo_panic(message: *const u8, len: i64, file: *const Header, line: i64) -> ! {
     unsafe { koo_flush() };
+    let message = unsafe { core::slice::from_raw_parts(message, len as usize) };
     let mut out = Buffer::new();
     out.push(b"panic: ");
-    out.push(unsafe { core::slice::from_raw_parts(message, len as usize) });
+    out.push(message);
+    let said = out.len;
+    let mut place = Buffer::new();
     if line > 0 {
+        place.push(unsafe { bytes(file) });
+        let _ = write!(place, ":{line}");
         out.push(b"\n  at ");
-        out.push(unsafe { bytes(file) });
-        let _ = write!(out, ":{line}");
+        out.push(&place.data[..place.len]);
     }
     out.push(b"\n");
-    out.flush(2);
+    let fields = [(&b"at"[..], log::Field::Text(&place.data[..place.len]))];
+    unsafe {
+        log::said(
+            b"error",
+            &out.data[..out.len],
+            &out.data[..said],
+            if line > 0 { &fields } else { &[] },
+        )
+    };
     // A panic ends the program, unless it is in a message that it only ends.
     unsafe { actor::leave() }
 }

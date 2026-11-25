@@ -1123,20 +1123,42 @@ mod imp {
             if !LOG {
                 return;
             }
+            use super::super::log::{Field, said};
             let mut out = Buffer::new();
             if known {
                 let c = conn(CURRENT.conn);
                 let data = core::slice::from_raw_parts(c.input.ptr, c.input.len);
                 let text = |range: Range| core::str::from_utf8(&data[range.start..range.end]).unwrap_or("?");
-                let path = text(CURRENT.path);
+                let (method, path) = (text(CURRENT.method), text(CURRENT.path));
                 let shown = path.char_indices().nth(200).map_or(path.len(), |(at, _)| at);
-                let _ = write!(out, "{} {}", text(CURRENT.method), &path[..shown]);
+                let _ = write!(out, "{method} {} {status}", &path[..shown]);
+                let message = out.len;
                 let micros = (nanos() - CURRENT.at) / 1000;
-                let _ = writeln!(out, " {status} {size}B {}.{:03}ms", micros / 1000, micros % 1000);
+                let mut took = Buffer::new();
+                let _ = write!(took, "{}.{:03}", micros / 1000, micros % 1000);
+                let _ = writeln!(
+                    out,
+                    " {size}B {}ms",
+                    core::str::from_utf8(&took.data[..took.len]).unwrap_or("0")
+                );
+                let fields = [
+                    (&b"method"[..], Field::Text(method.as_bytes())),
+                    (&b"path"[..], Field::Text(&path.as_bytes()[..shown])),
+                    (&b"status"[..], Field::Number(status)),
+                    (&b"bytes"[..], Field::Number(size as i64)),
+                    (&b"ms"[..], Field::Digits(&took.data[..took.len])),
+                ];
+                said(b"info", &out.data[..out.len], &out.data[..message], &fields);
             } else {
-                let _ = writeln!(out, "- - {status} {size}B");
+                let _ = write!(out, "- - {status}");
+                let message = out.len;
+                let _ = writeln!(out, " {size}B");
+                let fields = [
+                    (&b"status"[..], Field::Number(status)),
+                    (&b"bytes"[..], Field::Number(size as i64)),
+                ];
+                said(b"info", &out.data[..out.len], &out.data[..message], &fields);
             }
-            out.flush(2);
         }
     }
 

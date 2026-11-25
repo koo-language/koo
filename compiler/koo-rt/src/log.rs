@@ -95,3 +95,109 @@ pub unsafe extern "C" fn koo_log_write(line: *const Header) {
         free(whole);
     }
 }
+
+/// A value beside the message of a line that the support library writes itself.
+pub enum Field<'a> {
+    Text(&'a [u8]),
+    Number(i64),
+    /// Digits as they are to be written, for a number that is not whole.
+    Digits(&'a [u8]),
+}
+
+/// Appends text as JSON writes a string, without the quotes.
+unsafe fn escaped(out: &mut pg::Buf, text: &[u8]) {
+    unsafe {
+        for byte in text {
+            match byte {
+                b'"' => out.push(b"\\\""),
+                b'\\' => out.push(b"\\\\"),
+                b'\n' => out.push(b"\\n"),
+                b'\r' => out.push(b"\\r"),
+                b'\t' => out.push(b"\\t"),
+                0..=31 => {
+                    let mut code = Buffer::new();
+                    let _ = write!(code, "\\u{byte:04x}");
+                    out.push(&code.data[..code.len]);
+                }
+                _ => out.push(core::slice::from_ref(byte)),
+            }
+        }
+    }
+}
+
+/// The time now, as `2026-01-31T12:00:00.123456Z`.
+unsafe fn stamp(out: &mut Buffer) {
+    unsafe {
+        let mut time = [0i64; 2];
+        clock_gettime(0, &mut time);
+        let (days, second) = (time[0].div_euclid(86400), time[0].rem_euclid(86400));
+        // The date of a count of days, by the calendar's cycle of 400 years, counted
+        // from a first of March so that the day a leap year adds comes last.
+        let shifted = days + 719_468;
+        let era = shifted.div_euclid(146_097);
+        let day_of_era = shifted.rem_euclid(146_097);
+        let year_of_era = (day_of_era - day_of_era / 1460 + day_of_era / 36_524 - day_of_era / 146_096) / 365;
+        let day_of_year = day_of_era - (365 * year_of_era + year_of_era / 4 - year_of_era / 100);
+        let turned = (5 * day_of_year + 2) / 153;
+        let day = day_of_year - (153 * turned + 2) / 5 + 1;
+        let month = if turned < 10 { turned + 3 } else { turned - 9 };
+        let year = year_of_era + era * 400 + (month <= 2) as i64;
+        let _ = write!(
+            out,
+            "{year:04}-{month:02}-{day:02}T{:02}:{:02}:{:02}.{:06}Z",
+            second / 3600,
+            second % 3600 / 60,
+            second % 60,
+            time[1] / 1000
+        );
+    }
+}
+
+/// Writes a line that the support library itself has to say: a panic, a request that
+/// was served, an actor that starts again. When the log is text it is `plain`, as it
+/// always was. When the log is JSON it is an object like the program's own lines, so
+/// that whatever reads the log can read all of it.
+pub unsafe fn said(level: &[u8], plain: &[u8], message: &[u8], fields: &[(&[u8], Field)]) {
+    unsafe {
+        koo_flush();
+        if !koo_log_json() {
+            write_all(2, plain);
+            return;
+        }
+        let mut line = pg::Buf::new();
+        line.push(b"{");
+        if koo_log_timed() {
+            let mut time = Buffer::new();
+            stamp(&mut time);
+            line.push(b"\"time\":\"");
+            line.push(&time.data[..time.len]);
+            line.push(b"\",");
+        }
+        line.push(b"\"level\":\"");
+        line.push(level);
+        line.push(b"\",\"message\":\"");
+        escaped(&mut line, message);
+        line.push(b"\"");
+        for (name, field) in fields {
+            line.push(b",\"");
+            escaped(&mut line, name);
+            line.push(b"\":");
+            match field {
+                Field::Text(text) => {
+                    line.push(b"\"");
+                    escaped(&mut line, text);
+                    line.push(b"\"");
+                }
+                Field::Number(number) => {
+                    let mut digits = Buffer::new();
+                    let _ = write!(digits, "{number}");
+                    line.push(&digits.data[..digits.len]);
+                }
+                Field::Digits(digits) => line.push(digits),
+            }
+        }
+        line.push(b"}\n");
+        write_all(2, line.bytes());
+        line.release();
+    }
+}

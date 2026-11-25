@@ -306,15 +306,17 @@ unsafe fn slot_of(id: i64) -> Option<*mut Slot> {
 
 /// Ends the program as a panic does (Section 5.9), or the message, if it is guarded.
 pub unsafe fn die(parts: &[&[u8]]) -> ! {
-    unsafe { koo_flush() };
     let mut out = Buffer::new();
     out.push(b"panic: ");
     for part in parts {
         out.push(part);
     }
+    let said = out.len;
     out.push(b"\n");
-    out.flush(2);
-    unsafe { leave() }
+    unsafe {
+        crate::log::said(b"error", &out.data[..out.len], &out.data[..said], &[]);
+        leave()
+    }
 }
 
 /// What a panic does once it has said what it has to say.
@@ -1351,7 +1353,11 @@ unsafe fn restart(slot: *mut Slot, index: u32) -> *mut Header {
             out.push(b"` panicked, and starts again\n");
             (*slot).initial
         };
-        out.flush(2);
+        // Without the `koo: ` it begins with and the newline it ends with, for a log
+        // that is JSON.
+        let message = &out.data[5..out.len - 1];
+        let fields = [(&b"actor"[..], crate::log::Field::Text(kind_name((*slot).kind as usize)))];
+        crate::log::said(b"error", &out.data[..out.len], message, &fields);
         state
     }
 }
