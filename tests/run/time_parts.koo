@@ -1,0 +1,41 @@
+// The parts of a time as a calendar and a clock in UTC have them, and a time made
+// from a date.
+
+fn show(t: Time) {
+    print("{t}: {t.year()}-{t.month()}-{t.day()} {t.hour()}:{t.minute()}:{t.second()} day {t.weekday()}")
+}
+
+fn main() ! ParseError {
+    show(Time.from_unix(0))
+    show(Time.parse("2026-11-25T08:30:59.75Z")?)
+    show(Time.parse("2024-02-29T23:59:59Z")?)
+    show(Time.parse("1969-12-31T23:59:59.5Z")?)
+    show(Time.parse("1900-03-01T00:00:00Z")?)
+    show(Time.parse("2262-04-11T23:47:16Z")?)
+    show(Time.parse("1677-09-21T00:12:44Z")?)
+    show(Time.utc(2026, 1, 31)?)
+    show(Time.utc(2026, 12, 25, hour: 18, minute: 30)?)
+    start_of_day := Time.utc(2026, 11, 25)?
+    print(Time.parse("2026-11-25T08:30:00Z")? - start_of_day)
+    match Time.utc(2026, 2, 30) {
+        t => show(t)
+        ! e => print("no such time: {e.input}")
+    }
+    match Time.utc(2026, 13, 1) {
+        t => show(t)
+        ! e => print("no such time: {e.input}")
+    }
+}
+
+//= 1970-01-01T00:00:00Z: 1970-1-1 0:0:0 day 4
+//= 2026-11-25T08:30:59.75Z: 2026-11-25 8:30:59 day 3
+//= 2024-02-29T23:59:59Z: 2024-2-29 23:59:59 day 4
+//= 1969-12-31T23:59:59.5Z: 1969-12-31 23:59:59 day 3
+//= 1900-03-01T00:00:00Z: 1900-3-1 0:0:0 day 4
+//= 2262-04-11T23:47:16Z: 2262-4-11 23:47:16 day 5
+//= 1677-09-21T00:12:44Z: 1677-9-21 0:12:44 day 2
+//= 2026-01-31T00:00:00Z: 2026-1-31 0:0:0 day 6
+//= 2026-12-25T18:30:00Z: 2026-12-25 18:30:0 day 5
+//= 8h30min
+//= no such time: 2026-02-30T00:00:00Z
+//= no such time: 2026-13-01T00:00:00Z

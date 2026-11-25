@@ -1254,13 +1254,11 @@ fn t__month_days(year: int, month: int) -> int {
 }
 
 /// A time as RFC 3339 writes it, in UTC: `2026-11-24T18:02:48.5Z`.
-fn (self: Time) to_string() -> string {
+/// The date and the time of day, in UTC: the year, the month, the day of the month,
+/// and the seconds of the day that have passed.
+fn (self: Time) _civil() -> (int, int, int, int) {
     var seconds := self._ns / 1000000000
-    var nanos := self._ns % 1000000000
-    if nanos < 0 {
-        nanos += 1000000000
-        seconds -= 1
-    }
+    if self._ns % 1000000000 < 0 { seconds -= 1 }
     var days := seconds / 86400
     var rest := seconds % 86400
     if rest < 0 {
@@ -1278,6 +1276,62 @@ fn (self: Time) to_string() -> string {
     day := day_of_year - (153 * shifted + 2) / 5 + 1
     month := if shifted < 10 { shifted + 3 } else { shifted - 9 }
     year := year_of_era + era * 400 + (if month <= 2 { 1 } else { 0 })
+    return (year, month, day, rest)
+}
+
+/// The parts of a time as a calendar and a clock in UTC have them.
+fn (self: Time) year() -> int {
+    (year, month, day, rest) := self._civil()
+    return year
+}
+
+fn (self: Time) month() -> int {
+    (year, month, day, rest) := self._civil()
+    return month
+}
+
+fn (self: Time) day() -> int {
+    (year, month, day, rest) := self._civil()
+    return day
+}
+
+fn (self: Time) hour() -> int {
+    (year, month, day, rest) := self._civil()
+    return rest / 3600
+}
+
+fn (self: Time) minute() -> int {
+    (year, month, day, rest) := self._civil()
+    return rest % 3600 / 60
+}
+
+fn (self: Time) second() -> int {
+    (year, month, day, rest) := self._civil()
+    return rest % 60
+}
+
+/// The day of the week, from 1 for Monday to 7 for Sunday.
+fn (self: Time) weekday() -> int {
+    var seconds := self._ns / 1000000000
+    if self._ns % 1000000000 < 0 { seconds -= 1 }
+    var days := seconds / 86400
+    if seconds % 86400 < 0 { days -= 1 }
+    // The first day of 1970 was a Thursday.
+    var day := (days + 3) % 7
+    if day < 0 { day += 7 }
+    return day + 1
+}
+
+/// The time that a date and a time of day are, in UTC. A date that no calendar has,
+/// the thirtieth of February, is an error that names it.
+fn Time.utc(year: int, month: int, day: int, hour: int = 0, minute: int = 0, second: int = 0) -> Time ! ParseError {
+    return Time.parse("{year:04}-{month:02}-{day:02}T{hour:02}:{minute:02}:{second:02}Z")?
+}
+
+fn (self: Time) to_string() -> string {
+    var nanos := self._ns % 1000000000
+    if nanos < 0 { nanos += 1000000000 }
+    (year, month, day, rest) := self._civil()
     var out := "{year:04}-{month:02}-{day:02}T{rest / 3600:02}:{rest % 3600 / 60:02}:{rest % 60:02}"
     if nanos != 0 {
         var fraction := "{nanos:09}"

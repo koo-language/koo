@@ -320,6 +320,9 @@ The key of a field is its name, or what `@json("key")` after the field's type sa
 | --- | --- |
 | `Time.parse(text: string) -> Time ! ParseError` | the time that a text in the form of RFC 3339 names |
 | `Time.from_unix(seconds: int) -> Time` | the time so many seconds after the beginning of 1970 in UTC |
+| `Time.utc(year: int, month: int, day: int, hour: int = 0, minute: int = 0, second: int = 0) -> Time ! ParseError` | the time that a date and a time of day are in UTC; fails for a date that no calendar has |
+| `t.year() -> int`, `t.month()`, `t.day()`, `t.hour()`, `t.minute()`, `t.second()` | the parts of the time, as a calendar and a clock in UTC have them |
+| `t.weekday() -> int` | the day of the week, from 1 for Monday to 7 for Sunday |
 | `t.unix() -> int` | the whole seconds from the beginning of 1970 to the time |
 | `t.unix_nanos() -> int` | the same in nanoseconds |
 | `t.compare(other: Time) -> int` | negative, zero or positive, by the order of `<` |
@@ -333,6 +336,7 @@ fn main() {
     t := Time.parse("2026-01-31T12:00:00.25Z") else Time.from_unix(0)
     print("{t} {t.unix()} {t.unix_nanos()} {t.compare(Time.from_unix(0))} {Time.from_unix(86400)}")
     print("{d.to_json()} {t.to_json()} {Duration.parse("soon") else 0s}")
+    print("{t.year()} {t.month()} {t.day()} {t.hour()} {t.minute()} {t.second()} {t.weekday()} {Time.utc(2026, 2, 1, hour: 9) else t}")
 }
 ```
 
@@ -340,6 +344,7 @@ fn main() {
 1min30s 90.0 90000 90000000 90000000000 1min30s -1
 2026-01-31T12:00:00.25Z 1769860800 1769860800250000000 1 1970-01-02T00:00:00Z
 "1min30s" "2026-01-31T12:00:00.25Z" 0s
+2026 1 31 12 0 0 6 2026-02-01T09:00:00Z
 ```
 
 ## B.10 `std/time`
