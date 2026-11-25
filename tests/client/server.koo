@@ -36,9 +36,22 @@ actor Printer {
 
 type Echo = { method: string, path: string, body: string, agent: string, kind: string, token: string }
 
+// A program's own function may have a name the library has too.
+fn json<T>(value: T) -> string {
+    return "<{value}>"
+}
+
 fn main() ! http.Error {
     visits := Visits.start()
+    port := int.parse(os.env("PORT") else "") else 8080
     var app := http.App.new()
+    // One type read from a request and from another server's answer, in one handler.
+    app.post("/relay", req -> {
+        asked: Echo = req.json()?
+        reply := http.post("http://127.0.0.1:{port}/echo", asked.to_json(), timeout: 5s)?
+        told: Echo = reply.json()?
+        return http.text("{json(told.method)} {asked.path} {told.body.len == asked.to_json().len}\n")
+    })
     // Twenty messages at once to an actor with room for four: whether there was room
     // is the actor's to say, whichever process the handler is in.
     printer := Printer.start()
@@ -95,6 +108,5 @@ fn main() ! http.Error {
     app.get("/none", req -> http.status(204))
     app.get("/missing", req -> http.status(404, "nothing here\n"))
     app.get("/cookie", req -> http.text("ok").cookie("a", "1").cookie("b", "2"))
-    port := int.parse(os.env("PORT") else "") else 8080
-    app.serve(port: port, workers: 2)?
+    app.serve(port: port, workers: int.parse(os.env("WORKERS") else "") else 2)?
 }

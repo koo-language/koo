@@ -1,0 +1,18 @@
+// A function of a standard package is named in a message as a program writes it.
+
+import std/http
+
+fn main() ! http.Error {
+    var app := http.App.new()
+    app.get("/", req -> http.text("a", 2, 3))
+    app.get("/pair", req -> http.json((1, "a")))
+    app.post("/untyped", req -> {
+        body := req.json()?
+        return http.text("{body}")
+    })
+    app.serve()?
+}
+
+//! error `http.text` takes 2 arguments, found 3
+//! error in `http.json<(int, string)>`: `(int, string)` has no method `to_json`
+//! error the type parameter `T` of `http.Request.json` is not known here

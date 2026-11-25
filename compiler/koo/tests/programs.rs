@@ -1503,6 +1503,14 @@ fn a_stopping_server_answers_what_it_has_in_hand() {
     assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
     for workers in [1, 3] {
         let (mut server, port) = serve(&executable, workers, &dir);
+        // A handler that asks its own server, and reads one type from the request and
+        // from the answer.
+        let asked = r#"{"method":"GET","path":"/x","body":"","agent":"","kind":"","token":""}"#;
+        let got = post(port, "/relay", asked);
+        assert!(
+            got.ends_with("\r\n\r\n<POST> /x true\n"),
+            "with {workers} workers: {got}"
+        );
         // An actor's mail has room for what it says, from whichever process it is told:
         // four wait, and a fifth is the one the actor is at.
         let got = get(port, "/try");

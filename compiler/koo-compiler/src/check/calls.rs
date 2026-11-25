@@ -1066,7 +1066,7 @@ impl<'a> Checker<'a> {
             let Some(arg) = slot else {
                 // A function of the standard library that reports where it was called
                 // from takes that as a last parameter, which the call does not write.
-                if param.name == "location" && param.ty == Ty::Str && sig.name.contains("__") {
+                if param.name == "location" && param.ty == Ty::Str && sig.at.is_none() {
                     out.push(Arg {
                         kind: param.kind,
                         expr: Expr {

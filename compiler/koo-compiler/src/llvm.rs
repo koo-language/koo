@@ -54,6 +54,15 @@ pub fn emit(program: &Program, sources: &SourceMap, prelude_src: &str) -> String
         p: program,
         sources,
         prelude_index: LineIndex::new(prelude_src),
+        namesakes: {
+            let mut seen = HashSet::new();
+            program
+                .functions
+                .iter()
+                .filter(|function| !seen.insert(function.name.as_str()))
+                .map(|function| function.name.clone())
+                .collect()
+        },
         functions: String::new(),
         strings: Vec::new(),
         string_ids: HashMap::new(),
@@ -146,6 +155,8 @@ struct Gen<'a> {
     p: &'a Program,
     sources: &'a SourceMap,
     prelude_index: LineIndex,
+    /// The names that more than one function has.
+    namesakes: HashSet<String>,
     functions: String,
     strings: Vec<String>,
     string_ids: HashMap<String, usize>,
@@ -428,7 +439,7 @@ impl<'a> Gen<'a> {
     fn library_place(&mut self) -> (String, i64) {
         let name = self.p.functions[self.f.id].name.clone();
         // An assertion says the line of the test it is in, which is the place.
-        let named = if name.starts_with("test__") {
+        let named = if name.starts_with("test.") {
             None
         } else {
             library_name(&name)
@@ -764,7 +775,14 @@ impl<'a> Gen<'a> {
     }
 
     fn fn_name(&self, id: FnId) -> String {
-        format!("@\"koo.{}\"", self.p.functions[id].name)
+        let name = &self.p.functions[id].name;
+        // Two functions may be shown by one name, as a program's own `json<T>` and a
+        // library's; what the linker sees is never the same for two.
+        if self.namesakes.contains(name) {
+            format!("@\"koo.{name}#{id}\"")
+        } else {
+            format!("@\"koo.{name}\"")
+        }
     }
 
     /// How a parameter is passed: its LLVM type, and whether that is a pointer to storage.

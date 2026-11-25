@@ -459,8 +459,10 @@ impl<'a> Checker<'a> {
         }
 
         let id = self.templates.len();
-        let display = match (&owner, target) {
-            (Some(_), Some((ty, _))) => {
+        // A function is known by the type it is of, whether or not the type is generic:
+        // `http.Request.json` and `http.Reply.json` are two functions.
+        let display = match target {
+            Some((ty, _)) => {
                 let on = type_text(ty);
                 let on = if self.in_prelude {
                     self.shown_name(&on, true)
@@ -469,7 +471,7 @@ impl<'a> Checker<'a> {
                 };
                 format!("{on}.{}", sig.name.name)
             }
-            _ => sig.name.name.clone(),
+            None => self.shown_fn(&sig.name.name),
         };
         let name = sig.name.name.clone();
         let duplicate = match (&owner, target) {

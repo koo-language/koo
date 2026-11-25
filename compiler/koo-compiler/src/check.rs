@@ -513,6 +513,20 @@ impl<'a> Checker<'a> {
     }
 
     /// A type's name as the program writes it: the prelude's `HttpRequest` is `http.Request`.
+    /// The name of a function as a program writes it: the prelude's `http__json` is the
+    /// `http.json` of a standard package. A function the prelude has for its own use
+    /// (`j__float`) keeps its name, which no program sees.
+    pub(crate) fn shown_fn(&self, name: &str) -> String {
+        match name.split_once("__") {
+            Some((package, function))
+                if self.in_prelude && package.len() > 1 && !function.is_empty() && !function.contains("__") =>
+            {
+                format!("{package}.{function}")
+            }
+            _ => name.to_string(),
+        }
+    }
+
     pub(crate) fn shown_name(&self, name: &str, prelude: bool) -> String {
         for (prefix, package) in [("Http", "http"), ("Sql", "sql"), ("Log", "log")] {
             if let Some(rest) = name.strip_prefix(prefix)
@@ -1458,7 +1472,7 @@ impl<'a> Checker<'a> {
         let id = self.sigs.len();
         let mut receiver = None;
         let display = match &sig.target {
-            ast::FnTarget::Free => sig.name.name.clone(),
+            ast::FnTarget::Free => self.shown_fn(&sig.name.name),
             ast::FnTarget::Method { .. } | ast::FnTarget::TypeLevel(_) => {
                 let (ty, kind) = match &sig.target {
                     ast::FnTarget::Method { kind, ty } => (ty.as_ref(), Some(*kind)),
