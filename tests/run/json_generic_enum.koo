@@ -1,0 +1,63 @@
+// An enumeration with type parameters has JSON for whatever its parameters are, if they
+// have: alone, inside itself, and as a field of a structure.
+
+enum Tree<T> {
+    Leaf { value: T }
+    Node { label: string, under: [Tree<T>] }
+    Empty
+}
+
+enum Outcome<T, E> {
+    Good { value: T }
+    Bad { why: E, tries: int? }
+}
+
+@json(rename: camel)
+enum Step<T> {
+    FirstStep { step_value: T? }
+    LastStep
+}
+
+type Item = { sku: string, qty: int = 1 }
+
+type Report = { outcome: Outcome<Item, string>, trees: [Tree<int>], last: Outcome<[int], Item>? }
+
+fn main() ! JsonError {
+    tree := Tree<int>.Node { label: "root", under: [Tree<int>.Leaf { value: 1 }, Tree<int>.Empty] }
+    text := tree.to_json()
+    print(text)
+    print(Tree<int>.from_json(text)?)
+    words: Tree<string> = Tree<string>.from_json("\{\"type\": \"leaf\", \"value\": \"a\"}")?
+    print(words)
+    good := Outcome<Item, string>.Good { value: Item { sku: "nails" } }
+    print(good.to_json())
+    print(Outcome<Item, string>.from_json("\{\"type\": \"bad\", \"why\": \"none left\"}")?)
+    report := Report { outcome: good, trees: [tree, Tree<int>.Empty], last: none }
+    print(report.to_json())
+    print(Report.from_json(report.to_json())?)
+    step := Step<float>.FirstStep { step_value: 1.5 }
+    print(step.to_json())
+    print(Step<float>.from_json("\{\"type\": \"first_step\"}")?)
+    print(Step<float>.from_json("\{\"type\": \"last_step\"}")?)
+    match Tree<int>.from_json("\{\"type\": \"node\", \"label\": \"x\", \"under\": [\{\"type\": \"leaf\", \"value\": \"one\"}]}") {
+        t => print(t)
+        ! e => print("{e.path}: {e.message}")
+    }
+    match Outcome<int, string>.from_json("\{\"type\": \"maybe\"}") {
+        o => print(o)
+        ! e => print("{e.path}: {e.message}")
+    }
+}
+
+//= {"type":"node","label":"root","under":[{"type":"leaf","value":1},{"type":"empty"}]}
+//= Node { label: "root", under: [Leaf { value: 1 }, Empty] }
+//= Leaf { value: "a" }
+//= {"type":"good","value":{"sku":"nails","qty":1}}
+//= Bad { why: "none left", tries: none }
+//= {"outcome":{"type":"good","value":{"sku":"nails","qty":1}},"trees":[{"type":"node","label":"root","under":[{"type":"leaf","value":1},{"type":"empty"}]},{"type":"empty"}]}
+//= Report { outcome: Good { value: Item { sku: "nails", qty: 1 } }, trees: [Node { label: "root", under: [Leaf { value: 1 }, Empty] }, Empty], last: none }
+//= {"type":"first_step","stepValue":1.5}
+//= FirstStep { step_value: none }
+//= LastStep
+//= /under/0/value: expected a whole number, found a string
+//= /type: expected one of "good", "bad", found "maybe"

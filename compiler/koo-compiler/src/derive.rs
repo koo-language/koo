@@ -75,6 +75,8 @@ struct Deriver<'a> {
     problems: Vec<(Span, String, String)>,
     unwritten: Vec<String>,
     enums: HashMap<&'a str, &'a EnumDecl>,
+    /// The enumerations with type parameters, each with the names of its parameters.
+    generic_enums: HashMap<&'a str, (Vec<&'a str>, &'a EnumDecl)>,
     aliases: HashMap<&'a str, &'a Type>,
     /// The types JSON is written for.
     ok: HashSet<&'a str>,
@@ -202,10 +204,12 @@ impl<'a> Deriver<'a> {
                 let name = path[0].name.as_str();
                 BUILT_IN.contains(&name) || self.ok.contains(name) || self.params.contains(&name)
             }
-            // A generic structure that has JSON, of types that have.
+            // A generic structure or enumeration that has JSON, of types that have.
             TypeKind::Named { path, args } if path.len() == 1 => {
                 let name = path[0].name.as_str();
-                self.generics.contains_key(name) && self.ok.contains(name) && args.iter().all(|arg| self.holds(arg))
+                (self.generics.contains_key(name) || self.generic_enums.contains_key(name))
+                    && self.ok.contains(name)
+                    && args.iter().all(|arg| self.holds(arg))
             }
             TypeKind::List(element) => self.holds(element),
             TypeKind::Optional(inner) => {
@@ -1018,8 +1022,20 @@ impl<'a> Deriver<'a> {
     }
 
     fn an_enum(&mut self, decl: &'a EnumDecl) {
-        let name = decl.name.name.as_str();
-        self.rename = self.renames.get(name).copied().unwrap_or(Rename::Snake);
+        let bare = decl.name.name.as_str();
+        self.rename = self.renames.get(bare).copied().unwrap_or(Rename::Snake);
+        // An enumeration with type parameters is written once, for whatever they are.
+        self.params = self
+            .generic_enums
+            .get(bare)
+            .map(|(params, _)| params.clone())
+            .unwrap_or_default();
+        let full = if self.params.is_empty() {
+            bare.to_string()
+        } else {
+            format!("{bare}<{}>", self.params.join(", "))
+        };
+        let name = full.as_str();
         let plain = decl.variants.iter().all(|variant| variant.fields.is_none());
         let mut writes = String::new();
         let mut reads = String::new();
@@ -1062,11 +1078,18 @@ impl<'a> Deriver<'a> {
                 )
             };
             // The tag is one of the keys, and is passed over like any the variant lacks.
+            // What reads a variant belongs to the type where the type has parameters,
+            // so that they are known where it is called.
+            let reader = if self.params.is_empty() {
+                format!("j__r{number}")
+            } else {
+                format!("{name}._json_r{number}")
+            };
             let _ = write!(
                 self.out,
-                "fn j__r{number}(text: string, at: var int) -> {name} ! JsonError {{\n{read}}}\n\n"
+                "fn {reader}(text: string, at: var int) -> {name} ! JsonError {{\n{read}}}\n\n"
             );
-            let _ = writeln!(reads, "        \"{tag}\" => {{ return j__r{number}(text, var at)? }}");
+            let _ = writeln!(reads, "        \"{tag}\" => {{ return {reader}(text, var at)? }}");
         }
         let _ = write!(
             self.out,
@@ -1096,6 +1119,7 @@ impl<'a> Deriver<'a> {
             );
         }
         self.entry_points(name);
+        self.params.clear();
     }
 }
 
@@ -1117,6 +1141,7 @@ pub fn derive(package: &File, json: bool, rows: bool, envs: bool) -> Derived {
         unwritten: Vec::new(),
         problems: Vec::new(),
         enums: HashMap::new(),
+        generic_enums: HashMap::new(),
         aliases: HashMap::new(),
         ok: HashSet::new(),
         readers: HashMap::new(),
@@ -1263,6 +1288,15 @@ pub fn derive(package: &File, json: bool, rows: bool, envs: bool) -> Derived {
                 deriver.enums.insert(&decl.name.name, decl);
                 order.push(&decl.name.name);
             }
+            ItemKind::Enum(decl)
+                if !decl.type_params.is_empty()
+                    && !hand_written.contains(decl.name.name.as_str())
+                    && !theirs.contains_key(decl.name.name.as_str()) =>
+            {
+                let params = decl.type_params.iter().map(|param| param.name.name.as_str()).collect();
+                deriver.generic_enums.insert(&decl.name.name, (params, decl));
+                order.push(&decl.name.name);
+            }
             // An error is sent as a struct is: an actor's method may fail with one.
             ItemKind::Error(decl) if !hand_written.contains(decl.name.name.as_str()) => match &decl.body {
                 ErrorBody::Fields(fields) => {
@@ -1344,6 +1378,15 @@ pub fn derive(package: &File, json: bool, rows: bool, envs: bool) -> Derived {
                 decl.variants
                     .iter()
                     .all(|variant| deriver.fields_hold(variant.fields.as_deref().unwrap_or(&[]), Some(rename)))
+            } else if let Some((params, decl)) = deriver.generic_enums.get(name).cloned() {
+                let rename = deriver.renames.get(name).copied().unwrap_or(Rename::Snake);
+                deriver.params = params;
+                let held = decl
+                    .variants
+                    .iter()
+                    .all(|variant| deriver.fields_hold(variant.fields.as_deref().unwrap_or(&[]), Some(rename)));
+                deriver.params.clear();
+                held
             } else {
                 handles.contains(&name)
             };
@@ -1368,6 +1411,8 @@ pub fn derive(package: &File, json: bool, rows: bool, envs: bool) -> Derived {
         } else if let Some(fields) = deriver.structs.get(name).copied() {
             deriver.a_struct(name, fields);
         } else if let Some(decl) = deriver.enums.get(name).copied() {
+            deriver.an_enum(decl);
+        } else if let Some((_, decl)) = deriver.generic_enums.get(name).cloned() {
             deriver.an_enum(decl);
         }
         // What the type has of its own takes the place of what was written for it.
