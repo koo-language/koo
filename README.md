@@ -6,7 +6,17 @@ Koo is a compiled programming language for backend services. It aims for the per
 
 ## Try it
 
-Koo runs on macOS and on Linux, on x86-64 and arm64. You need a recent stable Rust toolchain and clang 15 or newer on your `PATH` (`xcode-select --install` on macOS, `apt install clang` on Debian and Ubuntu). If your clang has another name, say so: `KOO_CLANG=clang-19`.
+Koo runs on macOS (arm64) and on Linux (x86-64 and arm64). It needs clang 15 or newer on your `PATH` to turn a program into an executable (`xcode-select --install` on macOS, `apt install clang` on Debian and Ubuntu). If your clang has another name, say so: `KOO_CLANG=clang-19`.
+
+**From a release.** There is no release yet. When there is one,
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/koo-language/koo/main/install.sh | sh
+```
+
+will fetch the compiler for your system, check it against its published checksum, and put it in `~/.koo/bin`. The Linux build is one static binary that runs on any distribution, whichever C library it has. A tag `v...` makes a release ([`release.yml`](.github/workflows/release.yml)).
+
+**From source**, which today is the only way, with a recent stable Rust toolchain:
 
 ```sh
 cargo build --release
@@ -138,6 +148,7 @@ The compiler implements the part of the language below and rejects everything el
 | Packages | A directory is a package: its files are one program and share one namespace. `koo run dir`, `koo test dir` |
 | Diagnostics | Every error says what is wrong, marks the place, points at the declaration or the earlier line that explains it, and shows the corrected line where there is one thing that was meant. A name that is nearly right gets a "did you mean". Syntax from other languages (`let`, `function`, `class`, `elif`, `&&`, `x++`, `'text'`, `null`, `try`, C's `for`, `int x = 5`, `.length`) is named for what it is and answered with the Koo that was meant |
 | Tooling | `koo run`, `koo build`, `koo check`, `koo test`, `koo parse`, with `--release`, `--emit-llvm`, `--sanitize` and `--sanitize=thread` |
+| Editors | Syntax highlighting for Visual Studio Code, in [`editors/vscode`](editors/vscode) |
 
 Not yet: importing one package of your own from another, the package manager, the rest of the standard library (SQL, time, an HTTP client; and in the server HTTPS, HTTP/2 and streamed bodies), interface values, tasks, channels and `select`, and of actors the generic ones, `try_send`, mailbox sizes and `spawn` inside one, `Decimal`, resources, `defer`, `==` on maps, variadic parameters, the WebAssembly targets, Linux and Windows (the compiler has only been run on macOS on Apple Silicon), the formatter and the language server.
 

@@ -1,0 +1,59 @@
+name: release
+
+# A tag `v...` makes a release: the compiler built for each system, each in an archive
+# that `install.sh` knows how to fetch.
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-latest
+            target: aarch64-apple-darwin
+            name: macos-arm64
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-musl
+            name: linux-x86_64
+          - os: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-musl
+            name: linux-arm64
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: clang (Linux)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends clang
+      - run: rustup toolchain install stable --profile minimal --target ${{ matrix.target }}
+      - run: cargo build --release -p koo --target ${{ matrix.target }}
+      # The binary that will be shipped builds a program and runs it, or nothing is shipped.
+      - run: ./target/${{ matrix.target }}/release/koo run --release examples/hello.koo
+      - name: archive
+        run: |
+          dir=koo-${{ matrix.name }}
+          mkdir -p "$dir/bin"
+          cp target/${{ matrix.target }}/release/koo "$dir/bin/"
+          cp LICENSE LICENSE-APACHE LICENSE-MIT README.md "$dir/"
+          tar -czf "$dir.tar.gz" "$dir"
+          shasum -a 256 "$dir.tar.gz" > "$dir.tar.gz.sha256"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: koo-${{ matrix.name }}
+          path: koo-${{ matrix.name }}.tar.gz*
+
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          merge-multiple: true
+      - run: gh release create "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --title "$GITHUB_REF_NAME" --generate-notes koo-*.tar.gz koo-*.tar.gz.sha256
+        env:
+          GH_TOKEN: ${{ github.token }}

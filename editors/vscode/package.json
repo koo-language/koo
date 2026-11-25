@@ -1,0 +1,28 @@
+{
+  "name": "koo",
+  "displayName": "Koo",
+  "description": "Syntax highlighting for the Koo programming language",
+  "version": "0.0.1",
+  "publisher": "koo-language",
+  "license": "Apache-2.0 OR MIT",
+  "repository": { "type": "git", "url": "https://github.com/koo-language/koo" },
+  "engines": { "vscode": "^1.75.0" },
+  "categories": ["Programming Languages"],
+  "contributes": {
+    "languages": [
+      {
+        "id": "koo",
+        "aliases": ["Koo", "koo"],
+        "extensions": [".koo"],
+        "configuration": "./language-configuration.json"
+      }
+    ],
+    "grammars": [
+      {
+        "language": "koo",
+        "scopeName": "source.koo",
+        "path": "./syntaxes/koo.tmLanguage.json"
+      }
+    ]
+  }
+}
