@@ -858,55 +858,76 @@ unsafe fn authenticate(conn: &mut Conn, db: &Db) -> bool {
     }
 }
 
-/// What `connect_in_place` leaves in place of an error when it did nothing.
-const NOT_HERE: i32 = -1;
-
-/// Connects as a handler of a server does: the connection is begun, and the server does
-/// other work until it is made, or refused, or the seconds are up. Returns whether it
-/// was made; if not, the error is where the system leaves errors, and is `NOT_HERE` if
-/// this is not a handler that can be left, and nothing was done.
-unsafe fn connect_in_place(fd: i32, target: &[u8; 16], target_len: u32, seconds: i32) -> bool {
+/// Connects a socket, giving the other side so many milliseconds to answer and not
+/// the minutes the system would wait. The connection is begun without waiting; then a
+/// handler of a server lets the server do other work until it is made, and anything
+/// else waits for it here. Returns whether it was made; if not, the error is where the
+/// system leaves errors, and is `SLOW` if the time ran out.
+unsafe fn connect_within(fd: i32, target: &[u8; 16], target_len: u32, milliseconds: i64) -> bool {
     unsafe {
         const F_GETFL: i32 = 3;
         const F_SETFL: i32 = 4;
         let non_blocking = if cfg!(target_os = "macos") { 0x4 } else { 0x800 };
         let in_progress = if cfg!(target_os = "macos") { 36 } else { 115 };
-        let timed_out = if cfg!(target_os = "macos") { 60 } else { 115 };
         let (level, error_of) = if cfg!(target_os = "macos") {
             (0xffff, 0x1007)
         } else {
             (1, 4)
         };
-        // Asked first whether there is any waiting here, with a wait that is over at once.
-        if fiber::wait(-1, false, 1) == fiber::Waited::NotHere {
-            *errno_location() = NOT_HERE;
-            return false;
-        }
         let flags = fcntl(fd, F_GETFL);
         fcntl(fd, F_SETFL, flags | non_blocking);
         let mut made = connect(fd, target.as_ptr(), target_len) == 0;
-        if !made && *errno_location() == in_progress {
-            let until = koo_now_nanos() + seconds as i64 * 1_000_000_000;
-            match fiber::wait(fd, true, until) {
-                fiber::Waited::Came => {
-                    let (mut error, mut len) = (0i32, 4u32);
-                    getsockopt(fd, level, error_of, &mut error, &mut len);
-                    made = error == 0;
-                    *errno_location() = error;
+        let mut failed_with = *errno_location();
+        if !made && failed_with == in_progress {
+            let until = koo_now_nanos() + milliseconds * 1_000_000;
+            let came = match fiber::wait(fd, true, until) {
+                fiber::Waited::Came => true,
+                fiber::Waited::TimeUp => false,
+                fiber::Waited::NotHere => {
+                    // 4 asks whether the socket can be written to, which is when the
+                    // connection is made or refused.
+                    let mut fds = PollFd {
+                        fd,
+                        events: 4,
+                        revents: 0,
+                    };
+                    let mut left = milliseconds;
+                    loop {
+                        let found = poll(&mut fds, 1, left.clamp(0, i32::MAX as i64) as i32);
+                        if found < 0 && *errno_location() == EINTR {
+                            left = (until - koo_now_nanos()) / 1_000_000;
+                            if left > 0 {
+                                continue;
+                            }
+                        }
+                        break found > 0;
+                    }
                 }
-                _ => *errno_location() = timed_out,
+            };
+            if came {
+                let (mut error, mut len) = (0i32, 4u32);
+                getsockopt(fd, level, error_of, &mut error, &mut len);
+                made = error == 0;
+                failed_with = error;
+            } else {
+                failed_with = SLOW;
             }
         }
-        let failed_with = *errno_location();
         fcntl(fd, F_SETFL, flags);
         *errno_location() = failed_with;
         made
     }
 }
 
-/// Connects to a host, giving it so many seconds to answer and not the minutes the
-/// system would wait. Returns the socket, or -1 with the reason written into `why`.
-pub(crate) unsafe fn dial(host: &[u8], port: u16, seconds: i32, why: &mut Buffer) -> i32 {
+/// What `connect_within` leaves in place of an error when the time ran out.
+const SLOW: i32 = -2;
+
+/// What `dial` returns for a server that did not answer in its time.
+pub(crate) const UNANSWERED: i32 = -2;
+
+/// Connects to a host, giving it so many milliseconds to answer. Returns the socket; or
+/// -1, or `UNANSWERED` if the time ran out, with the reason written into `why`.
+pub(crate) unsafe fn dial(host: &[u8], port: u16, milliseconds: i64, why: &mut Buffer) -> i32 {
     unsafe {
         let Some(address) = resolve(host) else {
             why.push(b"there is no address for the host `");
@@ -916,38 +937,24 @@ pub(crate) unsafe fn dial(host: &[u8], port: u16, seconds: i32, why: &mut Buffer
         };
         let fd = socket(AF_INET, SOCK_STREAM, 0);
         let (target, target_len) = socket_address(address, port);
-        let seconds = seconds.max(1);
-        let patience: [i64; 2] = [seconds as i64, 0];
-        if fd >= 0 {
-            if cfg!(target_os = "macos") {
-                setsockopt(fd, IPPROTO_TCP, 0x20, &seconds, 4);
-            } else {
-                setsockopt(fd, 1, 21, patience.as_ptr() as *const i32, 16);
-            }
-        }
-        let mut connected = fd >= 0 && connect_in_place(fd, &target, target_len, seconds);
-        if !connected && fd >= 0 && *errno_location() == NOT_HERE {
-            connected = connect(fd, target.as_ptr(), target_len) == 0;
-        }
-        if connected && !cfg!(target_os = "macos") {
-            let forever: [i64; 2] = [0, 0];
-            setsockopt(fd, 1, 21, forever.as_ptr() as *const i32, 16);
-        }
+        let milliseconds = milliseconds.max(1);
+        let connected = fd >= 0 && connect_within(fd, &target, target_len, milliseconds);
         if !connected {
-            // What the system calls a connection that was not answered in its time.
-            let slow = *errno_location() == if cfg!(target_os = "macos") { 60 } else { 115 };
+            let slow = fd >= 0 && *errno_location() == SLOW;
             why.push(b"cannot connect to ");
             why.push(host);
             let _ = write!(why, ":{port}: ");
-            if slow {
-                let _ = write!(why, "the server did not answer in {seconds} seconds");
+            if slow && milliseconds % 1000 == 0 {
+                let _ = write!(why, "the server did not answer in {} seconds", milliseconds / 1000);
+            } else if slow {
+                let _ = write!(why, "the server did not answer in {milliseconds} ms");
             } else {
                 why.push(system_error());
             }
             if fd >= 0 {
                 close(fd);
             }
-            return -1;
+            return if slow { UNANSWERED } else { -1 };
         }
         let on = 1i32;
         setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &on, 4);
@@ -982,7 +989,7 @@ unsafe fn establish(conn: &mut Conn, db: &Db) -> bool {
     unsafe {
         let host = db.host.bytes();
         let mut why = Buffer::new();
-        let fd = dial(host, db.port, 10, &mut why);
+        let fd = dial(host, db.port, 10_000, &mut why);
         if fd < 0 {
             failed(CONNECTION, &[&why.data[..why.len]]);
             return false;

@@ -5,10 +5,26 @@ import std/http
 import std/os
 import std/time
 
+actor Visits {
+    var seen: int = 0
+
+    fn one_more() -> int {
+        seen += 1
+        return seen
+    }
+}
+
 type Echo = { method: string, path: string, body: string, agent: string, kind: string, token: string }
 
 fn main() ! http.Error {
+    visits := Visits.start()
     var app := http.App.new()
+    // A handler that waits, and then asks an actor, which is in another process when
+    // the server has more than one worker.
+    app.get("/visit", req -> {
+        time.sleep(500ms)
+        return http.text("visit {visits.one_more()}\n")
+    })
     app.any("/echo", req -> http.json(Echo {
         method: req.method,
         path: req.path,

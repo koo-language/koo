@@ -1483,6 +1483,63 @@ fn handlers_wait_side_by_side() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// A server that is told to stop answers the requests it has in hand, even those whose
+/// handlers still have an actor to ask, which lives in the process that was told: it
+/// must go on answering for its actors until its workers are done, and then end, with
+/// status 0, and not wait for ever on workers that wait for it.
+#[test]
+fn a_stopping_server_answers_what_it_has_in_hand() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let dir = std::env::temp_dir().join(format!("koo-stopping-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let executable = dir.join("server");
+    let built = Command::new(env!("CARGO_BIN_EXE_koo"))
+        .arg("build")
+        .arg(root.join("tests/client/server.koo"))
+        .arg("-o")
+        .arg(&executable)
+        .output()
+        .expect("koo runs");
+    assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
+    for workers in [1, 3] {
+        let (mut server, port) = serve(&executable, workers, &dir);
+        let asked: Vec<_> = (0..6)
+            .map(|_| std::thread::spawn(move || get(port, "/visit")))
+            .collect();
+        std::thread::sleep(std::time::Duration::from_millis(150));
+        Command::new("kill")
+            .args(["-TERM", &server.0.id().to_string()])
+            .status()
+            .unwrap();
+        let mut numbers: Vec<String> = asked
+            .into_iter()
+            .map(|answer| {
+                let answer = answer.join().unwrap();
+                assert!(answer.starts_with("HTTP/1.1 200 "), "with {workers} workers: {answer}");
+                answer.rsplit("visit ").next().unwrap_or("").trim().to_string()
+            })
+            .collect();
+        numbers.sort();
+        assert_eq!(numbers, ["1", "2", "3", "4", "5", "6"], "with {workers} workers");
+        let started = std::time::Instant::now();
+        let status = loop {
+            if let Some(status) = server.0.try_wait().unwrap() {
+                break status;
+            }
+            assert!(
+                started.elapsed() < std::time::Duration::from_secs(10),
+                "with {workers} workers the server did not stop"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        };
+        assert!(
+            status.success(),
+            "with {workers} workers the server ended with {status}"
+        );
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 /// `http.get` and the rest ask a real server, which is `tests/client/server.koo`, and
 /// `tests/client/client.koo` prints what it says it prints.
 #[test]

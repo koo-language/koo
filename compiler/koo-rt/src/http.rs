@@ -1690,8 +1690,45 @@ mod imp {
         unsafe {
             loop {
                 if STOP {
-                    finish();
-                    return 0;
+                    // The workers are told to stop, and answer the requests they have
+                    // in hand before they end. A handler may ask an actor meanwhile,
+                    // and the actors live here: so they are answered until the last
+                    // worker has gone. To end the workers and wait for them without
+                    // answering would be to wait for ever on a worker that waits for
+                    // an answer. A worker that has not ended in thirty seconds is ended.
+                    if STOPPED_AT == 0 {
+                        STOPPED_AT = nanos();
+                        for &child in &CHILDREN[..CHILD_COUNT] {
+                            kill(child, SIGTERM);
+                        }
+                    }
+                    loop {
+                        let mut status = 0;
+                        let gone = waitpid(-1, &mut status, WNOHANG);
+                        if gone <= 0 {
+                            break;
+                        }
+                        if let Some(slot) = CHILDREN[..CHILD_COUNT].iter().position(|child| *child == gone) {
+                            CHILD_COUNT -= 1;
+                            CHILDREN[slot] = CHILDREN[CHILD_COUNT];
+                        }
+                    }
+                    if CHILD_COUNT > 0 && nanos() - STOPPED_AT > 30_000_000_000 {
+                        for &child in &CHILDREN[..CHILD_COUNT] {
+                            kill(child, 9);
+                            let mut status = 0;
+                            waitpid(child, &mut status, 0);
+                        }
+                        CHILD_COUNT = 0;
+                    }
+                    if CHILD_COUNT == 0 {
+                        finish();
+                        return 0;
+                    }
+                    if super::super::actor::pending(50) {
+                        return 2;
+                    }
+                    continue;
                 }
                 loop {
                     let mut status = 0;
@@ -1876,6 +1913,7 @@ mod imp {
                 exit(0);
             }
             STOP = false;
+            STOPPED_AT = 0;
         }
     }
 

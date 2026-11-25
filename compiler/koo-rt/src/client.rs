@@ -8,7 +8,7 @@
 //! The whole of a request has a time it may take. Each wait, for the connection, for
 //! the handshake, for the next piece of the answer, is given what is left of it.
 
-use super::pg::{Buf, dial, has_something, send_all};
+use super::pg::{Buf, UNANSWERED, dial, has_something, send_all};
 use super::thread::Lock;
 use super::thread::me;
 use super::tls::{self, AGAIN};
@@ -476,7 +476,6 @@ pub unsafe extern "C" fn koo_http_fetch(
 
         let started = koo_now_nanos();
         let deadline = started.saturating_add(nanos.max(1_000_000));
-        let seconds = ((nanos.max(0) / 1_000_000_000) + 1).min(i32::MAX as i64) as i32;
         let key = key_of(secure, host, port);
         // A request that may be made twice without harm is made again, once, if the
         // connection it went out on was one that had been kept and turned out to have
@@ -501,11 +500,14 @@ pub unsafe extern "C" fn koo_http_fetch(
                 Some((fd, tls)) => (line.fd, line.tls) = (fd, tls),
                 None => {
                     let mut why = Buffer::new();
-                    line.fd = dial(host, port, seconds, &mut why);
+                    let left = (deadline - koo_now_nanos()) / 1_000_000;
+                    line.fd = dial(host, port, left, &mut why);
                     if line.fd < 0 {
                         request.release();
-                        let slow = why.data[..why.len].ends_with(b"seconds");
-                        return failed(if slow { TIMEOUT } else { CONNECTION }, &[&why.data[..why.len]]);
+                        if line.fd == UNANSWERED {
+                            return failed(TIMEOUT, &[host, b" did not answer in the time it was given"]);
+                        }
+                        return failed(CONNECTION, &[&why.data[..why.len]]);
                     }
                     if secure {
                         line.wait_at_most();
