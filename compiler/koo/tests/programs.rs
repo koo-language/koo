@@ -118,7 +118,8 @@ fn programs_run_as_expected() {
 /// a Linux program for the architecture that was named, with everything linked in. On a
 /// machine of that kind the program is run as well. A compiler built without a target,
 /// or a machine without the linker, says which is missing, and then the test says so
-/// and checks nothing for that target.
+/// and checks nothing for that target; with `KOO_TEST_TARGETS` set, as where the
+/// compiler is built to be released, it fails instead.
 #[test]
 fn a_program_is_built_for_another_machine() {
     let koo = env!("CARGO_BIN_EXE_koo");
@@ -150,6 +151,7 @@ fn a_program_is_built_for_another_machine() {
             let built = build.env_remove("KOO_TARGET").output().expect("koo runs");
             let said = String::from_utf8_lossy(&built.stderr);
             if !built.status.success() && (said.contains("was built without") || said.contains("needs LLVM's linker")) {
+                assert!(std::env::var_os("KOO_TEST_TARGETS").is_none(), "{target}: {said}");
                 eprintln!("{target} is not checked: {said}");
                 continue;
             }

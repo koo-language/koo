@@ -235,7 +235,7 @@ pub fn missing() -> &'static [u8] {
     if cfg!(target_os = "macos") {
         b"TLS needs OpenSSL, which was not found: install it with `brew install openssl@3`"
     } else {
-        b"TLS needs the system's OpenSSL, `libssl.so.3`, which was not found, or cannot be loaded because the program was built with `--static`: install `libssl3`, or build the program without `--static`"
+        b"TLS needs the system's OpenSSL, `libssl.so.3`, which was not found, or cannot be loaded because the program was built with `--static` or `--target`: install `libssl3`, or build the program without those options"
     }
 }
 

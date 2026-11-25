@@ -86,7 +86,7 @@ fn linker() -> Result<std::ffi::OsString, String> {
         };
     }
     let mut candidates: Vec<std::ffi::OsString> = vec!["ld.lld".into()];
-    candidates.extend((15..=22).rev().map(|version| format!("ld.lld-{version}").into()));
+    candidates.extend((15..=30).rev().map(|version| format!("ld.lld-{version}").into()));
     for prefix in ["/opt/homebrew/opt", "/usr/local/opt"] {
         candidates.extend(["lld", "llvm"].map(|formula| format!("{prefix}/{formula}/bin/ld.lld").into()));
     }
