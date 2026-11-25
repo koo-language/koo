@@ -420,13 +420,14 @@ A request of another server returns a `http.Reply`:
 
 | | |
 | --- | --- |
-| `http.get(url: string, headers: [string: string] = [:], timeout: Duration = 30s) -> http.Reply ! http.Error` | asks for what is at a URL |
+| `http.get(url: string, headers: [string: string] = [:], timeout: Duration = 30s, redirects: int = 0) -> http.Reply ! http.Error` | asks for what is at a URL, and follows up to `redirects` answers that send it elsewhere |
 | `http.delete(url, headers, timeout)` | the same, with the method `DELETE` |
 | `http.post(url: string, body: string, content_type: string = "application/json", headers: [string: string] = [:], timeout: Duration = 30s) -> http.Reply ! http.Error` | sends a body |
 | `http.put(url, body, content_type, headers, timeout)`, `http.patch(...)` | the same, with those methods |
-| `http.fetch(method: string, url: string, body: string = "", headers: [string: string] = [:], timeout: Duration = 30s) -> http.Reply ! http.Error` | a request with any method |
+| `http.fetch(method: string, url: string, body: string = "", headers: [string: string] = [:], timeout: Duration = 30s, bytes: [byte] = [], redirects: int = 0) -> http.Reply ! http.Error` | a request with any method; `bytes`, if it is not empty, is the body in place of `body`, for one that is not text |
 | `reply.status`, `reply.headers`, `reply.body` | fields: the status, the headers by their names in lower case, and the body |
 | `reply.header(name: string) -> string?` | a header, however its name is written |
+| `reply.bytes() -> [byte]` | the body as the bytes it is; `reply.body` has U+FFFD for what is not text |
 | `reply.ok() -> bool` | whether the status is from 200 to 299 |
 | `reply.json() -> T ! JsonError` | the body, as the type that the context expects |
 

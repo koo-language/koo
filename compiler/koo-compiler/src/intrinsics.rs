@@ -306,6 +306,16 @@ pub const INTRINSICS: &[Intrinsic] = &[
         ret: I::Str,
     },
     Intrinsic {
+        name: "http_reply_text",
+        params: &[],
+        ret: I::Bool,
+    },
+    Intrinsic {
+        name: "http_reply_raw",
+        params: &[],
+        ret: I::Str,
+    },
+    Intrinsic {
         name: "http_reply_body",
         params: &[],
         ret: I::Str,

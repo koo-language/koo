@@ -1980,7 +1980,15 @@ fn (self: var [T]) shuffle() {
 
 /// The answer of another server to a request that this program made. The names of the
 /// headers are in lower case.
-type HttpReply = { status: int, headers: [string: string], body: string }
+///
+/// A body that is not text is kept apart, in `_raw`, as the bytes it is.
+type HttpReply = { status: int, headers: [string: string], body: string, _raw: [byte] = [] }
+
+/// The body as the bytes it is, for an answer that is not text: a picture, an archive.
+fn (self: HttpReply) bytes() -> [byte] {
+    if self._raw.len > 0 { return self._raw }
+    return self.body.bytes()
+}
 
 /// A header of the answer, however its name is written.
 fn (self: HttpReply) header(name: string) -> string? {
@@ -1999,13 +2007,79 @@ fn (self: HttpReply) json<T>() -> T ! JsonError {
 
 /// Makes a request of another server, and returns its answer, whatever its status. The
 /// whole of it, from finding the server to the last of the body, has `timeout` to take.
-fn http__fetch(method: string, url: string, body: string = "", headers: [string: string] = [:], timeout: Duration = 30s) -> HttpReply ! HttpError {
+fn http__fetch(method: string, url: string, body: string = "", headers: [string: string] = [:], timeout: Duration = 30s, bytes: [byte] = [], redirects: int = 0) -> HttpReply ! HttpError {
+    // A body of bytes that need not be text goes out as it is; the text made of it
+    // here is no program's.
+    var sent := body
+    if bytes.len > 0 { sent = __bytes_to_str(bytes) }
+    started := __uptime()
+    var verb := method
+    var at := url
+    var carried := headers
+    var left := redirects
+    while true {
+        // One time for the whole of it, however many servers it is sent on to.
+        reply := h__once(verb, at, sent, carried, timeout.nanos() - (__uptime() - started))?
+        moved := reply.status == 301 or reply.status == 302 or reply.status == 303 or reply.status == 307 or reply.status == 308
+        if not moved or left <= 0 { return reply }
+        to := reply.header("location") else return reply
+        next := h__toward(at, to)
+        // A request that was sent in secret is not sent on in the open.
+        if at.to_lower().starts_with("https://") and not next.to_lower().starts_with("https://") { return reply }
+        // What was meant for one server, to say who is asking, is not given to another.
+        if h__origin(next) != h__origin(at) {
+            var kept: [string: string] = [:]
+            for (name, value) in carried {
+                lower := name.to_lower()
+                if lower != "authorization" and lower != "cookie" and lower != "proxy-authorization" {
+                    kept[name] = value
+                }
+            }
+            carried = kept
+        }
+        // "See other", and a form that was posted and has moved, are fetched.
+        if reply.status == 303 or ((reply.status == 301 or reply.status == 302) and verb == "POST") {
+            verb = "GET"
+            sent = ""
+        }
+        at = next
+        left -= 1
+    }
+    return h__once(verb, at, sent, carried, 0)?
+}
+
+/// The scheme, the host and the port of an address: `https://example.com:8443`.
+fn h__origin(url: string) -> string {
+    start := (url.find("://") else return url) + 3
+    rest := url.slice(start, url.len)
+    end := rest.find("/") else rest.len
+    return url.slice(0, start + end).to_lower()
+}
+
+/// Where a redirection leads from an address: another address, a path on the same
+/// server, or a path beside the one that was asked for.
+fn h__toward(from: string, to: string) -> string {
+    if to.find("://") != none { return to }
+    origin := h__origin(from)
+    if to.starts_with("//") { return origin.slice(0, (origin.find("://") else 0) + 1) + to }
+    if to.starts_with("/") { return origin + to }
+    var path := from.slice(origin.len, from.len)
+    if end := path.find("?") { path = path.slice(0, end) }
+    var last := 0
+    for i in 0..path.len {
+        if path.slice(i, i + 1) == "/" { last = i + 1 }
+    }
+    return origin + path.slice(0, last) + (if last == 0 { "/" } else { "" }) + to
+}
+
+/// One request and its answer.
+fn h__once(method: string, url: string, body: string, headers: [string: string], nanos: int) -> HttpReply ! HttpError {
     var pairs: [string] = []
     for (name, value) in headers {
         pairs.push(name)
         pairs.push(value)
     }
-    if not __http_fetch(method, url, pairs, body, timeout.nanos()) {
+    if not __http_fetch(method, url, pairs, body, nanos) {
         kind := match __http_reply_kind() {
             1 => HttpErrorKind.Address
             3 => HttpErrorKind.Timeout
@@ -2025,7 +2099,9 @@ fn http__fetch(method: string, url: string, body: string = "", headers: [string:
             }
         }
     }
-    return HttpReply { status: __http_reply_status(), headers: found, body: __http_reply_body() }
+    var raw: [byte] = []
+    if not __http_reply_text() { raw = __str_bytes(__http_reply_raw()) }
+    return HttpReply { status: __http_reply_status(), headers: found, body: __http_reply_body(), _raw: raw }
 }
 
 fn h__typed(headers: [string: string], content_type: string) -> [string: string] {
@@ -2036,8 +2112,8 @@ fn h__typed(headers: [string: string], content_type: string) -> [string: string]
     return all
 }
 
-fn http__get(url: string, headers: [string: string] = [:], timeout: Duration = 30s) -> HttpReply ! HttpError {
-    return http__fetch("GET", url, "", headers, timeout)?
+fn http__get(url: string, headers: [string: string] = [:], timeout: Duration = 30s, redirects: int = 0) -> HttpReply ! HttpError {
+    return http__fetch("GET", url, "", headers, timeout, redirects: redirects)?
 }
 
 fn http__delete(url: string, headers: [string: string] = [:], timeout: Duration = 30s) -> HttpReply ! HttpError {

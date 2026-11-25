@@ -37,6 +37,25 @@ fn main() ! http.Error | JsonError {
     print(http.get(base + "/cookie")?.header("set-cookie"))
     show("slow", http.get(base + "/slow", timeout: 500ms))
     show("slow enough", http.get(base + "/slow", timeout: 5s))
+    // A body that is not text, in an answer and in a request.
+    blob := http.get(base + "/blob")?
+    print("{blob.bytes()} {blob.body.len}")
+    mirrored := http.fetch("POST", base + "/mirror", bytes: blob.bytes())?
+    print("{mirrored.bytes() == blob.bytes()} {mirrored.header("content-type") else ""} {http.get(base + "/echo")?.bytes().len > 0}")
+    // An answer that sends the client elsewhere is an answer, unless it is followed.
+    print(http.get(base + "/moved")?.status)
+    follow: Echo = http.get(base + "/moved/twice", redirects: 3)?.json()?
+    print("{follow.method} {follow.path}")
+    print(http.get(base + "/moved/twice", redirects: 1)?.status)
+    print(http.get(base + "/loop", redirects: 4)?.status)
+    other: Echo = http.fetch("POST", base + "/see-other", body: "x", redirects: 1)?.json()?
+    kept: Echo = http.fetch("POST", base + "/kept", body: "x", redirects: 1)?.json()?
+    print("{other.method} `{other.body}`, {kept.method} `{kept.body}`")
+    print(http.get(base + "/dir/page", redirects: 1)?.body)
+    // What says who is asking goes to the server it was meant for, and no other.
+    who := ["Authorization": "Bearer s3cret", "X-Token": "t"]
+    print(http.get(base + "/same", headers: who, redirects: 1)?.body)
+    print(http.get(base + "/away", headers: who, redirects: 1)?.body)
     // What is left of a budget may be nothing, or less.
     show("no time", http.get(base + "/echo", timeout: 0s))
     show("less than none", http.get(base + "/echo", timeout: -3s))
@@ -60,6 +79,16 @@ fn main() ! http.Error | JsonError {
 //= a=1; Path=/; HttpOnly; SameSite=Lax, b=2; Path=/; HttpOnly; SameSite=Lax
 //= slow: Timeout: localhost did not answer in the time it was given
 //= slow enough: 200 true 5 bytes, text/plain; charset=utf-8
+//= [0, 255, 10] 5
+//= true image/png true
+//= 302
+//= GET /echo
+//= 302
+//= 302
+//= GET ``, POST `x`
+//= beside, with 1
+//= Bearer s3cret, t
+//= nobody, t
 //= no time: Timeout: localhost was given no time to answer
 //= less than none: Timeout: localhost was given no time to answer
 //= refused: Connection: cannot connect to localhost:1: Connection refused

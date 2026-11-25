@@ -704,6 +704,22 @@ pub unsafe extern "C" fn koo_http_reply_headers() -> *mut Header {
     unsafe { str_from_outside(reply().headers.bytes()) }
 }
 
+/// Whether the body of the last answer is text, in UTF-8.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn koo_http_reply_text() -> bool {
+    unsafe { core::str::from_utf8(reply().body.bytes()).is_ok() }
+}
+
+/// The body of the last answer as the bytes it is. What is returned is not text that a
+/// program may have: the prelude makes a list of bytes of it at once.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn koo_http_reply_raw() -> *mut Header {
+    unsafe {
+        let body = reply().body.bytes();
+        crate::koo_str_from_bytes(body.as_ptr(), body.len() as i64)
+    }
+}
+
 /// The body of the last answer, which the thread then no longer keeps.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn koo_http_reply_body() -> *mut Header {

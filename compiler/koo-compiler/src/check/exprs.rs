@@ -1291,9 +1291,19 @@ impl<'a> Checker<'a> {
             }
             return self.unknown(span);
         };
+        // A type of the library with something hidden in it is made by the library,
+        // unless what is hidden has a default and the rest is the program's to give.
+        let sealed = |checker: &Self, id: StructId| {
+            checker.is_opaque(&Ty::Struct(id))
+                && checker.program.structs[id]
+                    .fields
+                    .iter()
+                    .zip(&checker.defaults[id])
+                    .any(|(field, default)| field.name.starts_with('_') && default.is_none())
+        };
         if let Target::Struct(id) = target
             && !self.body_in_prelude
-            && (self.is_opaque(&Ty::Struct(id)) || self.handles.contains(&id))
+            && (sealed(self, id) || self.handles.contains(&id))
         {
             let name = self.ty_name(&Ty::Struct(id));
             let help = if self.is_time_type(&Ty::Struct(id)) {
@@ -1338,10 +1348,24 @@ impl<'a> Checker<'a> {
                 (def.fields.clone(), Vec::new(), def.name.clone())
             }
         };
+        // What a type of the library keeps hidden is not a program's to give either.
+        let hidden = |checker: &Self, name: &str| {
+            name.starts_with('_')
+                && !checker.body_in_prelude
+                && matches!(target, Target::Struct(id) if id < checker.prelude_types.0)
+        };
         let mut given: HashMap<usize, Expr> = HashMap::new();
         for field in fields {
-            let Some(index) = defs.iter().position(|d| d.name == field.name.name) else {
-                let known = defs.iter().map(|d| d.name.clone()).collect();
+            let found = defs
+                .iter()
+                .position(|d| d.name == field.name.name)
+                .filter(|_| !hidden(self, &field.name.name));
+            let Some(index) = found else {
+                let known = defs
+                    .iter()
+                    .map(|d| d.name.clone())
+                    .filter(|name| !hidden(self, name))
+                    .collect();
                 let shown = match target {
                     Target::Struct(id) => self.ty_name(&Ty::Struct(id)),
                     _ => type_name.clone(),

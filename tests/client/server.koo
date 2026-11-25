@@ -1,6 +1,7 @@
 // The server that `client.koo` asks (`a_program_asks_another_server` in
 // compiler/koo/tests/programs.rs). It listens where PORT says.
 
+import std/encoding
 import std/http
 import std/os
 import std/time
@@ -177,6 +178,19 @@ fn main() ! http.Error {
         time.sleep(300ms)
         return http.text("rested\n")
     })
+    // Bodies that are not text, and answers that send the client elsewhere.
+    app.get("/blob", req -> http.bytes(encoding.from_hex("00ff0a") else []))
+    app.post("/mirror", req -> http.bytes(req.bytes(), content_type: "image/png"))
+    app.get("/moved", req -> http.redirect("/echo"))
+    app.get("/moved/twice", req -> http.redirect("/moved"))
+    app.get("/loop", req -> http.redirect("/loop"))
+    app.post("/see-other", req -> http.redirect("/echo", status: 303))
+    app.post("/kept", req -> http.redirect("/echo", status: 307))
+    app.get("/dir/page", req -> http.redirect("other?x=1"))
+    app.get("/dir/other", req -> http.text("beside, with {req.query("x") else "nothing"}"))
+    app.get("/whoami", req -> http.text("{req.header("Authorization") else "nobody"}, {req.header("X-Token") else "no token"}"))
+    app.get("/same", req -> http.redirect("/whoami"))
+    app.get("/away", req -> http.redirect("http://127.0.0.1:{port}/whoami"))
     app.get("/list", req -> http.json([3, 1, 2]))
     app.get("/table", req -> http.json(["nails": 1.5, "glue": 4.0]))
     app.get("/big", req -> http.text("0123456789".repeat(300000)))
