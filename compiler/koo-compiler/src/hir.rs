@@ -173,6 +173,9 @@ pub struct Function {
     pub captures: Vec<LocalId>,
     /// Whether the function comes from the prelude, whose source is not the program's.
     pub prelude: bool,
+    /// Whether it is a function of the library that is told where it was called: its
+    /// last parameter, `location`, is the compiler's to give.
+    pub located: bool,
 }
 
 #[derive(Debug, Clone, Default)]

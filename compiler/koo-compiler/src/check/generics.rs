@@ -725,6 +725,12 @@ impl<'a> Checker<'a> {
         self.type_env = saved;
 
         let id = self.sigs.len();
+        // What the compiler writes for a program's types has no generic function, so
+        // one of the prelude's is the library's own.
+        let located = prelude && super::takes_location(&params);
+        if located {
+            self.located.insert(id);
+        }
         self.sigs.push(FnSig {
             name: display.clone(),
             receiver,
@@ -740,6 +746,7 @@ impl<'a> Checker<'a> {
             body: Block::default(),
             span: decl.sig.span,
             prelude,
+            located,
             ..Function::default()
         });
         self.fn_instances.insert((template, args), id);
@@ -835,8 +842,11 @@ impl<'a> Checker<'a> {
                     };
                     self.type_env = saved;
                     let sig = self.sigs[found].clone();
-                    let same_params = sig.params.len() == wanted_params.len()
-                        && sig.params.iter().zip(&wanted_params).all(|(have, (kind, ty))| {
+                    // The place a function of the library is told is no parameter of
+                    // the method as a program sees it.
+                    let seen = sig.params.len() - usize::from(self.located.contains(&found));
+                    let same_params = seen == wanted_params.len()
+                        && sig.params[..seen].iter().zip(&wanted_params).all(|(have, (kind, ty))| {
                             have.ty == *ty && (have.kind == ParamKind::Var) == (*kind == ParamKind::Var)
                         });
                     if !same_params || !self.can_coerce(&sig.ret, &wanted_ret) {

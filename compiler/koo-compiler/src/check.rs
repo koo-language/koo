@@ -5,7 +5,7 @@
 //! yet; nothing is accepted and then compiled wrongly.
 
 use std::cell::OnceCell;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use koo_syntax::ast;
 use koo_syntax::{Diagnostic, Span};
@@ -53,9 +53,11 @@ pub fn check<'a>(
     // them, and stands with the prelude: it may use what only the prelude may, and a
     // mistake in it is the compiler's.
     checker.in_prelude = true;
+    checker.in_derived = true;
     let mut prelude_bodies = prelude_bodies;
     prelude_bodies.extend(checker.declare_file(derived));
     checker.in_prelude = false;
+    checker.in_derived = false;
     checker.finish(file, prelude_bodies, bodies);
     // What goes wrong in a function the compiler wrote for a type follows from a mistake
     // in the type, which is the one to report.
@@ -170,6 +172,15 @@ pub(crate) struct Checker<'a> {
     plain_generic_methods: HashMap<(Owner, String), (usize, bool)>,
     /// Whether the declarations being read are the prelude's.
     in_prelude: bool,
+    /// Whether what is being declared is what the compiler wrote for the program's own
+    /// types and actors (`derive.rs`), which stands with the prelude but has the
+    /// program's names in it.
+    in_derived: bool,
+    /// The functions of the library that are told where they were called: the last
+    /// parameter of each, `location`, is filled in by the compiler and is no
+    /// program's to give. A function the compiler wrote for an actor is not one,
+    /// whatever its parameters are called.
+    located: HashSet<FnId>,
     // Lambdas (see `check/lambdas.rs`).
     /// The functions around the lambda being checked, outermost first.
     enclosing: Vec<lambdas::Enclosing>,
@@ -274,6 +285,8 @@ impl<'a> Checker<'a> {
             interfaces: HashMap::new(),
             plain_generic_methods: HashMap::new(),
             in_prelude: false,
+            in_derived: false,
+            located: HashSet::new(),
             enclosing: Vec::new(),
             lambda: None,
             next_lambda_is_block: false,
@@ -1586,6 +1599,10 @@ impl<'a> Checker<'a> {
             }
             self.free_fns.insert(name.clone(), id);
         }
+        let located = self.in_prelude && !self.in_derived && takes_location(&params);
+        if located {
+            self.located.insert(id);
+        }
         self.sigs.push(FnSig {
             name: display.clone(),
             receiver,
@@ -1600,6 +1617,7 @@ impl<'a> Checker<'a> {
             ret,
             body: Block::default(),
             span: sig.span,
+            located,
             ..Function::default()
         });
         Some(id)
@@ -1690,6 +1708,7 @@ impl<'a> Checker<'a> {
             body,
             span: decl.sig.span,
             prelude: self.body_in_prelude,
+            located: self.located.contains(&id),
             ..Function::default()
         }
     }
@@ -2970,4 +2989,12 @@ fn fn_key(sig: &ast::FnSig) -> String {
         _ => "",
     };
     format!("fn {owner}.{}", sig.name.name)
+}
+
+/// Whether the last of a function's parameters is the place it was called from, as a
+/// function of the library declares it: `location: string`.
+fn takes_location(params: &[ParamSig]) -> bool {
+    params
+        .last()
+        .is_some_and(|last| last.name == "location" && last.ty == Ty::Str)
 }

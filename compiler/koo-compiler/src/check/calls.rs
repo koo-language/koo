@@ -1008,12 +1008,13 @@ impl<'a> Checker<'a> {
         names: &[String],
         args: &'e [ast::Arg],
         at: Option<Span>,
+        located: bool,
     ) -> (Vec<Option<&'e ast::Arg>>, bool) {
         let mut slots: Vec<Option<&ast::Arg>> = vec![None; names.len()];
         // A function of the library may end with a parameter for where it was called
         // from, which the compiler fills in (`finish_call`): it is not a program's to
         // give, by its name or by its place.
-        let hidden = at.is_none() && !self.body_in_prelude && names.last().is_some_and(|last| last == "location");
+        let hidden = located && !self.body_in_prelude;
         let names = &names[..names.len() - usize::from(hidden)];
         let mut positional = 0;
         let mut paired = true;
@@ -1077,7 +1078,8 @@ impl<'a> Checker<'a> {
         let names: Vec<String> = self.sigs[id].params.iter().map(|p| p.name.clone()).collect();
         let function = self.sigs[id].name.clone();
         let at = self.sigs[id].at.map(|at| at.name);
-        let (slots, paired) = self.match_args(&function, &names, args, at);
+        let located = self.located.contains(&id);
+        let (slots, paired) = self.match_args(&function, &names, args, at, located);
         let checked = vec![None; slots.len()];
         self.finish_call(id, receiver, slots, checked, paired, span)
     }
@@ -1136,7 +1138,7 @@ impl<'a> Checker<'a> {
             let Some(arg) = slot else {
                 // A function of the standard library that reports where it was called
                 // from takes that as a last parameter, which the call does not write.
-                if param.name == "location" && param.ty == Ty::Str && sig.at.is_none() {
+                if index + 1 == sig.params.len() && self.located.contains(&id) {
                     // Where the program called the library is what a function of the
                     // library passes on to another: its own place is of no use to
                     // anyone. One that was not told has nothing to pass on.
@@ -1360,6 +1362,7 @@ impl<'a> Checker<'a> {
         let implicit = t.implicit.clone();
         let display = t.display.clone();
         let at = (!t.prelude).then_some(decl.sig.name.span);
+        let of_prelude = t.prelude;
         if let Some(receiver) = &receiver
             && let ast::FnTarget::Method { ty: Some(pattern), .. } = &decl.sig.target
         {
@@ -1368,7 +1371,15 @@ impl<'a> Checker<'a> {
         }
         let param_names: Vec<String> = decl.sig.params.iter().map(|p| p.name.name.clone()).collect();
         let reported = self.diags.len();
-        let (slots, paired) = self.match_args(&display, &param_names, args, at);
+        // A generic function of the prelude that ends with `location: string` is told
+        // where it was called (`check.rs`, `takes_location`).
+        let located = of_prelude
+            && decl.sig.params.last().is_some_and(|last| {
+                last.name.name == "location"
+                    && matches!(&last.ty.kind, ast::TypeKind::Named { path, args }
+                        if path.len() == 1 && args.is_empty() && path[0].name == "string")
+            });
+        let (slots, paired) = self.match_args(&display, &param_names, args, at, located);
         let mut checked: Vec<Option<Expr>> = vec![None; slots.len()];
         for (index, param) in decl.sig.params.iter().enumerate() {
             let Some(arg) = slots[index] else { continue };

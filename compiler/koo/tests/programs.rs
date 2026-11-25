@@ -1608,6 +1608,13 @@ fn a_stopping_server_answers_what_it_has_in_hand() {
             got.ends_with("\r\n\r\n[97, 195, 191]\n"),
             "with {workers} workers: {got}"
         );
+        for _ in 0..4 {
+            let got = get(port, "/after");
+            assert!(
+                got.ends_with("\r\n\r\n{\"value\":null}"),
+                "with {workers} workers: {got}"
+            );
+        }
         let got = get(port, "/gone");
         assert!(got.ends_with("\r\n\r\nfalse\n"), "with {workers} workers: {got}");
         // With several workers, one that runs out of stack answers 500 and is

@@ -838,11 +838,8 @@ impl<'a> Gen<'a> {
             }
             self.f.locals[index] = Some(slot);
         }
-        if function.prelude && !function.name.starts_with("test.") {
-            self.f.called_from = function.locals[..function.params]
-                .iter()
-                .position(|local| local.name == "location" && local.ty == Ty::Str)
-                .and_then(|index| self.f.locals[index].clone());
+        if function.located && function.params > 0 && !function.name.starts_with("test.") {
+            self.f.called_from = self.f.locals[function.params - 1].clone();
         }
 
         self.block_body(&function.body, None);

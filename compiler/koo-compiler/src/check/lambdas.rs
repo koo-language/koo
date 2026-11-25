@@ -232,6 +232,7 @@ impl<'a> Checker<'a> {
             closure: true,
             captures: function.inner_captures,
             prelude: self.body_in_prelude,
+            located: false,
         });
         Expr {
             kind: ExprKind::Closure {

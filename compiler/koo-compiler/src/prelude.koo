@@ -1578,7 +1578,10 @@ fn (self: HttpRequest) json<T>() -> T ! JsonError {
 
 /// A response. `headers` holds whole header lines. If `file` names a file, the file is
 /// the body.
-type HttpResponse = { status: int, content_type: string, headers: string, body: string, file: string = "" }
+///
+/// A body of bytes that need not be text is kept apart, in `_raw`, where no program
+/// can take it for a string.
+type HttpResponse = { status: int, content_type: string, headers: string, body: string, file: string = "", _raw: [byte] = [] }
 
 /// The response with one more header. A line break in a name or a value would begin
 /// another header, so there is none in what is sent. The type of the body is one
@@ -1595,6 +1598,7 @@ fn (self: HttpResponse) header(name: string, value: string) -> HttpResponse {
                 headers: self.headers,
                 body: self.body,
                 file: self.file,
+                _raw: self._raw,
             }
         }
         // A header has a name.
@@ -1607,6 +1611,7 @@ fn (self: HttpResponse) header(name: string, value: string) -> HttpResponse {
         headers: "{self.headers}{name_sent}: {value_sent}\r\n",
         body: self.body,
         file: self.file,
+        _raw: self._raw,
     }
 }
 
@@ -1627,6 +1632,7 @@ fn (self: HttpResponse) with_status(status: int) -> HttpResponse {
         headers: self.headers,
         body: self.body,
         file: self.file,
+        _raw: self._raw,
     }
 }
 
@@ -1647,7 +1653,7 @@ fn http__send(body: string, content_type: string, status: int = 200) -> HttpResp
 
 /// A response whose body is bytes that need not be text, of the type that is said.
 fn http__bytes(body: [byte], content_type: string = "application/octet-stream", status: int = 200) -> HttpResponse {
-    return HttpResponse { status, content_type, headers: "", body: __bytes_to_str(body) }
+    return HttpResponse { status, content_type, headers: "", body: "", _raw: body }
 }
 
 /// A response that is a value as JSON.
@@ -1817,7 +1823,10 @@ fn h__answer(handler: fn(HttpRequest) -> HttpResponse ! Failure, request: HttpRe
     id := request._id
     match handler(request) {
         response => {
-            if response.file == "" {
+            if response._raw.len > 0 {
+                // Bytes go out as they are; the text made of them here is no program's.
+                __http_respond(id, response.status, response.content_type, response.headers, __bytes_to_str(response._raw))
+            } else if response.file == "" {
                 __http_respond(id, response.status, response.content_type, response.headers, response.body)
             } else {
                 __http_respond_file(id, response.status, response.content_type, response.headers, response.file)

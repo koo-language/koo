@@ -259,11 +259,7 @@ impl Checker<'_> {
         }));
         // The arithmetic of durations and times panics as that of numbers does, and
         // says where: the methods are told the place of the operator.
-        if self.sigs[id]
-            .params
-            .last()
-            .is_some_and(|last| last.name == "location" && last.ty == Ty::Str)
-        {
+        if self.located.contains(&id) {
             let kind = self.call_location();
             args.push(Arg {
                 kind: ParamKind::Borrow,

@@ -5,12 +5,21 @@ import std/http
 import std/os
 import std/time
 
+error Refused
+
+type Reading = { value: float }
+
 actor Visits {
     var seen: int = 0
 
     fn one_more() -> int {
         seen += 1
         return seen
+    }
+
+    // A method that may fail and has nothing to return when it does not.
+    fn allowed(n: int) ! Refused {
+        if n < 0 { fail Refused }
     }
 
     // Bytes go to another process and back as they are.
@@ -133,6 +142,13 @@ fn main() ! http.Error {
         return http.text("{room.one_more()}\n")
     })
     app.get("/pinned", req -> http.text("{Pinned.start(at: (1, 2)).sum()}\n"))
+    // After an actor in another process is asked, what is written as JSON is for
+    // anyone again: a float that is not a number is `null`.
+    app.get("/after", req -> {
+        visits.allowed(1)?
+        zero := float.parse(req.query("zero") else "0") else 0.0
+        return http.json(Reading { value: zero / zero })
+    })
     app.get("/bytes", req -> http.text("{visits.same_bytes("a\u{ff}".bytes())}\n"))
     app.get("/ratio", req -> {
         done := float.parse(req.query("done") else "0") else 0.0

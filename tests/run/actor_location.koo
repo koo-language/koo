@@ -1,0 +1,105 @@
+// A parameter of a program's own that is called `location` is a parameter like any
+// other, of a method of an actor and of what an actor is started with; and a method
+// of the library that is told where it was called is, to an interface, the method a
+// program sees.
+
+import std/time
+
+actor Tracker {
+    location: string
+
+    fn at() -> string {
+        return location
+    }
+}
+
+actor Robot {
+    var moves: int = 0
+
+    fn move_to(location: string) -> string {
+        moves += 1
+        return "to the {location}"
+    }
+
+    fn note(location: string) {
+        moves += 1
+    }
+
+    fn moves() -> int {
+        return moves
+    }
+
+}
+
+interface Cut {
+    fn slice(from: int, to: int) -> string
+}
+
+fn first_two<T: Cut>(text: T) -> string {
+    return text.slice(0, 2)
+}
+
+interface Power {
+    fn pow(exponent: int) -> int
+}
+
+fn squared<T: Power>(x: T) -> int {
+    return x.pow(2)
+}
+
+// An actor that tells a slower one, whose mail holds four: it is held to the pace of
+// the slower, however many it tells.
+@mailbox(4)
+actor Slow {
+    var seen: int = 0
+
+    fn work(n: int) {
+        time.sleep(2ms)
+        seen += 1
+    }
+
+    fn count() -> int {
+        return seen
+    }
+}
+
+actor Producer {
+    var took: Duration = 0s
+
+    fn flood(slow: Slow, n: int) {
+        started := time.uptime()
+        for i in 0..n {
+            slow.send.work(i)
+        }
+        took = time.uptime() - started
+    }
+
+    fn took() -> Duration {
+        return took
+    }
+}
+
+fn main() {
+    print(Tracker.start(location: "dock").at())
+    robot := Robot.start()
+    print(robot.move_to("kitchen"))
+    robot.send.note("hall")
+    print(robot.try_send.note(location: "yard"))
+    print(robot.moves())
+    print(first_two("abc"))
+    print(squared(7))
+    slow := Slow.start()
+    producer := Producer.start()
+    producer.flood(slow, 300)
+    print(producer.took() > 400ms)
+    print(slow.count() >= 295)
+}
+
+//= dock
+//= to the kitchen
+//= true
+//= 3
+//= ab
+//= 49
+//= true
+//= true

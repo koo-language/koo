@@ -128,6 +128,11 @@ static POOL: AtomicU32 = AtomicU32::new(0);
 /// back to and calls the function value.
 static RUNNER: AtomicUsize = AtomicUsize::new(0);
 static WORKERS: AtomicUsize = AtomicUsize::new(0);
+/// The workers that wait for room in a mailbox at this moment, and the threads that
+/// were ever started to stand in for such workers: there are never more of the second
+/// than there were of the first at one time.
+static WAITING_WORKERS: AtomicUsize = AtomicUsize::new(0);
+static STAND_INS: AtomicUsize = AtomicUsize::new(0);
 /// The actors that wait for a worker, and what is held to add or take one.
 static mut RUN: Ring = Ring::new();
 static RUNNING: Lock = Lock::new();
@@ -716,13 +721,24 @@ unsafe fn leave_letter(id: i64, job: *mut Job, wait: Option<&[u8]>) -> bool {
                       to end. Give the actor a larger `@mailbox`, or send less at a time.",
                 ]);
             }
-            // A worker that waits leaves another in its place. If there can be no
-            // other, the letter is left all the same: a mailbox over its limit is
-            // better than a program that stands still.
-            if me.worker && !stand_in() {
-                me.waiting_for.store(0, Release);
-                (*slot).waiting.fetch_add(1, AcqRel);
-                break;
+            // A worker that waits leaves another in its place, if the workers that
+            // wait are more than the threads started for that so far: a thread for
+            // each that waits at one time, and not one for every letter that waited.
+            // If there can be no other, the letter is left all the same: a mailbox
+            // over its limit is better than a program that stands still.
+            if me.worker {
+                let waiting = WAITING_WORKERS.fetch_add(1, SeqCst) + 1;
+                let covered = waiting <= STAND_INS.load(SeqCst)
+                    || (stand_in() && {
+                        STAND_INS.fetch_add(1, SeqCst);
+                        true
+                    });
+                if !covered {
+                    WAITING_WORKERS.fetch_sub(1, SeqCst);
+                    me.waiting_for.store(0, Release);
+                    (*slot).waiting.fetch_add(1, AcqRel);
+                    break;
+                }
             }
             (*slot).word.fetch_or(FULL, AcqRel);
             let bench = bench_of(slot);
@@ -733,6 +749,9 @@ unsafe fn leave_letter(id: i64, job: *mut Job, wait: Option<&[u8]>) -> bool {
                 bench.wait();
             }
             bench.unlock();
+            if me.worker {
+                WAITING_WORKERS.fetch_sub(1, SeqCst);
+            }
             me.waiting_for.store(0, Release);
             if slot_of(id).is_none() {
                 drop_job(job);

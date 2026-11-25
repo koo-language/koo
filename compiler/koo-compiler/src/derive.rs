@@ -141,7 +141,16 @@ fn own_key(field: &Field) -> Option<&str> {
                     },
                 ],
             ) => match parts.as_slice() {
-                [StrPart::Lit(key)] if !key.is_empty() && !key.contains(['"', '\\', '{', '}']) => Some(key.as_str()),
+                // A key is written into the text of the functions made for the type, and
+                // into JSON, as it is: what would end a string, or is no character to
+                // print, cannot be in one.
+                [StrPart::Lit(key)]
+                    if !key.is_empty()
+                        && !key.contains(['"', '\\', '{', '}'])
+                        && !key.chars().any(char::is_control) =>
+                {
+                    Some(key.as_str())
+                }
                 _ => None,
             },
             _ => None,
@@ -377,7 +386,7 @@ impl<'a> Deriver<'a> {
                     self.problems.push((
                         attribute.span,
                         "`@json` on a field takes the key, as a string".to_string(),
-                        "write `@json(\"createdAt\")`: a key that is not empty, with no quote, backslash or brace in it".to_string(),
+                        "write `@json(\"createdAt\")`: a key that is not empty, with no quote, backslash, brace, tab or end of line in it".to_string(),
                     ));
                 }
             }
@@ -731,6 +740,10 @@ impl<'a> Deriver<'a> {
                     stubs,
                     "    value__ := {read} {UNREADABLE}\n    __json_wire(false)\n    return value__\n"
                 );
+            } else if valued {
+                // A method that may fail and returns nothing has read nothing, and
+                // what the thread writes next is for anyone again.
+                stubs.push_str("    __json_wire(false)\n");
             }
             stubs.push_str("}\n\n");
             // To tell: for a method with nothing to send back. What is told is a function
