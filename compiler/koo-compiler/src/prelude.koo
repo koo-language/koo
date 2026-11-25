@@ -2125,7 +2125,7 @@ fn l__write(level: string, message: LogMessage) {
     var line := ""
     if __log_json() {
         line = "\{"
-        if __log_timed() { line += "\"time\":\"{time__now()}\"," }
+        if __log_timed() { line += "\"time\":\"{__log_stamp()}\"," }
         line += "\"level\":\"{level}\",\"message\":" + __json_quote(text)
         var written: [string] = ["time", "level", "message"]
         for i in 0..message._names.len {
@@ -2145,7 +2145,7 @@ fn l__write(level: string, message: LogMessage) {
         }
         line += "}"
     } else {
-        if __log_timed() { line = "{time__now()} " }
+        if __log_timed() { line = "{__log_stamp()} " }
         line += "{level.to_upper():<5} {text}"
     }
     __log_write(line)

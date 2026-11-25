@@ -1441,6 +1441,15 @@ fn the_example_service_serves() {
             line.starts_with('{') && line.ends_with('}'),
             "not a line of JSON: {line}"
         );
+        // Every line begins with its time, in one form whoever wrote the line: the
+        // program, or the server for a request. `2026-01-31T12:00:00.123456Z`.
+        let time = line
+            .strip_prefix(r#"{"time":""#)
+            .and_then(|rest| rest.split('"').next());
+        assert!(
+            time.is_some_and(|time| time.len() == 27 && time.as_bytes()[19] == b'.' && time.ends_with('Z')),
+            "the time of a line is not as the others are: {line}"
+        );
     }
     has(
         &written,

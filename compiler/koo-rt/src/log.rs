@@ -153,6 +153,17 @@ unsafe fn stamp(out: &mut Buffer) {
     }
 }
 
+/// The time now as every line of the log has it, the program's and the support
+/// library's alike: to the millionth of a second, and always so long.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn koo_log_stamp() -> *mut Header {
+    unsafe {
+        let mut time = Buffer::new();
+        stamp(&mut time);
+        crate::koo_str_from_bytes(time.data.as_ptr(), time.len as i64)
+    }
+}
+
 /// Writes a line that the support library itself has to say: a panic, a request that
 /// was served, an actor that starts again. When the log is text it is `plain`, as it
 /// always was. When the log is JSON it is an object like the program's own lines, so

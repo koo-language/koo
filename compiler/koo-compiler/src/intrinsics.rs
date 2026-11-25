@@ -339,6 +339,11 @@ pub const INTRINSICS: &[Intrinsic] = &[
         ret: I::Bool,
     },
     Intrinsic {
+        name: "log_stamp",
+        params: &[],
+        ret: I::Str,
+    },
+    Intrinsic {
         name: "log_timed",
         params: &[],
         ret: I::Bool,
