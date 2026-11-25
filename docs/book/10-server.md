@@ -556,7 +556,7 @@ A URL that begins `https` is asked over TLS, and the server's certificate must b
 
 ## 10.9 What Is Not There
 
-The server listens at every address of its machine, of both kinds, IPv4 and IPv6, where the machine has both. The client and the database package reach only addresses of the older kind yet: a host that has none but an IPv6 address is not found.
+The server listens at every address of its machine, of both kinds, IPv4 and IPv6, where the machine has both. The client and the database package reach both kinds as well. A host that has an address of the older kind is reached at that one, and a host that has only an IPv6 address at that; and an IPv6 address written out stands in brackets, in the address of a server as in that of a database: `http://[::1]:8080/`, `postgres://[::1]:5432/shop`.
 
 The server speaks HTTP/1.1. It does not speak HTTPS or HTTP/2; where those are needed, it runs behind a proxy that does, which is how most services are deployed in any case. A body, of a request or a response, is handled whole, and cannot yet be read or written a piece at a time.
 

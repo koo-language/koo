@@ -1882,6 +1882,10 @@ fn a_program_asks_another_server() {
             .arg(&client)
             .env("KOO_LEAKS", "1")
             .env("PORT", port.to_string());
+        // The server is asked at an address of the new kind where the machine has one.
+        if std::net::TcpListener::bind("[::1]:0").is_ok() {
+            command.env("KOO_TEST_V6", "1");
+        }
         if release {
             command.arg("--release");
         }

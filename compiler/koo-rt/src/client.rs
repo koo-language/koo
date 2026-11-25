@@ -363,10 +363,20 @@ fn address(url: &[u8]) -> Option<(bool, &[u8], u16, &[u8])> {
         .position(|byte| *byte == b'/' || *byte == b'?')
         .unwrap_or(rest.len());
     let (place, path) = rest.split_at(end);
-    if place.contains(&b'@') || place.contains(&b'[') {
+    if place.contains(&b'@') {
         return None;
     }
-    let (host, port) = match place.iter().rposition(|byte| *byte == b':') {
+    // An address of the new kind is in brackets, and has colons of its own.
+    let bracket = match (place.first(), place.iter().rposition(|byte| *byte == b']')) {
+        (Some(b'['), Some(end)) => end,
+        (Some(b'['), None) | (_, Some(_)) => return None,
+        (_, None) => 0,
+    };
+    let (host, port) = match place[bracket..]
+        .iter()
+        .rposition(|byte| *byte == b':')
+        .map(|at| at + bracket)
+    {
         Some(at) => {
             let digits = &place[at + 1..];
             if digits.is_empty() || digits.len() > 5 || !digits.iter().all(u8::is_ascii_digit) {
@@ -377,7 +387,8 @@ fn address(url: &[u8]) -> Option<(bool, &[u8], u16, &[u8])> {
         }
         None => (place, if secure { 443 } else { 80 }),
     };
-    (!host.is_empty()).then_some((secure, host, port, path))
+    // Colons belong to an address in brackets, and to nothing else in a host.
+    (!host.is_empty() && (bracket > 0 || !host.contains(&b':'))).then_some((secure, host, port, path))
 }
 
 /// Whether a name or a value of a header can be sent as it is.

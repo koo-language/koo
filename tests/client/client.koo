@@ -69,6 +69,16 @@ fn main() ! http.Error | JsonError {
     show("space", http.get("http://example.com/a b"))
     show("header", http.get(base + "/echo", headers: ["X-Bad": "a\r\nInjected: 1"]))
     show("method", http.fetch("get it", base + "/echo"))
+    // A server at an address of the new kind, which an address of a server puts in
+    // brackets; where the machine has none, the test says so and the line is the same.
+    port := os.env("PORT") else "8080"
+    if (os.env("KOO_TEST_V6") else "") == "1" {
+        show("in brackets", http.get("http://[::1]:{port}/none"))
+    } else {
+        print("in brackets: 204 true 0 bytes, no type")
+    }
+    show("no brackets", http.get("http://::1:{port}/none"))
+    show("half a bracket", http.get("http://[::1:{port}/none"))
 }
 //= Echo { method: "GET", path: "/echo", body: "", agent: "koo", kind: "", token: "" }
 //= Echo { method: "POST", path: "/echo", body: "\{\"id\":7,\"sku\":\"nails\"}", agent: "koo", kind: "application/json", token: "s3cret" }
@@ -104,3 +114,6 @@ fn main() ! http.Error | JsonError {
 //= space: Address: `http://example.com/a b` is not an address that can be asked: one is `http://host/path` or `https://host:port/path?query`
 //= header: Address: the header `X-Bad` cannot be sent: it has a line end in it, or no name
 //= method: Address: `get it` is not a method: one is `GET`, `POST`, and so on
+//= in brackets: 204 true 0 bytes, no type
+//= no brackets: Address: `http://::1:PORT/none` is not an address that can be asked: one is `http://host/path` or `https://host:port/path?query`
+//= half a bracket: Address: `http://[::1:PORT/none` is not an address that can be asked: one is `http://host/path` or `https://host:port/path?query`

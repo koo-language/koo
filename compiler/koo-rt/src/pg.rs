@@ -31,6 +31,7 @@ unsafe extern "C" {
     fn recv(fd: i32, data: *mut u8, len: usize, flags: i32) -> isize;
     fn poll(fds: *mut PollFd, count: usize, milliseconds: i32) -> i32;
     fn getentropy(data: *mut u8, len: usize) -> i32;
+    fn inet_pton(family: i32, text: *const u8, address: *mut u8) -> i32;
     fn fcntl(fd: i32, command: i32, ...) -> i32;
     fn getsockopt(fd: i32, level: i32, name: i32, value: *mut i32, len: *mut u32) -> i32;
 }
@@ -43,6 +44,14 @@ struct PollFd {
 }
 
 const AF_INET: i32 = 2;
+const AF_INET6: i32 = if cfg!(target_os = "macos") { 30 } else { 10 };
+
+/// An address of the Internet, of the old kind or the new.
+#[derive(Clone, Copy, PartialEq)]
+pub(crate) enum Ip {
+    V4([u8; 4]),
+    V6([u8; 16]),
+}
 const SOCK_STREAM: i32 = 1;
 const SOCK_DGRAM: i32 = 2;
 const IPPROTO_TCP: i32 = 6;
@@ -298,6 +307,27 @@ fn dotted(name: &[u8]) -> Option<[u8; 4]> {
     parts.next().is_none().then_some(address)
 }
 
+/// A host that is written as an address and not as a name: `a.b.c.d`, or an address of
+/// the new kind, which an address of a server puts in brackets.
+unsafe fn literal(name: &[u8]) -> Option<Ip> {
+    unsafe {
+        if let Some(address) = dotted(name) {
+            return Some(Ip::V4(address));
+        }
+        let name = match name {
+            [b'[', inside @ .., b']'] => inside,
+            name => name,
+        };
+        let mut text = [0u8; 64];
+        if !name.contains(&b':') || name.len() >= text.len() || name.contains(&0) {
+            return None;
+        }
+        text[..name.len()].copy_from_slice(name);
+        let mut address = [0u8; 16];
+        (inet_pton(AF_INET6, text.as_ptr(), address.as_mut_ptr()) == 1).then_some(Ip::V6(address))
+    }
+}
+
 /// What a file holds, or nothing if it cannot be read. Only the first 64 KB.
 unsafe fn file(path: &core::ffi::CStr) -> Buf {
     unsafe {
@@ -320,11 +350,11 @@ fn words(line: &[u8]) -> impl Iterator<Item = &[u8]> {
         .filter(|word| !word.is_empty())
 }
 
-/// Asks a name server for the address of a name. `query` and `answer` are the two
-/// datagrams: the question is the name as labels, each with its length before it.
-/// Returns nothing if the server did not answer, and otherwise the address, or that
-/// there is none.
-unsafe fn ask_name_server(server: [u8; 4], name: &[u8]) -> Option<Option<[u8; 4]>> {
+/// Asks a name server for the address of a name, of the old kind (`kind` 1) or the new
+/// (28). `query` and `answer` are the two datagrams: the question is the name as
+/// labels, each with its length before it. Returns nothing if the server did not
+/// answer, and otherwise the address, or that there is none.
+unsafe fn ask_name_server(server: Ip, name: &[u8], kind: u8) -> Option<Option<Ip>> {
     unsafe {
         let mut query = [0u8; 300];
         let mut id = [0u8; 2];
@@ -342,10 +372,11 @@ unsafe fn ask_name_server(server: [u8; 4], name: &[u8]) -> Option<Option<[u8; 4]
             at += 1 + label.len();
         }
         // The end of the name, then: an address, of the Internet.
-        query[at + 2] = 1;
+        query[at + 2] = kind;
         query[at + 4] = 1;
         let length = at + 5;
-        let fd = socket(AF_INET, SOCK_DGRAM, 0);
+        let family = if matches!(server, Ip::V6(_)) { AF_INET6 } else { AF_INET };
+        let fd = socket(family, SOCK_DGRAM, 0);
         if fd < 0 {
             return None;
         }
@@ -375,7 +406,7 @@ unsafe fn ask_name_server(server: [u8; 4], name: &[u8]) -> Option<Option<[u8; 4]
             if got < 12 || answer[..2] != id {
                 continue;
             }
-            found = Some(address_in(&answer[..got as usize]));
+            found = Some(address_in(&answer[..got as usize], kind));
             break;
         }
         close(fd);
@@ -384,7 +415,7 @@ unsafe fn ask_name_server(server: [u8; 4], name: &[u8]) -> Option<Option<[u8; 4]
 }
 
 /// The first address in a name server's answer.
-fn address_in(answer: &[u8]) -> Option<[u8; 4]> {
+fn address_in(answer: &[u8], wanted: u8) -> Option<Ip> {
     // A name is labels up to an empty one, or up to a pointer to the rest of it.
     fn after_name(answer: &[u8], mut at: usize) -> Option<usize> {
         loop {
@@ -410,8 +441,11 @@ fn address_in(answer: &[u8]) -> Option<[u8; 4]> {
         let kind = u16::from_be_bytes([head[0], head[1]]);
         let length = u16::from_be_bytes([head[8], head[9]]) as usize;
         at += 10;
-        if kind == 1 && length == 4 {
-            return answer.get(at..at + 4)?.try_into().ok();
+        if kind == wanted as u16 && kind == 1 && length == 4 {
+            return Some(Ip::V4(answer.get(at..at + 4)?.try_into().ok()?));
+        }
+        if kind == wanted as u16 && kind == 28 && length == 16 {
+            return Some(Ip::V6(answer.get(at..at + 16)?.try_into().ok()?));
         }
         at += length;
     }
@@ -423,7 +457,7 @@ fn address_in(answer: &[u8]) -> Option<[u8; 4]> {
 /// own names, and a machine on the same network is found without any), and its resolver
 /// is part of every program there in any case.
 #[cfg(target_os = "macos")]
-unsafe fn by_the_system(host: &[u8]) -> Option<[u8; 4]> {
+unsafe fn by_the_system(host: &[u8]) -> Option<Ip> {
     unsafe {
         #[repr(C)]
         struct Found {
@@ -443,9 +477,10 @@ unsafe fn by_the_system(host: &[u8]) -> Option<[u8; 4]> {
         let mut name = [0u8; 256];
         if host.len() < name.len() && !host.contains(&0) {
             name[..host.len()].copy_from_slice(host);
+            // Either kind of address, of those the machine has a way to reach (0x400).
             let hints = Found {
-                flags: 0,
-                family: AF_INET,
+                flags: 0x400,
+                family: 0,
                 kind: SOCK_STREAM,
                 protocol: 0,
                 address_len: 0,
@@ -455,14 +490,24 @@ unsafe fn by_the_system(host: &[u8]) -> Option<[u8; 4]> {
             };
             let mut found: *mut Found = core::ptr::null_mut();
             if getaddrinfo(name.as_ptr(), core::ptr::null(), &hints, &mut found) == 0 && !found.is_null() {
-                let mut address = None;
-                if (*found).family == AF_INET && (*found).address_len >= 8 {
-                    // The length, the family, the port, and then the four bytes.
-                    let at = (*found).address.add(4);
-                    address = Some([*at, *at.add(1), *at.add(2), *at.add(3)]);
+                // An address of the old kind if the host has one, since more of the
+                // world reaches those; of the new kind otherwise.
+                let (mut old, mut new) = (None, None);
+                let mut each = found;
+                while !each.is_null() {
+                    let at = (*each).address;
+                    if (*each).family == AF_INET && (*each).address_len >= 8 && old.is_none() {
+                        // The length, the family, the port, and then the four bytes.
+                        old = Some(Ip::V4(*(at.add(4) as *const [u8; 4])));
+                    }
+                    if (*each).family == AF_INET6 && (*each).address_len >= 24 && new.is_none() {
+                        // The same, a number of the flow, and then the sixteen.
+                        new = Some(Ip::V6(*(at.add(8) as *const [u8; 16])));
+                    }
+                    each = (*each).next;
                 }
                 freeaddrinfo(found);
-                return address;
+                return old.or(new);
             }
         }
         None
@@ -470,42 +515,46 @@ unsafe fn by_the_system(host: &[u8]) -> Option<[u8; 4]> {
 }
 
 #[cfg(not(target_os = "macos"))]
-unsafe fn by_the_system(_host: &[u8]) -> Option<[u8; 4]> {
+unsafe fn by_the_system(_host: &[u8]) -> Option<Ip> {
     None
 }
 
 /// The address of a host: as it is written, from the machine's table of hosts, or from
 /// the name servers the machine is set up with, trying the name inside each of the
-/// domains it searches, as the system's own resolver does.
-unsafe fn resolve(host: &[u8]) -> Option<[u8; 4]> {
+/// domains it searches, as the system's own resolver does. A host that has an address
+/// of the old kind is reached at that one, and one that has only the new kind at that.
+unsafe fn resolve(host: &[u8]) -> Option<Ip> {
     unsafe {
-        if let Some(address) = dotted(host) {
+        if let Some(address) = literal(host) {
             return Some(address);
         }
         if host.eq_ignore_ascii_case(b"localhost") {
-            return Some([127, 0, 0, 1]);
+            return Some(Ip::V4([127, 0, 0, 1]));
         }
         if cfg!(target_os = "macos") {
             return by_the_system(host);
         }
         let mut hosts = file(c"/etc/hosts");
-        let mut found = None;
+        let (mut old, mut new) = (None, None);
         for line in hosts.bytes().split(|byte| *byte == b'\n') {
             let mut parts = words(line);
-            let Some(address) = parts.next().and_then(dotted) else {
+            let Some(address) = parts.next().and_then(|word| literal(word)) else {
                 continue;
             };
             if parts.any(|name| name.eq_ignore_ascii_case(host)) {
-                found = Some(address);
-                break;
+                match address {
+                    Ip::V4(_) if old.is_none() => old = Some(address),
+                    Ip::V6(_) if new.is_none() => new = Some(address),
+                    _ => {}
+                }
             }
         }
         hosts.release();
-        if found.is_some() {
-            return found;
+        if old.or(new).is_some() {
+            return old.or(new);
         }
         let mut settings = file(c"/etc/resolv.conf");
-        let mut servers = [[0u8; 4]; 3];
+        let mut servers = [Ip::V4([0; 4]); 3];
         let mut server_count = 0;
         let mut dots_wanted = 1;
         let mut search: &[u8] = &[];
@@ -513,7 +562,7 @@ unsafe fn resolve(host: &[u8]) -> Option<[u8; 4]> {
             let mut parts = words(line);
             match parts.next() {
                 Some(b"nameserver") => {
-                    if let Some(address) = parts.next().and_then(dotted)
+                    if let Some(address) = parts.next().and_then(|word| literal(word))
                         && server_count < servers.len()
                     {
                         servers[server_count] = address;
@@ -532,58 +581,73 @@ unsafe fn resolve(host: &[u8]) -> Option<[u8; 4]> {
             }
         }
         if server_count == 0 {
-            servers[0] = [127, 0, 0, 1];
+            servers[0] = Ip::V4([127, 0, 0, 1]);
             server_count = 1;
         }
         let dots = host.iter().filter(|byte| **byte == b'.').count();
         // A name with few dots is looked for in the searched domains first.
         let alone_first = dots >= dots_wanted || host.ends_with(b".");
-        let mut answer = None;
         // The first server that answers is believed, whatever it says.
-        let ask = |name: &[u8]| {
+        let ask = |name: &[u8], kind: u8| {
             servers[..server_count]
                 .iter()
-                .find_map(|server| ask_name_server(*server, name))
+                .find_map(|server| ask_name_server(*server, name, kind))
                 .flatten()
         };
-        if alone_first {
-            answer = ask(host);
-        }
-        if answer.is_none() && !host.ends_with(b".") {
-            for domain in words(search).skip(1) {
-                let mut name = [0u8; 256];
-                if host.len() + 1 + domain.len() > name.len() {
-                    continue;
-                }
-                name[..host.len()].copy_from_slice(host);
-                name[host.len()] = b'.';
-                name[host.len() + 1..host.len() + 1 + domain.len()].copy_from_slice(domain);
-                answer = ask(&name[..host.len() + 1 + domain.len()]);
-                if answer.is_some() {
-                    break;
+        let mut answer = None;
+        // An address of the old kind is asked for everywhere first, and one of the new
+        // kind only for a host that has none.
+        for kind in [1u8, 28] {
+            if alone_first {
+                answer = ask(host, kind);
+            }
+            if answer.is_none() && !host.ends_with(b".") {
+                for domain in words(search).skip(1) {
+                    let mut name = [0u8; 256];
+                    if host.len() + 1 + domain.len() > name.len() {
+                        continue;
+                    }
+                    name[..host.len()].copy_from_slice(host);
+                    name[host.len()] = b'.';
+                    name[host.len() + 1..host.len() + 1 + domain.len()].copy_from_slice(domain);
+                    answer = ask(&name[..host.len() + 1 + domain.len()], kind);
+                    if answer.is_some() {
+                        break;
+                    }
                 }
             }
-        }
-        if answer.is_none() && !alone_first {
-            answer = ask(host);
+            if answer.is_none() && !alone_first {
+                answer = ask(host, kind);
+            }
+            if answer.is_some() {
+                break;
+            }
         }
         settings.release();
         answer
     }
 }
 
-/// An address and a port as the system wants them.
-fn socket_address(address: [u8; 4], port: u16) -> ([u8; 16], u32) {
-    let mut out = [0u8; 16];
+/// An address and a port as the system wants them, and how much of it there is.
+fn socket_address(address: Ip, port: u16) -> ([u8; 28], u32) {
+    let mut out = [0u8; 28];
+    let (family, len) = match address {
+        Ip::V4(_) => (AF_INET, 16),
+        Ip::V6(_) => (AF_INET6, 28),
+    };
     if cfg!(target_os = "macos") {
-        out[0] = 16;
-        out[1] = AF_INET as u8;
+        out[0] = len as u8;
+        out[1] = family as u8;
     } else {
-        out[..2].copy_from_slice(&(AF_INET as u16).to_ne_bytes());
+        out[..2].copy_from_slice(&(family as u16).to_ne_bytes());
     }
     out[2..4].copy_from_slice(&port.to_be_bytes());
-    out[4..8].copy_from_slice(&address);
-    (out, 16)
+    match address {
+        Ip::V4(bytes) => out[4..8].copy_from_slice(&bytes),
+        // After the port comes a number of the flow, and then the address.
+        Ip::V6(bytes) => out[8..24].copy_from_slice(&bytes),
+    }
+    (out, len)
 }
 
 // ---- talking to the server --------------------------------------------------------------
@@ -863,7 +927,7 @@ unsafe fn authenticate(conn: &mut Conn, db: &Db) -> bool {
 /// handler of a server lets the server do other work until it is made, and anything
 /// else waits for it here. Returns whether it was made; if not, the error is where the
 /// system leaves errors, and is `SLOW` if the time ran out.
-unsafe fn connect_within(fd: i32, target: &[u8; 16], target_len: u32, milliseconds: i64) -> bool {
+unsafe fn connect_within(fd: i32, target: &[u8; 28], target_len: u32, milliseconds: i64) -> bool {
     unsafe {
         const F_GETFL: i32 = 3;
         const F_SETFL: i32 = 4;
@@ -935,7 +999,12 @@ pub(crate) unsafe fn dial(host: &[u8], port: u16, milliseconds: i64, why: &mut B
             why.push(b"`");
             return -1;
         };
-        let fd = socket(AF_INET, SOCK_STREAM, 0);
+        let family = if matches!(address, Ip::V6(_)) {
+            AF_INET6
+        } else {
+            AF_INET
+        };
+        let fd = socket(family, SOCK_STREAM, 0);
         let (target, target_len) = socket_address(address, port);
         let milliseconds = milliseconds.max(1);
         let connected = fd >= 0 && connect_within(fd, &target, target_len, milliseconds);
@@ -1399,8 +1468,10 @@ pub unsafe extern "C" fn koo_sql_open(url: *const Header, limit: i64, patience: 
             Some(at) => (&place[..at], &place[at + 1..]),
             None => (place, &b""[..]),
         };
-        let (host, port) = match place.iter().rposition(|byte| *byte == b':') {
-            Some(at) => (&place[..at], &place[at + 1..]),
+        // An address of the new kind is in brackets, and has colons of its own.
+        let bracket = place.iter().rposition(|byte| *byte == b']').unwrap_or(0);
+        let (host, port) = match place[bracket..].iter().rposition(|byte| *byte == b':') {
+            Some(at) => (&place[..bracket + at], &place[bracket + at + 1..]),
             None => (place, &b"5432"[..]),
         };
         let port_number = port
