@@ -730,6 +730,55 @@ true
 - `time.now()` is the clock, `time.uptime()` a clock that only goes forward, for measuring, and `time.sleep(length)` waits.
 - Both are JSON, as strings: `"1h30min"` and RFC 3339.
 
+## Digests, encodings and chance
+
+Four small packages hold what a service needs to sign a message, keep a password and make a token.
+
+```koo
+import std/crypto
+import std/encoding
+import std/hash
+import std/random
+
+fn main() {
+    body := `{"event": "paid", "order": 17}`
+    signature := crypto.hmac_sha256("a shared secret".bytes(), body.bytes())
+    print(encoding.hex(signature))
+    print(crypto.equal(signature, crypto.hmac_sha256("a shared secret".bytes(), body.bytes())))
+
+    print(encoding.hex(hash.sha256("abc".bytes())))
+    print(encoding.base64("hello".bytes()))
+    print(encoding.url("a b&c"))
+
+    kept := crypto.hash_password("correct horse")
+    print(crypto.verify_password("correct horse", kept))
+    print(crypto.verify_password("wrong horse", kept))
+
+    roll := random.int(1, 7)
+    print(roll >= 1 and roll <= 6)
+    print(random.uuid().len)
+    print(encoding.base64_url(random.bytes(24)).len)
+}
+```
+
+```text
+25baade0d563f806ccb0b795eaf04fa786eb7ff3aef5dda0e579c67d76495b9a
+true
+ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad
+aGVsbG8=
+a%20b%26c
+true
+false
+true
+36
+32
+```
+
+- They work on lists of bytes, `[byte]`; `text.bytes()` is the bytes of a string.
+- `crypto.equal` compares two digests without telling, by how long it takes, where they differ. Use it, not `==`, for anything secret.
+- `hash_password` returns the text to store in place of a password: PBKDF2 with a fresh salt and 600,000 rounds.
+- Every random number comes from the operating system's source for keys, so `random.bytes` is fit for tokens and there is no separate "secure" generator to remember. A list has `pick()` and `shuffle()`.
+
 ## A web server
 
 `std/http` is a server in a few lines. A handler is a function from a request to a response.
@@ -1113,4 +1162,4 @@ None of them can corrupt memory. Errors you expect, such as a missing file or ba
 
 ## What is not here yet
 
-The compiler does not build these parts of the specification yet, and says so if you use them: importing one package of your own from another, parts of the standard library (an HTTP client, TLS, random numbers), tasks, channels and `select`, interface values (a list of different shapes), `Decimal`, resources and `defer`, and the WebAssembly targets. The [README](../README.md) keeps the current list.
+The compiler does not build these parts of the specification yet, and says so if you use them: importing one package of your own from another, parts of the standard library (an HTTP client, TLS), tasks, channels and `select`, interface values (a list of different shapes), `Decimal`, resources and `defer`, and the WebAssembly targets. The [README](../README.md) keeps the current list.

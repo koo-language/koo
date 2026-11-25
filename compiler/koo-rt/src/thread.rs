@@ -205,6 +205,10 @@ pub struct Thread {
     pub spare_guard: *mut Guard,
     /// What the thread keeps of its last query of a database (`pg.rs`).
     pub sql: *mut u8,
+    /// Bytes from the system's source of randomness that have not been handed out yet
+    /// (`codec.rs`).
+    pub random: [u8; 256],
+    pub random_left: usize,
     /// The kind of the last answer from an actor of another process.
     pub answer_kind: [u8; 104],
     pub answer_kind_len: usize,
@@ -281,6 +285,8 @@ pub unsafe fn every(mut each: impl FnMut(&mut Thread)) {
 pub unsafe fn after_fork() {
     unsafe {
         let mine = me() as *mut Thread;
+        // What the parent has not handed out of its randomness is the parent's.
+        (*mine).random_left = 0;
         REGISTRY.unlock();
         for thread in &THREADS[..THREAD_COUNT.load(Relaxed)] {
             if thread.load(Relaxed) != mine {

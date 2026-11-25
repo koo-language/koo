@@ -1,0 +1,131 @@
+// `std/hash`, `std/encoding`, `std/crypto` and `std/random`.
+
+import std/hash
+import std/encoding
+import std/crypto
+import std/random
+
+fn main() {
+    print(encoding.hex(hash.sha256("abc".bytes())))
+    print(encoding.hex(hash.sha256("".bytes())))
+    long := "a".repeat(1000)
+    print(encoding.hex(hash.sha256(long.bytes())))
+
+    key := "key".bytes()
+    signature := crypto.hmac_sha256(key, "The quick brown fox jumps over the lazy dog".bytes())
+    print(encoding.hex(signature))
+    print(crypto.equal(signature, crypto.hmac_sha256(key, "The quick brown fox jumps over the lazy dog".bytes())))
+    print(crypto.equal(signature, crypto.hmac_sha256(key, "The quick brown fox jumps over the lazy cog".bytes())))
+    print(crypto.equal(signature, []))
+
+    for text in ["", "f", "fo", "foo", "foob", "fooba", "foobar"] {
+        encoded := encoding.base64(text.bytes())
+        back := encoding.from_base64(encoded) else []
+        print("{encoded} {encoding.base64_url(text.bytes())} {string.from_bytes(back) else "?"}")
+    }
+    odd: [byte] = [byte.from(251) else 0, byte.from(255) else 0, byte.from(190) else 0]
+    print("{encoding.base64(odd)} {encoding.base64_url(odd)}")
+    print(encoding.from_base64_url("-_--") else [])
+    for bad in ["a", "ab!d", "a===", "-_--"] {
+        match encoding.from_base64(bad) {
+            bytes => print(bytes)
+            ! e => print("not Base64: {e.input}")
+        }
+    }
+    print(encoding.from_base64_url("+/++") else [])
+
+    print(encoding.hex([]))
+    print(encoding.from_hex("00ff10Ab") else [])
+    print(encoding.from_hex("abc") else [])
+    print(encoding.from_hex("zz") else [])
+
+    print(encoding.url("a b&c/d=é?~._-"))
+    print(encoding.from_url("a%20b%26c%2Fd%3D%C3%A9+plus") else "?")
+    print(encoding.from_url("100%") else "not an encoding")
+    print(encoding.from_url("%ff") else "not text")
+
+    hashed := crypto.hash_password("correct horse")
+    print(hashed.starts_with("pbkdf2-sha256$600000$"))
+    print(hashed.len)
+    print(crypto.verify_password("correct horse", hashed))
+    print(crypto.verify_password("Correct horse", hashed))
+    print(crypto.verify_password("correct horse", "nonsense"))
+    print(hashed != crypto.hash_password("correct horse"))
+    // A key computed elsewhere, by another implementation of the same method.
+    print(crypto.verify_password("password", "pbkdf2-sha256$1000$c2FsdA==$YywoEuRtRgQQK6dhjp1tfS+BKPYma0oDJk0qBGC33LM="))
+
+    var counts := [0, 0, 0, 0, 0, 0]
+    for i in 0..60000 {
+        counts[random.int(1, 7) - 1] += 1
+    }
+    print(counts.all(count -> count > 9000 and count < 11000))
+    print(random.int(5, 6))
+    var sum := 0.0
+    for i in 0..10000 {
+        x := random.float()
+        if x < 0.0 or x >= 1.0 { print("out of range") }
+        sum += x
+    }
+    print(sum > 4700.0 and sum < 5300.0)
+    print(random.bytes(16).len)
+    print(random.bytes(16) != random.bytes(16))
+    id := random.uuid()
+    print("{id.len} {id.slice(14, 15)} {id.slice(8, 9)}{id.slice(13, 14)}{id.slice(18, 19)}{id.slice(23, 24)}")
+    print("89ab".contains(id.slice(19, 20)))
+    print(id != random.uuid())
+
+    var cards := [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
+    cards.shuffle()
+    print(cards.sorted())
+    print(cards.pick().is_some())
+    nothing: [int] = []
+    print(nothing.pick())
+}
+
+//= ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad
+//= e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
+//= 41edece42d63e8d9bf515a9ba6932e1c20cbc9f5a5d134645adb5db1b9737ea3
+//= f7bc83f430538424b13298e6aa6fb143ef4d59a14946175997479dbc2d1a3cd8
+//= true
+//= false
+//= false
+//=   
+//= Zg== Zg f
+//= Zm8= Zm8 fo
+//= Zm9v Zm9v foo
+//= Zm9vYg== Zm9vYg foob
+//= Zm9vYmE= Zm9vYmE fooba
+//= Zm9vYmFy Zm9vYmFy foobar
+//= +/++ -_--
+//= [251, 255, 190]
+//= not Base64: a
+//= not Base64: ab!d
+//= not Base64: a===
+//= not Base64: -_--
+//= []
+//=
+//= [0, 255, 16, 171]
+//= []
+//= []
+//= a%20b%26c%2Fd%3D%C3%A9%3F~._-
+//= a b&c/d=é plus
+//= not an encoding
+//= not text
+//= true
+//= 90
+//= true
+//= false
+//= false
+//= true
+//= true
+//= true
+//= 5
+//= true
+//= 16
+//= true
+//= 36 4 ----
+//= true
+//= true
+//= [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
+//= true
+//= none

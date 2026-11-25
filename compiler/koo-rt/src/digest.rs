@@ -30,6 +30,66 @@ const MD5_K: [u32; 64] = [
     0xeb86d391,
 ];
 
+/// Whether the processor has instructions for SHA-256, which are ten times as fast as
+/// doing it by hand. Every Apple processor of this kind has them; on Linux the system
+/// says.
+#[cfg(target_arch = "aarch64")]
+fn processor_does_sha() -> bool {
+    use core::sync::atomic::{AtomicU8, Ordering::Relaxed};
+    static KNOWN: AtomicU8 = AtomicU8::new(0);
+    match KNOWN.load(Relaxed) {
+        0 => {
+            let has = if cfg!(target_os = "macos") {
+                true
+            } else {
+                unsafe extern "C" {
+                    fn getauxval(kind: u64) -> u64;
+                }
+                // The capabilities of the hardware, of which the sixth bit is SHA-2.
+                unsafe { getauxval(16) & (1 << 6) != 0 }
+            };
+            KNOWN.store(if has { 2 } else { 1 }, Relaxed);
+            has
+        }
+        known => known == 2,
+    }
+}
+
+/// One block, by the processor's own instructions: sixteen steps of four rounds, each
+/// of which also makes the four words of the message that are needed four steps on.
+#[cfg(target_arch = "aarch64")]
+#[target_feature(enable = "sha2")]
+unsafe fn compress_by_processor(state: &mut [u32; 8], block: &[u8; 64]) {
+    use core::arch::aarch64::*;
+    unsafe {
+        let (first, second) = (vld1q_u32(state.as_ptr()), vld1q_u32(state.as_ptr().add(4)));
+        let (mut low, mut high) = (first, second);
+        let mut words = [
+            vreinterpretq_u32_u8(vrev32q_u8(vld1q_u8(block.as_ptr()))),
+            vreinterpretq_u32_u8(vrev32q_u8(vld1q_u8(block.as_ptr().add(16)))),
+            vreinterpretq_u32_u8(vrev32q_u8(vld1q_u8(block.as_ptr().add(32)))),
+            vreinterpretq_u32_u8(vrev32q_u8(vld1q_u8(block.as_ptr().add(48)))),
+        ];
+        for step in 0..16 {
+            let at = step % 4;
+            let keyed = vaddq_u32(words[at], vld1q_u32(SHA_K.as_ptr().add(4 * step)));
+            let before = low;
+            low = vsha256hq_u32(low, high, keyed);
+            high = vsha256h2q_u32(high, before, keyed);
+            if step < 12 {
+                words[at] = vsha256su1q_u32(
+                    vsha256su0q_u32(words[at], words[(at + 1) % 4]),
+                    words[(at + 2) % 4],
+                    words[(at + 3) % 4],
+                );
+            }
+        }
+        vst1q_u32(state.as_mut_ptr(), vaddq_u32(low, first));
+        vst1q_u32(state.as_mut_ptr().add(4), vaddq_u32(high, second));
+    }
+}
+
+#[derive(Clone)]
 pub struct Sha256 {
     state: [u32; 8],
     block: [u8; 64],
@@ -48,6 +108,19 @@ impl Sha256 {
     }
 
     fn compress(&mut self) {
+        #[cfg(test)]
+        if tests::BY_HAND.load(core::sync::atomic::Ordering::Relaxed) {
+            return self.compress_by_hand();
+        }
+        #[cfg(target_arch = "aarch64")]
+        if processor_does_sha() {
+            unsafe { compress_by_processor(&mut self.state, &self.block) };
+            return;
+        }
+        self.compress_by_hand();
+    }
+
+    fn compress_by_hand(&mut self) {
         let mut w = [0u32; 64];
         for (i, word) in w.iter_mut().take(16).enumerate() {
             *word = u32::from_be_bytes([
@@ -88,11 +161,13 @@ impl Sha256 {
         }
     }
 
-    pub fn update(&mut self, data: &[u8]) {
+    pub fn update(&mut self, mut data: &[u8]) {
         self.total += data.len() as u64;
-        for byte in data {
-            self.block[self.filled] = *byte;
-            self.filled += 1;
+        while !data.is_empty() {
+            let take = data.len().min(64 - self.filled);
+            self.block[self.filled..self.filled + take].copy_from_slice(&data[..take]);
+            self.filled += take;
+            data = &data[take..];
             if self.filled == 64 {
                 self.compress();
                 self.filled = 0;
@@ -103,9 +178,12 @@ impl Sha256 {
     pub fn finish(mut self) -> [u8; 32] {
         let bits = self.total * 8;
         self.update(&[0x80]);
-        while self.filled != 56 {
-            self.update(&[0]);
+        if self.filled > 56 {
+            self.block[self.filled..].fill(0);
+            self.compress();
+            self.filled = 0;
         }
+        self.block[self.filled..56].fill(0);
         self.block[56..].copy_from_slice(&bits.to_be_bytes());
         self.compress();
         let mut out = [0u8; 32];
@@ -128,31 +206,52 @@ pub fn sha256(data: &[u8]) -> [u8; 32] {
     digest.finish()
 }
 
+/// A key, ready to make keyed digests: the two digests that every one of them begins
+/// with, so that the key is gone over once however many messages there are.
+#[derive(Clone)]
+pub struct Hmac {
+    inner: Sha256,
+    outer: Sha256,
+}
+
+impl Hmac {
+    pub fn new(key: &[u8]) -> Hmac {
+        let mut padded = [0u8; 64];
+        if key.len() > 64 {
+            padded[..32].copy_from_slice(&sha256(key));
+        } else {
+            padded[..key.len()].copy_from_slice(key);
+        }
+        let (mut inner, mut outer) = (Sha256::new(), Sha256::new());
+        inner.update(&padded.map(|byte| byte ^ 0x36));
+        outer.update(&padded.map(|byte| byte ^ 0x5c));
+        Hmac { inner, outer }
+    }
+
+    /// The keyed digest of the parts of a message, one after the other.
+    pub fn of(&self, parts: &[&[u8]]) -> [u8; 32] {
+        let mut inner = self.inner.clone();
+        for part in parts {
+            inner.update(part);
+        }
+        let mut outer = self.outer.clone();
+        outer.update(&inner.finish());
+        outer.finish()
+    }
+}
+
 /// The keyed digest of the parts of a message, one after the other.
 pub fn hmac_sha256(key: &[u8], parts: &[&[u8]]) -> [u8; 32] {
-    let mut padded = [0u8; 64];
-    if key.len() > 64 {
-        padded[..32].copy_from_slice(&sha256(key));
-    } else {
-        padded[..key.len()].copy_from_slice(key);
-    }
-    let mut inner = Sha256::new();
-    inner.update(&padded.map(|byte| byte ^ 0x36));
-    for part in parts {
-        inner.update(part);
-    }
-    let mut outer = Sha256::new();
-    outer.update(&padded.map(|byte| byte ^ 0x5c));
-    outer.update(&inner.finish());
-    outer.finish()
+    Hmac::new(key).of(parts)
 }
 
 /// A key derived from a password and a salt by so many rounds, for one block of output.
 pub fn pbkdf2_sha256(password: &[u8], salt: &[u8], rounds: u32) -> [u8; 32] {
-    let mut round = hmac_sha256(password, &[salt, &[0, 0, 0, 1]]);
+    let keyed = Hmac::new(password);
+    let mut round = keyed.of(&[salt, &[0, 0, 0, 1]]);
     let mut out = round;
     for _ in 1..rounds {
-        round = hmac_sha256(password, &[&round]);
+        round = keyed.of(&[&round]);
         for (byte, add) in out.iter_mut().zip(round) {
             *byte ^= add;
         }
@@ -271,6 +370,30 @@ pub fn hex(data: &[u8], out: &mut [u8]) {
 
 #[cfg(test)]
 mod tests {
+    use core::sync::atomic::{AtomicBool, Ordering::Relaxed};
+
+    /// Set to make the digest by hand even where the processor could.
+    pub static BY_HAND: AtomicBool = AtomicBool::new(false);
+
+    #[test]
+    fn by_hand_is_as_by_the_processor() {
+        let mut message = [0u8; 300];
+        for (index, byte) in message.iter_mut().enumerate() {
+            *byte = (index * 7 + 3) as u8;
+        }
+        for length in [0, 1, 55, 56, 57, 63, 64, 65, 119, 120, 128, 300] {
+            let either = super::sha256(&message[..length]);
+            BY_HAND.store(true, Relaxed);
+            let by_hand = super::sha256(&message[..length]);
+            BY_HAND.store(false, Relaxed);
+            assert_eq!(either, by_hand, "a message of {length} bytes");
+        }
+        BY_HAND.store(true, Relaxed);
+        let abc = super::sha256(b"abc");
+        BY_HAND.store(false, Relaxed);
+        assert_eq!(abc[..4], [0xba, 0x78, 0x16, 0xbf]);
+    }
+
     use super::*;
 
     fn shown(bytes: &[u8]) -> String {

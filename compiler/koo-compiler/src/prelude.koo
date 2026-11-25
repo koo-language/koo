@@ -1556,6 +1556,113 @@ fn (self: HttpApp) serve(port: int = 8080, workers: int = 0, max_body: int = 104
     }
 }
 
+// ---- std/hash, std/encoding, std/crypto, std/random --------------------------------------
+
+/// The SHA-256 digest of some bytes: thirty-two bytes that are, for all anyone can do,
+/// different for different input.
+fn hash__sha256(data: [byte]) -> [byte] { return __sha256(data) }
+
+/// Bytes as hexadecimal text, two lower-case digits for each.
+fn encoding__hex(data: [byte]) -> string { return __hex(data) }
+
+fn encoding__from_hex(text: string) -> [byte] ! ParseError {
+    if not __hex_valid(text) { fail ParseError { input: text } }
+    return __hex_decode(text)
+}
+
+/// Bytes as Base64 text.
+fn encoding__base64(data: [byte]) -> string { return __base64(data, false) }
+
+fn encoding__from_base64(text: string) -> [byte] ! ParseError {
+    if not __base64_valid(text, false) { fail ParseError { input: text } }
+    return __base64_decode(text, false)
+}
+
+/// Bytes as Base64 text in the alphabet that is safe in an address, without `=`.
+fn encoding__base64_url(data: [byte]) -> string { return __base64(data, true) }
+
+fn encoding__from_base64_url(text: string) -> [byte] ! ParseError {
+    if not __base64_valid(text, true) { fail ParseError { input: text } }
+    return __base64_decode(text, true)
+}
+
+/// Text as it is written in a part of an address: `a b&c` is `a%20b%26c`.
+fn encoding__url(text: string) -> string { return __url_encode(text) }
+
+fn encoding__from_url(text: string) -> string ! ParseError {
+    if not __url_valid(text) { fail ParseError { input: text } }
+    return __url_decode(text)
+}
+
+/// The HMAC-SHA-256 of some bytes under a key: a digest that only one who has the key
+/// can compute, and so a proof that a message came from such a one.
+fn crypto__hmac_sha256(key: [byte], data: [byte]) -> [byte] { return __hmac_sha256(key, data) }
+
+/// Whether two lists of bytes are the same, in a time that does not tell where they
+/// differ. This, and not `==`, compares a digest that was sent with the one expected.
+fn crypto__equal(a: [byte], b: [byte]) -> bool { return __bytes_same(a, b) }
+
+/// What to keep in place of a password: the name of the method, the rounds, a salt
+/// and the key they give, so that the password can be checked and cannot be read.
+fn crypto__hash_password(password: string) -> string {
+    salt := __random_bytes(16)
+    key := __pbkdf2_sha256(password.bytes(), salt, 600000)
+    return "pbkdf2-sha256$600000$" + __base64(salt, false) + "$" + __base64(key, false)
+}
+
+/// Whether a password is the one that `hash_password` was given.
+fn crypto__verify_password(password: string, hashed: string) -> bool {
+    parts := hashed.split("$")
+    if parts.len != 4 or parts[0] != "pbkdf2-sha256" { return false }
+    rounds := int.parse(parts[1]) else 0
+    if rounds < 1 or rounds > 100000000 { return false }
+    if not __base64_valid(parts[2], false) or not __base64_valid(parts[3], false) { return false }
+    key := __pbkdf2_sha256(password.bytes(), __base64_decode(parts[2], false), rounds)
+    return __bytes_same(key, __base64_decode(parts[3], false))
+}
+
+/// A number from `low` up to, and not including, `high`, each as likely as another.
+fn random__int(low: int, high: int) -> int {
+    if high <= low { panic("random.int({low}, {high}): there is no number from {low} up to {high}") }
+    return low + __random_below(high - low)
+}
+
+/// A number from zero up to, and not including, one.
+fn random__float() -> float { return __random_float() }
+
+/// So many bytes.
+fn random__bytes(count: int) -> [byte] {
+    if count < 0 { panic("random.bytes({count}): a count is not negative") }
+    return __random_bytes(count)
+}
+
+/// A name that nothing else has: a UUID of version 4, as `xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx`.
+fn random__uuid() -> string {
+    var b := __random_bytes(16)
+    b[6] = byte.from(64 + int.from(b[6]) % 16) else b[6]
+    b[8] = byte.from(128 + int.from(b[8]) % 64) else b[8]
+    text := __hex(b)
+    return text.slice(0, 8) + "-" + text.slice(8, 12) + "-" + text.slice(12, 16) + "-" + text.slice(16, 20) + "-" + text.slice(20, 32)
+}
+
+/// One of the items, each as likely as another; `none` of an empty list.
+fn (self: [T]) pick() -> T? {
+    if self.len == 0 { return none }
+    return self[__random_below(self.len)]
+}
+
+/// Puts the items in an order that is as likely as any other.
+fn (self: var [T]) shuffle() {
+    var i := self.len - 1
+    while i > 0 {
+        j := __random_below(i + 1)
+        held := self[i]
+        self[i] = self[j]
+        self[j] = held
+        i -= 1
+    }
+}
+
 // ---- std/sql ----------------------------------------------------------------------------
 //
 // A database is reached through the support library (`koo-rt/src/pg.rs`), which sends a

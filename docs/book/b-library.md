@@ -119,6 +119,8 @@ The operator `else`, the binding condition and `match` are the other ways to use
 | `var` `v.sort()` | sorts the list in place |
 | `var` `v.sort_by(less: fn(T, T) -> bool)` | sorts the list in place, by `less`; stable |
 | `var` `v.clear()` | removes every element |
+| `v.pick() -> T?` | an element chosen by chance, or `none` of an empty list |
+| `var` `v.shuffle()` | puts the elements in an order chosen by chance |
 
 `contains` and `index_of` need a type with `==`; `sorted`, `sort`, `min` and `max` a type that is ordered; `sum` a list of `int` or `float`.
 
@@ -147,6 +149,8 @@ fn main() {
     v.sort_by((a, b) -> a > b)
     print(v)
     v.each(n -> print(n))
+    v.shuffle()
+    print("{v.sorted()} {v.contains(v.pick() else 0)}")
     v.clear()
     print(v)
     print("{List<float>.with_size(2)} {List<string>.with_capacity(8).len}")
@@ -172,6 +176,7 @@ true false 2 8 2
 4
 4
 3
+[3, 4, 4, 8, 9] true
 []
 [0.0, 0.0] 0
 ```
@@ -439,7 +444,81 @@ A `sql.Query` is written as a string literal where one is expected: the values i
 
 `sql.Error` has the fields `kind: sql.ErrorKind`, `message: string` and `code: string`, and `sql.ErrorKind` is an enumeration: `Connection`, `Constraint`, `Syntax`, `Serialization`, `Timeout`, `NoRows`, `Other`. Chapter 11 has programs that use these.
 
-## B.15 `std/test`
+## B.15 `std/hash`, `std/encoding` and `std/crypto`
+
+| | |
+| --- | --- |
+| `hash.sha256(data: [byte]) -> [byte]` | the SHA-256 digest, of 32 bytes |
+| `encoding.hex(data: [byte]) -> string` | two hexadecimal digits for each byte |
+| `encoding.from_hex(text: string) -> [byte] ! ParseError` | the bytes that hexadecimal text stands for |
+| `encoding.base64(data: [byte]) -> string` | Base64 |
+| `encoding.from_base64(text: string) -> [byte] ! ParseError` | the bytes that Base64 text stands for |
+| `encoding.base64_url(data: [byte]) -> string` | Base64 with `-` and `_`, and no `=` |
+| `encoding.from_base64_url(text: string) -> [byte] ! ParseError` | its reverse |
+| `encoding.url(text: string) -> string` | the text with every byte but letters, digits and `-._~` written as `%` and two digits |
+| `encoding.from_url(text: string) -> string ! ParseError` | its reverse; a `+` is a space |
+| `crypto.hmac_sha256(key: [byte], data: [byte]) -> [byte]` | the HMAC-SHA-256 of the data under the key |
+| `crypto.equal(a: [byte], b: [byte]) -> bool` | whether the two are the same, in a time that does not tell where they differ |
+| `crypto.hash_password(password: string) -> string` | what to keep in place of a password |
+| `crypto.verify_password(password: string, kept: string) -> bool` | whether a password is the one that was hashed |
+
+```koo
+import std/crypto
+import std/encoding
+import std/hash
+
+fn main() {
+    data := "koo".bytes()
+    print(encoding.hex(hash.sha256(data)))
+    print("{encoding.hex(data)} {encoding.from_hex("6b6f6f") else []}")
+    print("{encoding.base64(data)} {encoding.from_base64("a29v") else []}")
+    print("{encoding.base64_url(hash.sha256(data))} {encoding.from_base64_url("a29v") else []}")
+    print("{encoding.url("1 + 1 = 2")} {encoding.from_url("1%20%2B%201") else "?"}")
+    mac := crypto.hmac_sha256("key".bytes(), data)
+    print("{encoding.hex(mac)} {crypto.equal(mac, mac)} {crypto.equal(mac, data)}")
+    kept := crypto.hash_password("secret")
+    print("{crypto.verify_password("secret", kept)} {crypto.verify_password("Secret", kept)}")
+}
+```
+
+```text
+c9b1366e59ac8faa5f9506b8eab9c0b41b9ff5229bd32e15f1cde55615bf32ca
+6b6f6f [107, 111, 111]
+a29v [107, 111, 111]
+ybE2blmsj6pflQa46rnAtBuf9SKb0y4V8c3lVhW_Mso [107, 111, 111]
+1%20%2B%201%20%3D%202 1 + 1
+bd257f2ad597d10ff095571e6180ddd586bcfb73402d07f479721a258b2497c8 true false
+true false
+```
+
+## B.16 `std/random`
+
+| | |
+| --- | --- |
+| `random.int(low: int, high: int) -> int` | a number from `low` up to, and not including, `high`; panics if there is none |
+| `random.float() -> float` | a number from zero up to, and not including, one |
+| `random.bytes(count: int) -> [byte]` | so many bytes |
+| `random.uuid() -> string` | a UUID of version 4 |
+
+Every one is from the operating system's source of randomness for keys.
+
+```koo
+import std/random
+
+fn main() {
+    n := random.int(10, 20)
+    x := random.float()
+    print("{n >= 10 and n < 20} {x >= 0.0 and x < 1.0}")
+    print("{random.bytes(8).len} {random.uuid().len}")
+}
+```
+
+```text
+true true
+8 36
+```
+
+## B.17 `std/test`
 
 | | |
 | --- | --- |

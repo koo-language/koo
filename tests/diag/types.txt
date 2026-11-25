@@ -1584,19 +1584,19 @@ error: expected `int`, found `int?`
 1 error
 
 === import unknown
-import std/crypto
+import std/grpc
 import std/strings
 
 fn main() {
 }
 ---
-error: the package `std/crypto` is not part of this compiler yet
+error: the package `std/grpc` is not part of this compiler yet
  --> main.koo:1:1
   |
-1 | import std/crypto
-  | ^^^^^^^^^^^^^^^^^
+1 | import std/grpc
+  | ^^^^^^^^^^^^^^^
   |
-  = help: the standard packages so far are `std/os`, `std/io`, `std/http`, `std/time`, `std/sql`, `std/sql/postgres` and `std/test`
+  = help: the standard packages so far are `std/os`, `std/io`, `std/time`, `std/http`, `std/sql`, `std/sql/postgres`, `std/hash`, `std/encoding`, `std/crypto`, `std/random` and `std/test`
 
 error: the package `std/strings` is not part of this compiler yet
  --> main.koo:2:1
@@ -1604,7 +1604,7 @@ error: the package `std/strings` is not part of this compiler yet
 2 | import std/strings
   | ^^^^^^^^^^^^^^^^^^
   |
-  = help: the standard packages so far are `std/os`, `std/io`, `std/http`, `std/time`, `std/sql`, `std/sql/postgres` and `std/test`
+  = help: the standard packages so far are `std/os`, `std/io`, `std/time`, `std/http`, `std/sql`, `std/sql/postgres`, `std/hash`, `std/encoding`, `std/crypto`, `std/random` and `std/test`
 
 2 errors
 

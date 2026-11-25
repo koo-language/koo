@@ -193,6 +193,87 @@ pub const INTRINSICS: &[Intrinsic] = &[
         params: &[],
         ret: I::Int,
     },
+    // Digests, bytes as text, and randomness (`koo-rt/src/codec.rs`).
+    Intrinsic {
+        name: "sha256",
+        params: &[I::Bytes],
+        ret: I::Bytes,
+    },
+    Intrinsic {
+        name: "hmac_sha256",
+        params: &[I::Bytes, I::Bytes],
+        ret: I::Bytes,
+    },
+    Intrinsic {
+        name: "pbkdf2_sha256",
+        params: &[I::Bytes, I::Bytes, I::Int],
+        ret: I::Bytes,
+    },
+    Intrinsic {
+        name: "bytes_same",
+        params: &[I::Bytes, I::Bytes],
+        ret: I::Bool,
+    },
+    Intrinsic {
+        name: "hex",
+        params: &[I::Bytes],
+        ret: I::Str,
+    },
+    Intrinsic {
+        name: "hex_valid",
+        params: &[I::Str],
+        ret: I::Bool,
+    },
+    Intrinsic {
+        name: "hex_decode",
+        params: &[I::Str],
+        ret: I::Bytes,
+    },
+    Intrinsic {
+        name: "base64",
+        params: &[I::Bytes, I::Bool],
+        ret: I::Str,
+    },
+    Intrinsic {
+        name: "base64_valid",
+        params: &[I::Str, I::Bool],
+        ret: I::Bool,
+    },
+    Intrinsic {
+        name: "base64_decode",
+        params: &[I::Str, I::Bool],
+        ret: I::Bytes,
+    },
+    Intrinsic {
+        name: "url_encode",
+        params: &[I::Str],
+        ret: I::Str,
+    },
+    Intrinsic {
+        name: "url_valid",
+        params: &[I::Str],
+        ret: I::Bool,
+    },
+    Intrinsic {
+        name: "url_decode",
+        params: &[I::Str],
+        ret: I::Str,
+    },
+    Intrinsic {
+        name: "random_bytes",
+        params: &[I::Int],
+        ret: I::Bytes,
+    },
+    Intrinsic {
+        name: "random_below",
+        params: &[I::Int],
+        ret: I::Int,
+    },
+    Intrinsic {
+        name: "random_float",
+        params: &[],
+        ret: I::Float,
+    },
     // Databases (`std/sql`, `koo-rt/src/pg.rs`).
     Intrinsic {
         name: "sql_open",

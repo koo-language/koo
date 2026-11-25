@@ -612,7 +612,17 @@ impl<'a> Checker<'a> {
                 ast::ImportKind::Package { path, .. }
                     if matches!(
                         path.as_str(),
-                        "std/os" | "std/io" | "std/test" | "std/http" | "std/time" | "std/sql" | "std/sql/postgres"
+                        "std/os"
+                            | "std/io"
+                            | "std/test"
+                            | "std/http"
+                            | "std/time"
+                            | "std/sql"
+                            | "std/sql/postgres"
+                            | "std/hash"
+                            | "std/encoding"
+                            | "std/crypto"
+                            | "std/random"
                     ) =>
                 {
                     let key = (self.file_of(import.span), import.binding.clone());
@@ -626,7 +636,7 @@ impl<'a> Checker<'a> {
                     self.error_help(
                         import.span,
                         format!("the package `{path}` is not part of this compiler yet"),
-                        "the standard packages so far are `std/os`, `std/io`, `std/http`, `std/time`, `std/sql`, `std/sql/postgres` and `std/test`",
+                        "the standard packages so far are `std/os`, `std/io`, `std/time`, `std/http`, `std/sql`, `std/sql/postgres`, `std/hash`, `std/encoding`, `std/crypto`, `std/random` and `std/test`",
                     );
                 }
                 _ => self.unsupported(import.span, "imports of other packages are"),

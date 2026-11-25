@@ -35,6 +35,7 @@
 use core::fmt::Write;
 
 pub mod actor;
+pub mod codec;
 pub mod digest;
 pub mod http;
 pub mod pg;
