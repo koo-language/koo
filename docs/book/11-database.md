@@ -589,7 +589,7 @@ A database on the same machine, or in the same private network, may be spoken to
 | --- | --- |
 | `?sslmode=disable` | never |
 | `?sslmode=prefer` | if the server will; this is what an address that says nothing means |
-| `?sslmode=require` | always, or the connection fails; but whoever answers is believed to be the database |
+| `?sslmode=require` | always, or the connection fails; but whoever answers is believed to be the database, unless `sslrootcert` names an authority, which its certificate must then be signed by |
 | `?sslmode=verify-ca` | always, and the server must show a certificate that an authority vouches for |
 | `?sslmode=verify-full` | the same, and the certificate must be that of the host in the address |
 

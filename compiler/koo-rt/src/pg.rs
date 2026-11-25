@@ -1258,7 +1258,7 @@ pub unsafe extern "C" fn koo_sql_open(url: *const Header, limit: i64, patience: 
         let authorities = setting(b"sslrootcert").unwrap_or(b"");
         let secure = match setting(b"sslmode") {
             None | Some(b"prefer") => 1,
-            Some(b"disable") | Some(b"allow") => 0,
+            Some(b"disable") => 0,
             // With authorities given, to encrypt is also to ask who is there.
             Some(b"require") if authorities.is_empty() => 2,
             Some(b"require") | Some(b"verify-ca") => 3,
