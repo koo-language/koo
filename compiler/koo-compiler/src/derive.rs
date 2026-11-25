@@ -200,13 +200,16 @@ impl<'a> Deriver<'a> {
         }
     }
 
-    fn fields_hold(&self, fields: &'a [Field]) -> bool {
+    /// `tagged` is for the fields of a variant, which is written with a key `type`
+    /// that says which variant it is: no field of it can have that key too.
+    fn fields_hold(&self, fields: &'a [Field], tagged: Option<Rename>) -> bool {
         fields.iter().all(|field| {
             // A field that is not written must have something to be when a value is read.
             if field.name.name.starts_with('_') {
                 return field.default.is_some();
             }
-            field.name.name != "type" && self.holds(&field.ty)
+            let key = |rename: Rename| own_key(field).map_or_else(|| rename.of(&field.name.name), str::to_string);
+            tagged.is_none_or(|rename| key(rename) != "type") && self.holds(&field.ty)
         })
     }
 
@@ -457,7 +460,7 @@ impl<'a> Deriver<'a> {
             } else {
                 format!("{written}?")
             };
-            let _ = writeln!(out, "    var f{index}: {holder} = none");
+            let _ = writeln!(out, "    var got{index}: {holder} = none");
         }
         out.push_str("    var first := true\n    j__open(text, var at, 123)?\n");
         out.push_str("    while j__more(text, var at, 125, var first)? {\n        key := j__key(text, var at)?\n");
@@ -468,7 +471,7 @@ impl<'a> Deriver<'a> {
                 out,
                 "            \"{name}\" => {{\n                \
                  value := {read} else e => fail j__in(e, \"/{name}\")\n                \
-                 f{index} = value\n            }}\n"
+                 got{index} = value\n            }}\n"
             );
         }
         out.push_str("            _ => j__skip(text, var at)?\n        }\n    }\n");
@@ -482,16 +485,16 @@ impl<'a> Deriver<'a> {
                 continue;
             }
             if self.is_optional(&field.ty) {
-                let _ = writeln!(out, "        {name}: f{index},");
+                let _ = writeln!(out, "        {name}: got{index},");
             } else {
                 let key = self.key(field);
-                let _ = writeln!(out, "        {name}: f{index} else fail j__missing(\"{key}\"),");
+                let _ = writeln!(out, "        {name}: got{index} else fail j__missing(\"{key}\"),");
             }
         }
         out.push_str("    }\n");
         for (index, field) in defaulted {
             let name = &field.name.name;
-            let _ = writeln!(out, "    if value := f{index} {{ result.{name} = value }}");
+            let _ = writeln!(out, "    if value := got{index} {{ result.{name} = value }}");
         }
         out.push_str("    return result\n");
         out
@@ -1173,11 +1176,11 @@ pub fn derive(package: &File, json: bool, rows: bool, envs: bool) -> Derived {
             .copied()
             .filter(|name| deriver.ok.contains(name))
             .filter(|name| match (deriver.structs.get(name), deriver.enums.get(name)) {
-                (Some(fields), _) => !deriver.fields_hold(fields),
-                (_, Some(decl)) => !decl
-                    .variants
-                    .iter()
-                    .all(|variant| deriver.fields_hold(variant.fields.as_deref().unwrap_or(&[]))),
+                (Some(fields), _) => !deriver.fields_hold(fields, None),
+                (_, Some(decl)) => !decl.variants.iter().all(|variant| {
+                    let rename = deriver.renames.get(name).copied().unwrap_or(Rename::Snake);
+                    deriver.fields_hold(variant.fields.as_deref().unwrap_or(&[]), Some(rename))
+                }),
                 _ => !handles.contains(name),
             })
             .collect();

@@ -1,0 +1,14 @@
+// A field may have any name in JSON that it may have in a structure: `type`, the
+// name of a basic type, and the names the compiler uses in what it writes.
+
+type Odd = { int: int, string: string, type: string, got0: int, result: int, text: string, at: int, key: string, first: bool, value: int, out: string, count: int, self_: int }
+
+
+fn main() ! JsonError {
+    odd := Odd { int: 1, string: "s", type: "t", got0: 2, result: 3, text: "x", at: 4, key: "k", first: true, value: 5, out: "o", count: 6, self_: 7 }
+    print(odd.to_json())
+    print(Odd.from_json(odd.to_json())?)
+}
+
+//= {"int":1,"string":"s","type":"t","got0":2,"result":3,"text":"x","at":4,"key":"k","first":true,"value":5,"out":"o","count":6,"self_":7}
+//= Odd { int: 1, string: "s", type: "t", got0: 2, result: 3, text: "x", at: 4, key: "k", first: true, value: 5, out: "o", count: 6, self_: 7 }

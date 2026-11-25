@@ -476,12 +476,17 @@ impl<'a> Checker<'a> {
                     "from_env" => Some(
                         "`from_env` is written for a struct whose every field is an `int`, a `float`, a `bool`, a `string` or a `Duration`, or an optional of one: each is read from the environment variable of its name in capitals",
                     ),
+                    "from_json" => Some(
+                        "JSON is written for a struct or an enum whose every field is a number, a string, a boolean, a byte, a list, an optional, a map with string keys, or another such type. A type with type parameters has none, nor one with a field that is a function, a tuple or an optional of an optional, nor an enum with a variant whose field has the key `type`, which says which variant it is (Section 8.7)",
+                    ),
                     "from_row" => Some(
                         "`from_row` is written for a struct whose every field is an `int`, a `float`, a `bool`, a `string` or a `Time`, or an optional of one: each is read from the column of its name (Section 10.3)",
                     ),
                     _ => None,
                 };
                 if let (Some(help), Some(Owner::Struct(_))) = (written, owner) {
+                    self.error_help(name.span, message, help);
+                } else if let (Some(help), Some(Owner::Enum(_)), "from_json") = (written, owner, name.name.as_str()) {
                     self.error_help(name.span, message, help);
                 } else if is_method {
                     self.error_help(
@@ -920,6 +925,10 @@ impl<'a> Checker<'a> {
                         self.help(format!(
                             "`{method}` is called on the `{inner}` inside: `x?.{method}(...)` passes the error on to the caller, and `(x else fallback).{method}(...)` gives a value in its place (Section 6.4)"
                         ));
+                    }
+                    // A type that JSON is not written for: why not.
+                    Ty::Struct(_) | Ty::Enum(_) if method == "to_json" => {
+                        self.error_help(name.span, message, "JSON is written for a struct or an enum whose every field is a number, a string, a boolean, a byte, a list, an optional, a map with string keys, or another such type. A type with type parameters has none, nor one with a field that is a function, a tuple or an optional of an optional, nor an enum with a variant whose field has the key `type`, which says which variant it is (Section 8.7)");
                     }
                     // `xs.length()`: the number of elements, which is a field.
                     Ty::List(_) | Ty::Str

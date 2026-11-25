@@ -1586,7 +1586,8 @@ fn (self: HttpResponse) header(name: string, value: string) -> HttpResponse {
                 file: self.file,
             }
         }
-        "content-length" | "transfer-encoding" | "connection" | "date" => { return self }
+        // A header has a name.
+        "content-length" | "transfer-encoding" | "connection" | "date" | "" => { return self }
         _ => {}
     }
     return HttpResponse {

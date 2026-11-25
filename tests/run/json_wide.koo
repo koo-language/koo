@@ -1,0 +1,11 @@
+// A structure of many fields, more than 32 and more than 64, as JSON: the names the
+// compiler writes for itself are no names of types.
+
+type Wide = { a0: int = 0, a1: int = 1, a2: int = 2, a3: int = 3, a4: int = 4, a5: int = 5, a6: int = 6, a7: int = 7, a8: int = 8, a9: int = 9, a10: int = 10, a11: int = 11, a12: int = 12, a13: int = 13, a14: int = 14, a15: int = 15, a16: int = 16, a17: int = 17, a18: int = 18, a19: int = 19, a20: int = 20, a21: int = 21, a22: int = 22, a23: int = 23, a24: int = 24, a25: int = 25, a26: int = 26, a27: int = 27, a28: int = 28, a29: int = 29, a30: int = 30, a31: int = 31, a32: int = 32, a33: int = 33, a34: int = 34, a35: int = 35, a36: int = 36, a37: int = 37, a38: int = 38, a39: int = 39, a40: int = 40, a41: int = 41, a42: int = 42, a43: int = 43, a44: int = 44, a45: int = 45, a46: int = 46, a47: int = 47, a48: int = 48, a49: int = 49, a50: int = 50, a51: int = 51, a52: int = 52, a53: int = 53, a54: int = 54, a55: int = 55, a56: int = 56, a57: int = 57, a58: int = 58, a59: int = 59, a60: int = 60, a61: int = 61, a62: int = 62, a63: int = 63, a64: int = 64, a65: int = 65, a66: int = 66, a67: int = 67, a68: int = 68, a69: int = 69 }
+
+fn main() ! JsonError {
+    wide := Wide.from_json("\{\"a32\": 7, \"a64\": 9}")?
+    print("{wide.a0} {wide.a32} {wide.a64} {wide.a69} {wide.to_json().len}")
+}
+
+//= 0 7 9 69 609
