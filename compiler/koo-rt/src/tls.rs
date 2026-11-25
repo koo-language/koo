@@ -22,6 +22,88 @@ unsafe extern "C" {
     /// which knows whether the program can load one (`koo/src/main.rs`).
     fn koo_dlopen(name: *const u8) -> *mut u8;
     fn koo_dlsym(library: *mut u8, name: *const u8) -> *mut u8;
+    fn fcntl(fd: i32, command: i32, ...) -> i32;
+    fn getsockopt(fd: i32, level: i32, name: i32, value: *mut i32, len: *mut u32) -> i32;
+    fn poll(fds: *mut Waiting, count: usize, milliseconds: i32) -> i32;
+}
+
+#[repr(C)]
+struct Waiting {
+    fd: i32,
+    events: i16,
+    revents: i16,
+}
+
+/// Greets the server over a connection, which takes several trips there and back. The
+/// socket is told not to wait meanwhile, and each wait is the thread's to spend: a
+/// handler of a server that opens an encrypted connection does not hold up the others
+/// in its worker while the two sides agree. The time the socket was given to wait for
+/// an answer is the time the whole greeting has; when it is up, the error is `AGAIN`,
+/// as it is when a read on the socket runs out of time.
+unsafe fn greet(api: &Api, ssl: *mut u8, fd: i32) -> i32 {
+    unsafe {
+        const F_GETFL: i32 = 3;
+        const F_SETFL: i32 = 4;
+        let non_blocking = if cfg!(target_os = "macos") { 0x4 } else { 0x800 };
+        let (level, patience) = if cfg!(target_os = "macos") {
+            (0xffff, 0x1006)
+        } else {
+            (1, 20)
+        };
+        // The time is kept as seconds and millionths: two words, the second of which
+        // is half a word on macOS.
+        let (mut time, mut len) = ([0i64; 2], 16u32);
+        let until = if getsockopt(fd, level, patience, time.as_mut_ptr() as *mut i32, &mut len) == 0 {
+            let millionths = if cfg!(target_os = "macos") {
+                time[1] & 0xffff_ffff
+            } else {
+                time[1]
+            };
+            match time[0] * 1_000_000_000 + millionths * 1000 {
+                0 => 0,
+                nanos => crate::koo_now_nanos() + nanos,
+            }
+        } else {
+            0
+        };
+        let flags = fcntl(fd, F_GETFL);
+        fcntl(fd, F_SETFL, flags | non_blocking);
+        let done = loop {
+            let done = quietly(|| (api.ssl_connect)(ssl));
+            if done == 1 {
+                break done;
+            }
+            // 2 is for more to read before it can go on, and 3 for room to write.
+            let write = match (api.ssl_get_error)(ssl, done) {
+                2 => false,
+                3 => true,
+                _ => break done,
+            };
+            let came = match crate::fiber::wait(fd, write, until) {
+                crate::fiber::Waited::Came => true,
+                crate::fiber::Waited::TimeUp => false,
+                crate::fiber::Waited::NotHere => {
+                    let mut waiting = Waiting {
+                        fd,
+                        events: if write { 4 } else { 1 },
+                        revents: 0,
+                    };
+                    let left = match until {
+                        0 => -1,
+                        until => ((until - crate::koo_now_nanos()) / 1_000_000).clamp(0, i32::MAX as i64) as i32,
+                    };
+                    // A signal ends the wait early, and the greeting is tried again.
+                    poll(&mut waiting, 1, left) != 0
+                }
+            };
+            if !came {
+                *errno_location() = AGAIN;
+                break done;
+            }
+        };
+        fcntl(fd, F_SETFL, flags);
+        done
+    }
 }
 
 /// How much is asked of the server's certificate.
@@ -282,7 +364,7 @@ pub unsafe fn connect(
         if trust == Trust::Host {
             (api.ssl_set1_host)(ssl, name.as_ptr());
         }
-        let done = quietly(|| (api.ssl_connect)(ssl));
+        let done = greet(api, ssl, fd);
         if done != 1 {
             let refused = (api.ssl_get_verify_result)(ssl);
             let len = if trust != Trust::Any && refused != 0 {
