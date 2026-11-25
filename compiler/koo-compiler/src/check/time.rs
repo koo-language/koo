@@ -111,6 +111,94 @@ impl Checker<'_> {
         Some(self.mk(ExprKind::StructLit(query, vec![parts, params]), Ty::Struct(query), span))
     }
 
+    /// A string literal where a line of the log is expected (Section 3.3): the text
+    /// between the values, the values as text, and for each a name, which is the
+    /// expression itself where that is a name or a field of one.
+    pub(super) fn log_template(&mut self, parts: &[koo_syntax::ast::StrPart], span: Span) -> Option<Expr> {
+        use koo_syntax::ast;
+        fn named(expr: &ast::Expr) -> Option<String> {
+            match &expr.kind {
+                ast::ExprKind::Name(name) => Some(name.name.clone()),
+                ast::ExprKind::Field { base, name } => Some(format!("{}.{}", named(base)?, name.name)),
+                _ => None,
+            }
+        }
+        let Some(Ty::Struct(message)) = self.prelude_struct("LogMessage") else {
+            return None;
+        };
+        let mut texts = vec![String::new()];
+        let (mut shown, mut names, mut kinds) = (Vec::new(), Vec::new(), Vec::new());
+        for part in parts {
+            match part {
+                ast::StrPart::Lit(text) => texts.last_mut().unwrap().push_str(text),
+                ast::StrPart::Interp { expr, format } => {
+                    let value = self.string(std::slice::from_ref(part), expr.span);
+                    // A number or a boolean is written bare in JSON, unless a format
+                    // has made it something else, as `{id:05}` does.
+                    let kind = match &value.kind {
+                        ExprKind::Interp(inner) if format.is_none() => match inner.first() {
+                            Some(InterpPart::Value(inner, _)) => match inner.ty {
+                                Ty::Int | Ty::Bool => 1,
+                                Ty::Float => 2,
+                                _ => 0,
+                            },
+                            _ => 0,
+                        },
+                        _ => 0,
+                    };
+                    let name = named(expr).unwrap_or_else(|| format!("value{}", names.len() + 1));
+                    names.push(self.mk(ExprKind::Str(name), Ty::Str, expr.span));
+                    kinds.push(self.mk(ExprKind::Int(kind), Ty::Int, expr.span));
+                    shown.push(value);
+                    texts.push(String::new());
+                }
+            }
+        }
+        let texts: Vec<Expr> = texts
+            .into_iter()
+            .map(|text| self.mk(ExprKind::Str(text), Ty::Str, span))
+            .collect();
+        let fields = vec![
+            self.mk(ExprKind::ListLit(texts), Ty::list(Ty::Str), span),
+            self.mk(ExprKind::ListLit(shown), Ty::list(Ty::Str), span),
+            self.mk(ExprKind::ListLit(names), Ty::list(Ty::Str), span),
+            self.mk(ExprKind::ListLit(kinds), Ty::list(Ty::Int), span),
+        ];
+        Some(self.mk(ExprKind::StructLit(message, fields), Ty::Struct(message), span))
+    }
+
+    /// A call that writes a line of the log, made to cost nothing when lines of its
+    /// level are not wanted: the line is not even put together.
+    pub(super) fn log_call(&mut self, level: usize, call: Expr, span: Span) -> Expr {
+        let Some(on) = crate::intrinsics::find("log_on") else {
+            return call;
+        };
+        if call.ty != Ty::Unit {
+            return call;
+        }
+        let level = self.mk(ExprKind::Int(level as i64), Ty::Int, span);
+        let wanted = self.mk(
+            ExprKind::Intrinsic {
+                name: on.name,
+                args: vec![level],
+            },
+            Ty::Bool,
+            span,
+        );
+        self.mk(
+            ExprKind::If {
+                cond: Box::new(Cond::Expr(wanted)),
+                then: Block {
+                    stmts: vec![Stmt::Expr(call)],
+                    value: None,
+                },
+                otherwise: None,
+            },
+            Ty::Unit,
+            span,
+        )
+    }
+
     /// `1h30min`: a `Duration` of so many nanoseconds. The lexer has seen to it that the
     /// text is digits and units, the units from largest to smallest.
     pub(super) fn duration_literal(&mut self, text: &str, span: Span) -> Expr {

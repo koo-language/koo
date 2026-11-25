@@ -435,6 +435,7 @@ extern "C" fn stack_signal(signal: i32, info: *const u8, _context: *const u8) {
         let low = me().stack_low;
         if low != 0 && address < low + 4096 && address + BELOW >= low {
             overflowed();
+            crate::actor::remove_socket();
             _exit(101);
         }
         let action: SignalAction = core::mem::zeroed();

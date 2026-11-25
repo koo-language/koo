@@ -1663,6 +1663,81 @@ fn (self: var [T]) shuffle() {
     }
 }
 
+// ---- std/log ----------------------------------------------------------------------------
+
+enum LogLevel { Debug, Info, Warn, Error, Off }
+
+/// What a line of the log says. A string literal where one is expected is made one by
+/// the compiler (Section 3.3): the text between its values, the values as they are
+/// shown, a name for each, and whether each is a number or a boolean, which JSON
+/// writes bare (1), a float (2), or anything else (0).
+type LogMessage = { _parts: [string], _shown: [string], _names: [string], _kinds: [int] }
+
+fn l__write(level: string, message: LogMessage) {
+    var text := message._parts[0]
+    for i in 0..message._shown.len {
+        text += message._shown[i] + message._parts[i + 1]
+    }
+    var line := ""
+    if __log_json() {
+        line = "\{"
+        if __log_timed() { line += "\"time\":\"{time__now()}\"," }
+        line += "\"level\":\"{level}\",\"message\":" + __json_quote(text)
+        var written: [string] = ["time", "level", "message"]
+        for i in 0..message._names.len {
+            name := message._names[i]
+            if written.contains(name) { continue }
+            written.push(name)
+            shown := message._shown[i]
+            kind := message._kinds[i]
+            // A float that is not a number has no form in JSON but a string.
+            bare := kind == 1 or (kind == 2 and not shown.contains("N") and not shown.contains("inf"))
+            line += "," + __json_quote(name) + ":"
+            if bare {
+                line += shown
+            } else {
+                line += __json_quote(shown)
+            }
+        }
+        line += "}"
+    } else {
+        if __log_timed() { line = "{time__now()} " }
+        line += "{level.to_upper():<5} {text}"
+    }
+    __log_write(line)
+}
+
+/// Writes a line that is of use only to someone looking for a fault.
+fn log__debug(message: LogMessage) {
+    if __log_on(0) { l__write("debug", message) }
+}
+
+/// Writes a line that says what the program did.
+fn log__info(message: LogMessage) {
+    if __log_on(1) { l__write("info", message) }
+}
+
+/// Writes a line that says something is not as it should be, though the program goes on.
+fn log__warn(message: LogMessage) {
+    if __log_on(2) { l__write("warn", message) }
+}
+
+/// Writes a line that says something failed.
+fn log__error(message: LogMessage) {
+    if __log_on(3) { l__write("error", message) }
+}
+
+/// Sets the lowest level that is written, whatever the environment says.
+fn log__set_level(level: LogLevel) {
+    __log_level(match level {
+        LogLevel.Debug => 0
+        LogLevel.Info => 1
+        LogLevel.Warn => 2
+        LogLevel.Error => 3
+        LogLevel.Off => 4
+    })
+}
+
 // ---- std/sql ----------------------------------------------------------------------------
 //
 // A database is reached through the support library (`koo-rt/src/pg.rs`), which sends a

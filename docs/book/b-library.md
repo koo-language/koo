@@ -518,7 +518,36 @@ true true
 8 36
 ```
 
-## B.17 `std/test`
+## B.17 `std/log`
+
+| | |
+| --- | --- |
+| `log.debug(message)`, `log.info(message)`, `log.warn(message)`, `log.error(message)` | writes a line of that level on the standard error output |
+| `log.set_level(level: log.Level)` | sets the lowest level that is written: `log.Level.Debug`, `Info`, `Warn`, `Error` or `Off` |
+
+A message is written as a string literal, and the values in it are kept as fields of the line (Section 8.10). The environment variables `KOO_LOG_LEVEL`, `KOO_LOG` and `KOO_LOG_TIME` set the level, the form and whether the time is written.
+
+```koo
+import std/log
+
+fn main() {
+    count := 3
+    log.debug("not written unless asked for")
+    log.info("{count} items")
+    log.warn("nearly full")
+    log.set_level(log.Level.Error)
+    log.warn("not written")
+    log.error("full")
+}
+```
+
+```log
+INFO  3 items
+WARN  nearly full
+ERROR full
+```
+
+## B.18 `std/test`
 
 | | |
 | --- | --- |

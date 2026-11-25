@@ -779,6 +779,10 @@ true
 - `hash_password` returns the text to store in place of a password: PBKDF2 with a fresh salt and 600,000 rounds.
 - Every random number comes from the operating system's source for keys, so `random.bytes` is fit for tokens and there is no separate "secure" generator to remember. A list has `pick()` and `shuffle()`.
 
+## Logging
+
+`std/log` has `log.debug`, `log.info`, `log.warn` and `log.error`. A line is written like a string, `log.info("order {order.id} paid")`, and like a query it is not one: with `KOO_LOG=json` in the environment each line is a JSON object in which `order.id` is a field of its own, as a number, beside the message. `KOO_LOG_LEVEL` says which levels are written, and a line of a level that is not costs nothing, since its values are not even computed. [Section 8.10 of the book](book/08-io.md) shows both forms.
+
 ## A web server
 
 `std/http` is a server in a few lines. A handler is a function from a request to a response.

@@ -211,19 +211,66 @@ fn check(args: &[String]) -> ExitCode {
     }
 }
 
-/// A directory for the files of one build: one for each source and each way of building
-/// it, so that two builds of a program at once do not write over each other.
-fn work_dir(source: &Path, how: &str) -> std::io::Result<PathBuf> {
-    use std::hash::{Hash, Hasher};
-    let mut hasher = std::collections::hash_map::DefaultHasher::new();
-    source
-        .canonicalize()
-        .unwrap_or_else(|_| source.to_path_buf())
-        .hash(&mut hasher);
-    how.hash(&mut hasher);
-    let dir = std::env::temp_dir().join(format!("koo-build-{:016x}", hasher.finish()));
-    std::fs::create_dir_all(&dir)?;
-    Ok(dir)
+/// A directory for the files of one build, which is removed when the build is over: a
+/// build leaves nothing behind but the program it was asked for. Each build has its own,
+/// so that two builds at once do not write over each other.
+struct WorkDir {
+    path: PathBuf,
+    /// Set when the files are wanted after all, to look into what went wrong.
+    keep: bool,
+}
+
+impl Drop for WorkDir {
+    fn drop(&mut self) {
+        if !self.keep {
+            let _ = std::fs::remove_dir_all(&self.path);
+        }
+    }
+}
+
+/// The program that `koo run` is running, for the signals that are passed on to it.
+static RUNNING: std::sync::atomic::AtomicI32 = std::sync::atomic::AtomicI32::new(0);
+
+unsafe extern "C" {
+    fn kill(process: i32, signal: i32) -> i32;
+}
+
+extern "C" fn pass_on(stop: i32) {
+    let running = RUNNING.load(std::sync::atomic::Ordering::Relaxed);
+    if running > 0 {
+        unsafe { kill(running, stop) };
+    }
+}
+
+fn work_dir() -> std::io::Result<WorkDir> {
+    let temp = std::env::temp_dir();
+    // A build that was killed could not remove its directory: what is left of builds
+    // of more than a day ago is removed now.
+    if let Ok(entries) = std::fs::read_dir(&temp) {
+        for entry in entries.flatten() {
+            let old = entry
+                .metadata()
+                .and_then(|metadata| metadata.modified())
+                .ok()
+                .and_then(|modified| modified.elapsed().ok())
+                .is_some_and(|age| age.as_secs() > 24 * 60 * 60);
+            if old && entry.file_name().to_string_lossy().starts_with("koo-build-") {
+                let _ = std::fs::remove_dir_all(entry.path());
+            }
+        }
+    }
+    let started = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |since| since.as_nanos());
+    let mut attempt = 0;
+    loop {
+        let path = temp.join(format!("koo-build-{}-{started}-{attempt}", std::process::id()));
+        match std::fs::create_dir(&path) {
+            Ok(()) => return Ok(WorkDir { path, keep: false }),
+            Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists && attempt < 100 => attempt += 1,
+            Err(err) => return Err(err),
+        }
+    }
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -341,15 +388,14 @@ fn build(args: &[String], mode: Mode, program_args: &[std::ffi::OsString]) -> Ex
     } else {
         ir
     };
-    let how = format!("{command} {release} {fixed} {}", sanitize.unwrap_or(""));
-    let prepared = work_dir(source_path, &how).and_then(|dir| {
-        let ir_path = dir.join("program.ll");
-        let runtime = dir.join("libkoo_rt.a");
+    let prepared = work_dir().and_then(|dir| {
+        let ir_path = dir.path.join("program.ll");
+        let runtime = dir.path.join("libkoo_rt.a");
         std::fs::write(&ir_path, &ir)?;
         std::fs::write(&runtime, RUNTIME)?;
         Ok((dir, ir_path, runtime))
     });
-    let (dir, ir_path, runtime) = match prepared {
+    let (mut dir, ir_path, runtime) = match prepared {
         Ok(paths) => paths,
         Err(err) => {
             eprintln!("koo: cannot prepare the build directory: {err}");
@@ -358,7 +404,7 @@ fn build(args: &[String], mode: Mode, program_args: &[std::ffi::OsString]) -> Ex
     };
     let executable = match (&output, run) {
         (Some(output), _) => output.clone(),
-        (None, true) => dir.join(stem),
+        (None, true) => dir.path.join(stem),
         (None, false) => PathBuf::from(stem),
     };
     // LLVM does the optimizing and the linking, through the system's clang (Section 13.2).
@@ -410,10 +456,13 @@ fn build(args: &[String], mode: Mode, program_args: &[std::ffi::OsString]) -> Ex
                     "koo: the program could not be built with the sanitizer. That needs clang's sanitizer \
                      libraries: `libclang-rt-dev` on Debian and Ubuntu, `compiler-rt` on Fedora and Alpine."
                 ),
-                _ => eprintln!(
-                    "koo: clang rejected the generated code. This is a bug in the compiler; the IR is at {}",
-                    ir_path.display()
-                ),
+                _ => {
+                    dir.keep = true;
+                    eprintln!(
+                        "koo: clang rejected the generated code. This is a bug in the compiler; the IR is at {}",
+                        ir_path.display()
+                    )
+                }
             }
             return ExitCode::FAILURE;
         }
@@ -434,9 +483,32 @@ fn build(args: &[String], mode: Mode, program_args: &[std::ffi::OsString]) -> Ex
     if mode == Mode::Test {
         return run_tests(&executable);
     }
-    match Command::new(&executable).args(program_args).status() {
+    // While the program runs, a signal to stop is passed on to it and does not end this
+    // process, which has the files of the build to remove when the program has ended.
+    // (They cannot be removed sooner: macOS kills a program whose file is gone.)
+    let ended = Command::new(&executable)
+        .args(program_args)
+        .spawn()
+        .and_then(|mut child| {
+            RUNNING.store(child.id() as i32, std::sync::atomic::Ordering::Relaxed);
+            for stop in [1, 2, 15] {
+                unsafe { signal(stop, pass_on as extern "C" fn(i32) as usize) };
+            }
+            child.wait()
+        });
+    drop(dir);
+    match ended {
         Ok(status) => match status.code() {
             Some(code) => ExitCode::from(code as u8),
+            // Stopped from outside, by an interrupt, a hang-up, a closed pipe or a
+            // request to end: that is no fault of the program's, and is not reported.
+            None if matches!(
+                std::os::unix::process::ExitStatusExt::signal(&status),
+                Some(1 | 2 | 13 | 15)
+            ) =>
+            {
+                ExitCode::from(128 + std::os::unix::process::ExitStatusExt::signal(&status).unwrap_or(0) as u8)
+            }
             None => {
                 // No exit status: the program was stopped by a signal. The one way a
                 // Koo program is known to crash is by running out of stack; anything

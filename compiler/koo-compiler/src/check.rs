@@ -514,7 +514,7 @@ impl<'a> Checker<'a> {
 
     /// A type's name as the program writes it: the prelude's `HttpRequest` is `http.Request`.
     pub(crate) fn shown_name(&self, name: &str, prelude: bool) -> String {
-        for (prefix, package) in [("Http", "http"), ("Sql", "sql")] {
+        for (prefix, package) in [("Http", "http"), ("Sql", "sql"), ("Log", "log")] {
             if let Some(rest) = name.strip_prefix(prefix)
                 && prelude
                 && rest.starts_with(char::is_uppercase)
@@ -623,6 +623,7 @@ impl<'a> Checker<'a> {
                             | "std/encoding"
                             | "std/crypto"
                             | "std/random"
+                            | "std/log"
                     ) =>
                 {
                     let key = (self.file_of(import.span), import.binding.clone());
@@ -636,7 +637,7 @@ impl<'a> Checker<'a> {
                     self.error_help(
                         import.span,
                         format!("the package `{path}` is not part of this compiler yet"),
-                        "the standard packages so far are `std/os`, `std/io`, `std/time`, `std/http`, `std/sql`, `std/sql/postgres`, `std/hash`, `std/encoding`, `std/crypto`, `std/random` and `std/test`",
+                        "the standard packages so far are `std/os`, `std/io`, `std/time`, `std/http`, `std/sql`, `std/sql/postgres`, `std/hash`, `std/encoding`, `std/crypto`, `std/random`, `std/log` and `std/test`",
                     );
                 }
                 _ => self.unsupported(import.span, "imports of other packages are"),
@@ -2753,6 +2754,11 @@ impl<'a> Checker<'a> {
                 "the value may be an error: `x?` passes the error on to the caller, and `x else fallback` gives a value in its place (Section 6.4)",
             ),
             (Ty::Result(..), Ty::Result(..)) => Some("the errors of the value are not all in the expected error set"),
+            (Ty::Struct(id), Ty::Str) if self.program.structs[*id].name == "LogMessage" && self.is_opaque(expected) => {
+                Some(
+                    "a line of the log is written as a string literal, so that the values in it are kept as fields: `log.info(\"{text}\")` logs a string that the program has (Section 3.3)",
+                )
+            }
             (Ty::Struct(id), Ty::Str) if self.program.structs[*id].name == "SqlQuery" && self.is_opaque(expected) => {
                 Some(
                     "a query is written as a string literal where one is expected, so that the values in it are sent apart from its text; for text the program has put together itself there is `sql.Query.raw(text)` (Section 10.3)",

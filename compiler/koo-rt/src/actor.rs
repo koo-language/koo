@@ -1429,6 +1429,7 @@ mod alone {
         false
     }
     pub unsafe fn at_exit() {}
+    pub extern "C" fn remove_socket() {}
     #[unsafe(no_mangle)]
     pub unsafe extern "C" fn koo_actor_home() -> *mut Header {
         unsafe { new_str(b"here") }
@@ -1634,6 +1635,26 @@ mod remote {
         }
     }
 
+    /// The path of the socket's file, ended by a zero, and the process that made it: a
+    /// process forked from it must not remove what is its parent's.
+    static mut SOCKET_PATH: [u8; 128] = [0; 128];
+    static mut SOCKET_OWNER: i32 = 0;
+
+    unsafe extern "C" {
+        fn atexit(function: extern "C" fn()) -> i32;
+    }
+
+    /// Removes the socket's file. It allocates nothing, so that it can be called from
+    /// where a signal is handled.
+    #[allow(static_mut_refs)]
+    pub extern "C" fn remove_socket() {
+        unsafe {
+            if SOCKET_OWNER != 0 && SOCKET_OWNER == getpid() && SOCKET_PATH[0] != 0 {
+                unlink(SOCKET_PATH.as_ptr());
+            }
+        }
+    }
+
     /// Where other processes reach the actors of this one. The socket is made the first
     /// time it is asked for.
     #[unsafe(no_mangle)]
@@ -1675,6 +1696,14 @@ mod remote {
                     die(&[b"actors could not be started: ", c_text(strerror(error()))]);
                 }
                 LISTENER = fd;
+                // The socket has a file on macOS, which is removed however the process
+                // ends, short of being killed: by `main` returning, a panic, or `exit`.
+                if cfg!(target_os = "macos") {
+                    let kept = text.len().min(SOCKET_PATH.len() - 1);
+                    SOCKET_PATH[..kept].copy_from_slice(&text[..kept]);
+                    SOCKET_OWNER = getpid();
+                    atexit(remove_socket);
+                }
                 // The address is the support library's own, and every handle of an actor
                 // of this process has it: a constant, which no thread counts.
                 let home = new_str(text);

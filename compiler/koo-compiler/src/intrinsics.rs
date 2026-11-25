@@ -274,6 +274,32 @@ pub const INTRINSICS: &[Intrinsic] = &[
         params: &[],
         ret: I::Float,
     },
+    // Logging (`std/log`, `koo-rt/src/log.rs`).
+    Intrinsic {
+        name: "log_on",
+        params: &[I::Int],
+        ret: I::Bool,
+    },
+    Intrinsic {
+        name: "log_level",
+        params: &[I::Int],
+        ret: I::Unit,
+    },
+    Intrinsic {
+        name: "log_json",
+        params: &[],
+        ret: I::Bool,
+    },
+    Intrinsic {
+        name: "log_timed",
+        params: &[],
+        ret: I::Bool,
+    },
+    Intrinsic {
+        name: "log_write",
+        params: &[I::Str],
+        ret: I::Unit,
+    },
     // Databases (`std/sql`, `koo-rt/src/pg.rs`).
     Intrinsic {
         name: "sql_open",

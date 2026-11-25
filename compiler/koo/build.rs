@@ -9,7 +9,15 @@ fn main() {
     let out = PathBuf::from(env::var("OUT_DIR").unwrap());
     let source = Path::new(env!("CARGO_MANIFEST_DIR")).join("../koo-rt/src/lib.rs");
     println!("cargo:rerun-if-changed={}", source.display());
-    for file in ["http.rs", "actor.rs", "digest.rs", "codec.rs", "pg.rs", "thread.rs"] {
+    for file in [
+        "http.rs",
+        "actor.rs",
+        "digest.rs",
+        "codec.rs",
+        "log.rs",
+        "pg.rs",
+        "thread.rs",
+    ] {
         println!("cargo:rerun-if-changed={}", source.with_file_name(file).display());
     }
     let rustc = env::var("RUSTC").unwrap_or_else(|_| "rustc".to_string());

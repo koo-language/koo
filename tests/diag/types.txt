@@ -1596,7 +1596,7 @@ error: the package `std/grpc` is not part of this compiler yet
 1 | import std/grpc
   | ^^^^^^^^^^^^^^^
   |
-  = help: the standard packages so far are `std/os`, `std/io`, `std/time`, `std/http`, `std/sql`, `std/sql/postgres`, `std/hash`, `std/encoding`, `std/crypto`, `std/random` and `std/test`
+  = help: the standard packages so far are `std/os`, `std/io`, `std/time`, `std/http`, `std/sql`, `std/sql/postgres`, `std/hash`, `std/encoding`, `std/crypto`, `std/random`, `std/log` and `std/test`
 
 error: the package `std/strings` is not part of this compiler yet
  --> main.koo:2:1
@@ -1604,7 +1604,7 @@ error: the package `std/strings` is not part of this compiler yet
 2 | import std/strings
   | ^^^^^^^^^^^^^^^^^^
   |
-  = help: the standard packages so far are `std/os`, `std/io`, `std/time`, `std/http`, `std/sql`, `std/sql/postgres`, `std/hash`, `std/encoding`, `std/crypto`, `std/random` and `std/test`
+  = help: the standard packages so far are `std/os`, `std/io`, `std/time`, `std/http`, `std/sql`, `std/sql/postgres`, `std/hash`, `std/encoding`, `std/crypto`, `std/random`, `std/log` and `std/test`
 
 2 errors
 

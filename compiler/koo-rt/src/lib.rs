@@ -38,6 +38,7 @@ pub mod actor;
 pub mod codec;
 pub mod digest;
 pub mod http;
+pub mod log;
 pub mod pg;
 pub mod thread;
 

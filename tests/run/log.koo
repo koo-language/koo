@@ -1,0 +1,47 @@
+// `std/log`: a line of the log, and the values in it as fields.
+
+import std/log
+
+type Order = { id: int, customer: string, total: float }
+
+error Declined { reason: string }
+
+fn costly(calls: var int) -> int {
+    calls += 1
+    return 42
+}
+
+fn main() {
+    order := Order { id: 17, customer: "ada \"the first\"", total: 19.5 }
+    log.info("the server is up")
+    log.info("order {order.id} placed by {order.customer} for {order.total:.2}")
+    paid := true
+    ratio := 0.0 / 0.0
+    log.warn("payment slow: {paid}, {ratio}, {order.id + 1}, {order.id:05}")
+    e := Declined { reason: "no funds" }
+    log.error("payment failed: {e}")
+
+    // A line of a level that is not wanted is not put together at all.
+    var calls := 0
+    log.debug("this costs {costly(var calls)}")
+    print(calls)
+    log.set_level(log.Level.Debug)
+    log.debug("this costs {costly(var calls)}")
+    print(calls)
+    log.set_level(log.Level.Error)
+    log.warn("not written")
+    log.error("written, twice the same name: {order.id} {order.id}")
+    log.set_level(log.Level.Off)
+    log.error("not written either")
+    print("done")
+}
+
+//= 0
+//= 1
+//= done
+//! stderr INFO  the server is up
+//! stderr INFO  order 17 placed by ada "the first" for 19.50
+//! stderr WARN  payment slow: true, NaN, 18, 00017
+//! stderr ERROR payment failed: Declined { reason: "no funds" }
+//! stderr DEBUG this costs 42
+//! stderr ERROR written, twice the same name: 17 17

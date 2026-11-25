@@ -1,0 +1,6 @@
+{"level":"info","message":"the server is up"}
+{"level":"info","message":"order 17 placed by ada \"the first\" for 19.50","order.id":17,"order.customer":"ada \"the first\"","order.total":"19.50"}
+{"level":"warn","message":"payment slow: true, NaN, 18, 00017","paid":true,"ratio":"NaN","value3":18,"order.id":"00017"}
+{"level":"error","message":"payment failed: Declined { reason: \"no funds\" }","e":"Declined { reason: \"no funds\" }"}
+{"level":"debug","message":"this costs 42","value1":42}
+{"level":"error","message":"written, twice the same name: 17 17","order.id":17}

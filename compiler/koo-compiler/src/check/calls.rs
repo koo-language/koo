@@ -267,7 +267,14 @@ impl<'a> Checker<'a> {
                         return self.generic_call(template, None, HashMap::new(), args, span, expected);
                     }
                     if let Some(&id) = self.free_fns.get(&function) {
-                        return self.user_call(id, None, args, span);
+                        let call = self.user_call(id, None, args, span);
+                        let level = ["debug", "info", "warn", "error"]
+                            .iter()
+                            .position(|level| own == "log" && *level == name.name);
+                        return match level {
+                            Some(level) => self.log_call(level, call, span),
+                            None => call,
+                        };
                     }
                     let known = self.package_names(&own);
                     let message = format!("the package `{}` has no function `{}`", module.name, name.name);

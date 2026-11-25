@@ -25,7 +25,7 @@ Where a command takes a file it also takes a directory, which is a *package*: al
 
 The compiler translates a program into the intermediate language of LLVM, and uses `clang` to turn that into an executable, so `clang`, version 15 or later, must be installed. If it is installed under another name, the environment variable `KOO_CLANG` gives the name.
 
-Two environment variables affect a program as it runs. `KOO_THREADS` is the number of threads that run what actors are told; without it there is one for each processor. And if `KOO_LEAKS` is set, a program that ends normally with memory still allocated says so and ends with status 102. This too is a check on the compiler, since a Koo program has no way to leak memory by its own doing.
+Some environment variables affect a program as it runs. `KOO_LOG_LEVEL`, `KOO_LOG` and `KOO_LOG_TIME` say what the program logs and in what form (Section 8.10). `KOO_THREADS` is the number of threads that run what actors are told; without it there is one for each processor. And if `KOO_LEAKS` is set, a program that ends normally with memory still allocated says so and ends with status 102. This too is a check on the compiler, since a Koo program has no way to leak memory by its own doing.
 
 ## C.2 Tests
 
@@ -145,7 +145,7 @@ The [specification](../../SPEC.md) describes more than the compiler builds. For 
 
 *Concurrency.* Of the concurrency that the specification describes, actors are built, as Chapter 9 describes them, with the limits listed in Section 9.11. Tasks, `spawn`, `scope`, channels and `select` are not.
 
-*Packages.* A program is one package. One package of your own cannot yet import another, and there is no package manager. The standard packages are `std/io`, `std/os`, `std/time`, `std/http`, `std/sql`, `std/sql/postgres`, `std/hash`, `std/encoding`, `std/crypto`, `std/random` and `std/test`.
+*Packages.* A program is one package. One package of your own cannot yet import another, and there is no package manager. The standard packages are `std/io`, `std/os`, `std/time`, `std/http`, `std/sql`, `std/sql/postgres`, `std/hash`, `std/encoding`, `std/crypto`, `std/random`, `std/log` and `std/test`.
 
 *The library.* There is no network client except the one that speaks to PostgreSQL, no digest but SHA-256, no encryption, and no way to read a file except whole. Section 11.7 lists what `std/sql` leaves out.
 

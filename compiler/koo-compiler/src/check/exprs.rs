@@ -114,12 +114,18 @@ impl<'a> Checker<'a> {
             }
             ast::ExprKind::RawStr(text) => self.mk(ExprKind::Str(text.clone()), Ty::Str, span),
             ast::ExprKind::Str(parts) => {
-                // Where a query is expected, the literal is one (`check/time.rs`).
-                let wanted = expected.is_some_and(
-                    |ty| matches!(ty, Ty::Struct(id) if self.program.structs[*id].name == "SqlQuery" && self.is_opaque(ty)),
-                );
-                match wanted.then(|| self.sql_template(parts, span)).flatten() {
-                    Some(query) => query,
+                // Where a query or a line of the log is expected, the literal is one
+                // (`check/time.rs`).
+                let template = match expected {
+                    Some(ty @ Ty::Struct(id)) if self.is_opaque(ty) => match self.program.structs[*id].name.as_str() {
+                        "SqlQuery" => self.sql_template(parts, span),
+                        "LogMessage" => self.log_template(parts, span),
+                        _ => None,
+                    },
+                    _ => None,
+                };
+                match template {
+                    Some(made) => made,
                     None => self.string(parts, span),
                 }
             }
@@ -332,7 +338,7 @@ impl<'a> Checker<'a> {
         self.mk(ExprKind::Int(value), Ty::Int, span)
     }
 
-    fn string(&mut self, parts: &[ast::StrPart], span: Span) -> Expr {
+    pub(super) fn string(&mut self, parts: &[ast::StrPart], span: Span) -> Expr {
         if parts.iter().all(|p| matches!(p, ast::StrPart::Lit(_))) {
             let text: String = parts
                 .iter()

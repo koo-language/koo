@@ -305,6 +305,41 @@ fn a_database_answers_queries() {
     assert!(failures.is_empty(), "\n{}", failures.join("\n\n"));
 }
 
+/// With `KOO_LOG=json` each line of the log is an object, with the values of the line as
+/// members: `tests/log/*.koo` are run so, with the time left out, and what they write to
+/// the standard error output is what the file of the same name with `.json` holds.
+#[test]
+fn logs_are_lines_of_json() {
+    let bless = std::env::var_os("KOO_BLESS").is_some();
+    let mut failures = Vec::new();
+    for path in programs("tests/log") {
+        let output = Command::new(env!("CARGO_BIN_EXE_koo"))
+            .arg("run")
+            .arg(&path)
+            .env("KOO_LEAKS", "1")
+            .env("KOO_LOG", "json")
+            .env("KOO_LOG_TIME", "off")
+            .output()
+            .expect("koo runs");
+        let found = String::from_utf8_lossy(&output.stderr).to_string();
+        let expected_path = path.with_extension("json");
+        let expected = std::fs::read_to_string(&expected_path).unwrap_or_default();
+        if !output.status.success() {
+            failures.push(format!("{}: it fails\n{found}", path.display()));
+        } else if found != expected {
+            if bless {
+                std::fs::write(&expected_path, &found).unwrap();
+            } else {
+                failures.push(format!(
+                    "{}: the log is not as expected\n--- expected\n{expected}--- found\n{found}",
+                    path.display()
+                ));
+            }
+        }
+    }
+    assert!(failures.is_empty(), "\n{}", failures.join("\n\n"));
+}
+
 /// `koo test` runs the tests of each file in `tests/test` and reports them as expected.
 /// `TESTFILE` in an expected line stands for the path of the file.
 #[test]
@@ -462,10 +497,16 @@ fn run_listing(dir: &Path, source: &str, tags: &[(String, String)]) -> Outcome {
     let database_url = database.clone().unwrap_or_default();
     let koo = |args: &[&str], input: Option<String>| {
         let mut command = Command::new(env!("CARGO_BIN_EXE_koo"));
+        // `json` in place of the arguments runs the program with its log as JSON.
+        let as_json = args.first() == Some(&"json");
         command
-            .args(args)
+            .args(if as_json { &[][..] } else { args })
             .current_dir(dir)
             .env("DATABASE_URL", &database_url)
+            // The time of a line of the log would be different at every run.
+            .env("KOO_LOG_TIME", "off")
+            .env("KOO_LOG", if as_json { "json" } else { "text" })
+            .args(if as_json { &["run", "main.koo"][..] } else { &[][..] })
             .env("KOO_LEAKS", "1")
             .env("NO_COLOR", "1")
             .stdin(std::process::Stdio::piped())
@@ -612,6 +653,10 @@ fn run_listing(dir: &Path, source: &str, tags: &[(String, String)]) -> Outcome {
             outcome.found.push(("stderr".to_string(), stderr));
         } else if has("log") {
             outcome.found.push(("log".to_string(), stderr));
+            if has("json") {
+                let (_, stderr, _) = koo(&["json"], told("input"));
+                outcome.found.push(("json".to_string(), stderr));
+            }
         } else if !stderr.is_empty() {
             outcome.wrong.push(format!(
                 "it writes to standard error, and the book does not say what:\n{stderr}"
@@ -634,7 +679,8 @@ fn run_listing(dir: &Path, source: &str, tags: &[(String, String)]) -> Outcome {
 /// name` a file that is beside it when it runs, `text`
 /// what it prints, `panic` what a panic writes (the program then ends with status 101),
 /// `stderr` what it writes when `main` fails (status 1), `log` what it writes to standard
-/// error when it ends well all the same, `error` what the compiler says
+/// error when it ends well all the same (and `json` the same with its log asked for as
+/// JSON), `error` what the compiler says
 /// when it refuses the program, `test` what `koo test` prints, and `http` what a server
 /// answers to the requests listed in it. A program with none of these is checked and not
 /// run. Each is compared to the letter.
@@ -653,8 +699,8 @@ fn the_book_is_true() {
     let mut texts: Vec<Vec<String>> = Vec::new();
     let mut blocks: Vec<Vec<Block>> = Vec::new();
     let mut listings: Vec<Listing> = Vec::new();
-    const TOLD: [&str; 9] = [
-        "input", "args", "text", "panic", "stderr", "log", "error", "test", "http",
+    const TOLD: [&str; 10] = [
+        "input", "args", "text", "panic", "stderr", "log", "json", "error", "test", "http",
     ];
     for (page, path) in pages.iter().enumerate() {
         let lines: Vec<String> = std::fs::read_to_string(path)
