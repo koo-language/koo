@@ -1163,6 +1163,9 @@ fn Duration.parse(text: string) -> Duration ! ParseError {
     }
     if at >= b.len { fail ParseError { input: text } }
     var total := 0
+    // The units go from the largest to the smallest, each at most once, as in a
+    // constant: `1h30min`, and neither `30min1h` nor `1h1h`.
+    var above := 9223372036854775807
     while at < b.len {
         var count := 0
         var digits := 0
@@ -1198,6 +1201,8 @@ fn Duration.parse(text: string) -> Duration ! ParseError {
         } else {
             fail ParseError { input: text }
         }
+        if size >= above { fail ParseError { input: text } }
+        above = size
         if count > (9223372036854775807 - total) / size { fail ParseError { input: text } }
         total += count * size
     }
@@ -1341,7 +1346,9 @@ fn Time.parse(text: string) -> Time ! ParseError {
     days := era * 146097 + day_of_era - 719468
     seconds := days * 86400 + hour * 3600 + minute * 60 + second - offset
     // An `int` of nanoseconds reaches from 1677 to 2262.
-    if seconds > 9223372035 or seconds < -9223372035 { fail ParseError { input: text } }
+    // Every time that is printed is read back, to the last second of the range.
+    if seconds > 9223372036 or seconds < -9223372036 { fail ParseError { input: text } }
+    if seconds == 9223372036 and nanos > 854775807 { fail ParseError { input: text } }
     return Time { _ns: seconds * 1000000000 + nanos }
 }
 

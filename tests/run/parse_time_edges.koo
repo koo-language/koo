@@ -1,0 +1,38 @@
+// What `Duration.parse` and `Time.parse` take is what a constant and a printed time
+// are: the units of a duration from the largest to the smallest, each at most once,
+// and every time that can be printed, to the ends of the range.
+
+fn main() {
+    for text in ["1h30min", "30s1h", "1h1h", "90s", "1h30min15s250ms10us5ns", "-2min", "5ns1ns", "1min30"] {
+        match Duration.parse(text) {
+            d => print("{text} = {d}")
+            ! e => print("{text} is not a duration")
+        }
+    }
+    for text in ["2262-04-11T23:47:16Z", "1677-09-21T00:12:44Z", "2262-04-11T23:47:17Z", "1677-09-21T00:12:43Z", "2262-01-01T00:00:00Z", "1970-01-01T00:00:00Z", "2026-11-25T08:30:00.5+02:00"] {
+        match Time.parse(text) {
+            t => print("{text} = {t}")
+            ! e => print("{text} is not a time")
+        }
+    }
+    print(Time.from_unix(9223372036))
+    print(Time.from_unix(-9223372036))
+}
+
+//= 1h30min = 1h30min
+//= 30s1h is not a duration
+//= 1h1h is not a duration
+//= 90s = 1min30s
+//= 1h30min15s250ms10us5ns = 1h30min15s250ms10us5ns
+//= -2min = -2min
+//= 5ns1ns is not a duration
+//= 1min30 is not a duration
+//= 2262-04-11T23:47:16Z = 2262-04-11T23:47:16Z
+//= 1677-09-21T00:12:44Z = 1677-09-21T00:12:44Z
+//= 2262-04-11T23:47:17Z is not a time
+//= 1677-09-21T00:12:43Z is not a time
+//= 2262-01-01T00:00:00Z = 2262-01-01T00:00:00Z
+//= 1970-01-01T00:00:00Z = 1970-01-01T00:00:00Z
+//= 2026-11-25T08:30:00.5+02:00 = 2026-11-25T06:30:00.5Z
+//= 2262-04-11T23:47:16Z
+//= 1677-09-21T00:12:44Z
