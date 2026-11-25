@@ -1,0 +1,56 @@
+// A list is an array of the database, as a parameter and as a column. Run against a
+// PostgreSQL server whose address is in KOO_TEST_POSTGRES (see
+// `a_database_answers_queries` in compiler/koo/tests/programs.rs).
+
+import std/os
+import std/sql
+import std/sql/postgres
+
+type Post = { id: int, title: string, tags: [string], scores: [int] }
+
+fn main() ! sql.Error {
+    db := postgres.connect(os.env("KOO_TEST_POSTGRES") else "")?
+    db.exec("drop table if exists koo_posts")?
+    db.exec("create table koo_posts (id int primary key, title text, tags text[] not null, scores int[] not null, ratio float8[], flags bool[])")?
+    tags := ["plain", "two words", "quo\"te", "back\\slash", "comma,in", "", "NULL", "héllo", "\{brace}"]
+    db.exec("insert into koo_posts values ({1}, {"first"}, {tags}, {[3, -1, 2]}, {[1.5, 0.25]}, {[true, false]})")?
+    empty: [string] = []
+    none_scores: [int] = []
+    db.exec("insert into koo_posts values ({2}, {"second"}, {empty}, {none_scores}, {[2.0]}, {[false]})")?
+    ids := [1, 2, 7]
+    for row in db.query("select * from koo_posts where id = any({ids}) order by id")? {
+        post := Post.from_row(row)?
+        print(post)
+        print("{row.floats("ratio")?} {row.bools("flags")?}")
+        print(post.tags == tags)
+    }
+    wanted := ["second", "third"]
+    counted := db.query_row("select count(*) as n from koo_posts where title = any({wanted})")?
+    print(counted.int("n")?)
+    maybe: [int?] = [1, none]
+    row := db.query_row("select {maybe}::int[] as xs, array[[1,2],[3,4]] as grid, 5 as five")?
+    match row.ints("xs") {
+        xs => print(xs)
+        ! e => print(e.message)
+    }
+    match row.ints("grid") {
+        xs => print(xs)
+        ! e => print(e.message)
+    }
+    match row.ints("five") {
+        xs => print(xs)
+        ! e => print(e.message)
+    }
+    db.exec("drop table koo_posts")?
+}
+
+//= Post { id: 1, title: "first", tags: ["plain", "two words", "quo\"te", "back\\slash", "comma,in", "", "NULL", "héllo", "\{brace}"], scores: [3, -1, 2] }
+//= [1.5, 0.25] [true, false]
+//= true
+//= Post { id: 2, title: "second", tags: [], scores: [] }
+//= [2.0] [false]
+//= false
+//= 1
+//= the column `xs` holds an array with a NULL in it, which is not an int
+//= the column `grid` holds `{{1,2},{3,4}}`, which is not an array
+//= the column `five` holds `5`, which is not an array

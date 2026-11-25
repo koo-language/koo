@@ -433,7 +433,7 @@ A request of another server returns a `http.Reply`:
 | --- | --- |
 | `postgres.connect(url: string, pool: int = 10, wait: Duration = 30s) -> sql.Pool ! sql.Error` | connects to the database at `postgres://user:password@host:port/database`, with at most `pool` connections, for one of which a statement waits `wait` at the longest |
 
-A `sql.Query` is written as a string literal where one is expected: the values in braces become parameters of the statement, each an `int`, a `float`, a `bool`, a `string` or a `Time`, or an optional of one, which is NULL when it is `none`.
+A `sql.Query` is written as a string literal where one is expected: the values in braces become parameters of the statement, each an `int`, a `float`, a `bool`, a `string` or a `Time`, an optional of one, which is NULL when it is `none`, or a list of them, which is an array.
 
 | `sql.Query` | |
 | --- | --- |
@@ -455,6 +455,7 @@ A `sql.Query` is written as a string literal where one is expected: the values i
 | --- | --- |
 | `row.int(column: string) -> int ! sql.Error`, and `float`, `bool`, `string`, `time` | the value of a column; fails if it is NULL |
 | `row.maybe_int(column: string) -> int? ! sql.Error`, and `maybe_float`, `maybe_bool`, `maybe_string`, `maybe_time` | the value of a column, or `none` if it is NULL |
+| `row.ints(column: string) -> [int] ! sql.Error`, and `floats`, `bools`, `strings` | a column that is an array of one dimension, as a list; fails if it is NULL or has a NULL in it |
 | `row.columns() -> [string]` | the names of the columns |
 | `T.from_row(row: sql.Row) -> T ! sql.Error` | for a structure `T` whose fields are of the five types or optionals of them: each field from the column of its name |
 

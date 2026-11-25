@@ -2194,6 +2194,120 @@ fn (self: T?) _sql() -> string? {
     return none
 }
 
+/// A list is an array of the database, as the database writes one: `\{1,2,3}`, and
+/// `\{"a","b"}` with whatever would end a text before its end escaped.
+fn (self: [T]) _sql() -> string? {
+    var out := "\{"
+    for i in 0..self.len {
+        if i > 0 { out += "," }
+        out += self[i]._sql_element()
+    }
+    return out + "}"
+}
+
+fn (self: int) _sql_element() -> string { return "{self}" }
+fn (self: float) _sql_element() -> string { return "{self}" }
+fn (self: Time) _sql_element() -> string { return "\"{self}\"" }
+
+fn (self: bool) _sql_element() -> string {
+    if self { return "true" }
+    return "false"
+}
+
+fn (self: string) _sql_element() -> string {
+    return "\"" + self.replace("\\", "\\\\").replace("\"", "\\\"") + "\""
+}
+
+fn (self: T?) _sql_element() -> string {
+    if value := self { return value._sql_element() }
+    return "NULL"
+}
+
+/// The elements of an array as the database writes one, each as text or NULL; nothing
+/// for a text that is not an array of one dimension.
+fn s__array(text: string) -> [string?]? {
+    b := text.bytes()
+    if b.len < 2 or int.from(b[0]) != 123 or int.from(b[b.len - 1]) != 125 { return none }
+    var items: [string?] = []
+    var at := 1
+    end := b.len - 1
+    while at < end {
+        if int.from(b[at]) == 34 {
+            // Between quotes, with a backslash before what is itself and not an end.
+            var item: [byte] = []
+            at += 1
+            while at < end and int.from(b[at]) != 34 {
+                if int.from(b[at]) == 92 and at + 1 < end { at += 1 }
+                item.push(b[at])
+                at += 1
+            }
+            if at >= end { return none }
+            at += 1
+            items.push(string.from_bytes(item) else return none)
+        } else {
+            start := at
+            while at < end and int.from(b[at]) != 44 {
+                // An array inside an array is not a list of values.
+                if int.from(b[at]) == 123 { return none }
+                at += 1
+            }
+            word := text.slice(start, at)
+            if word == "NULL" { items.push(none) } else { items.push(word) }
+        }
+        if at < end {
+            if int.from(b[at]) != 44 { return none }
+            at += 1
+            if at == end { return none }
+        }
+    }
+    return items
+}
+
+fn (self: SqlRow) _array(column: string, what: string) -> [string] ! SqlError {
+    text := self._text(column)? else fail s__null(column)
+    items := s__array(text) else fail s__not(column, "an array", text)
+    var out: [string] = []
+    for item in items {
+        out.push(item else fail s__other("the column `{column}` holds an array with a NULL in it, which is not {what}"))
+    }
+    return out
+}
+
+/// A column that is an array, as a list.
+fn (self: SqlRow) strings(column: string) -> [string] ! SqlError {
+    return self._array(column, "a string")?
+}
+
+fn (self: SqlRow) ints(column: string) -> [int] ! SqlError {
+    var out: [int] = []
+    for item in self._array(column, "an int")? {
+        out.push(int.parse(item) else fail s__not(column, "an array of ints", item))
+    }
+    return out
+}
+
+fn (self: SqlRow) floats(column: string) -> [float] ! SqlError {
+    var out: [float] = []
+    for item in self._array(column, "a float")? {
+        out.push(float.parse(item) else fail s__not(column, "an array of floats", item))
+    }
+    return out
+}
+
+fn (self: SqlRow) bools(column: string) -> [bool] ! SqlError {
+    var out: [bool] = []
+    for item in self._array(column, "a bool")? {
+        if item == "t" or item == "true" {
+            out.push(true)
+        } else if item == "f" or item == "false" {
+            out.push(false)
+        } else {
+            fail s__not(column, "an array of bools", item)
+        }
+    }
+    return out
+}
+
 /// A row of an answer: a value, or NULL, for each column.
 type SqlRow = { _names: [string], _values: [string?] }
 

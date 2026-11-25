@@ -26,7 +26,7 @@ fn main() ! sql.Error {
     db.query(text)?
     db.exec("update t set x = {3.14159:.2}")?
     db.exec("insert into t values ({Point { x: 1, y: 2 }})")?
-    db.exec("insert into t values ({[1, 2]})")?
+    db.exec("insert into t values ({[[1, 2]]})")?
     q := sql.Query { _parts: ["x"], _params: [] }
     rows := db.query("select 1")?
     print(rows[0]._values)
@@ -47,7 +47,7 @@ type Listed = { names: [string] }
 //! error expected `sql.Query`, found `string`
 //! error a value in a query cannot have a format
 //! error a `Point` cannot be a parameter of a query
-//! error a `[int]` cannot be a parameter of a query
+//! error a `[[int]]` cannot be a parameter of a query
 //! error `sql.Query` cannot be built from its fields
 //! error `sql.Row` has no field `_values`
 //! error `sql.Pool.query` takes 1 argument, found 2

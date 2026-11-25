@@ -1031,6 +1031,19 @@ pub fn derive(package: &File, json: bool, rows: bool, envs: bool) -> Derived {
                                 _ => return None,
                             }
                         }
+                        // A column that is an array, for a field that is a list.
+                        TypeKind::List(element) if maybe.is_empty() => match &deriver.resolved(element).kind {
+                            TypeKind::Named { path, args } if path.len() == 1 && args.is_empty() => {
+                                match path[0].name.as_str() {
+                                    "int" => "ints",
+                                    "float" => "floats",
+                                    "bool" => "bools",
+                                    "string" => "strings",
+                                    _ => return None,
+                                }
+                            }
+                            _ => return None,
+                        },
                         _ => return None,
                     };
                     Some(format!("{0}: row.{maybe}{kind}(\"{0}\")?", field.name.name))

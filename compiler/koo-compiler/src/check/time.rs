@@ -82,6 +82,14 @@ impl Checker<'_> {
                         Ty::Optional(inner) => inner.as_ref(),
                         other => other,
                     };
+                    // A list of them is an array of the database: `id = any({ids})`.
+                    let inner = match inner {
+                        Ty::List(element) => match element.as_ref() {
+                            Ty::Optional(element) => element.as_ref(),
+                            element => element,
+                        },
+                        other => other,
+                    };
                     let known = matches!(inner, Ty::Int | Ty::Float | Ty::Bool | Ty::Str)
                         || self.time_ty().as_ref() == Some(inner);
                     if !known {
@@ -89,7 +97,7 @@ impl Checker<'_> {
                         self.error_help(
                             expr.span,
                             format!("a `{found}` cannot be a parameter of a query"),
-                            "a parameter is an `int`, a `float`, a `bool`, a `string` or a `Time`, or an optional of one, which is NULL when it is `none` (Section 10.3)",
+                            "a parameter is an `int`, a `float`, a `bool`, a `string` or a `Time`, an optional of one, which is NULL when it is `none`, or a list of them, which is an array (Section 10.3)",
                         );
                         continue;
                     }
