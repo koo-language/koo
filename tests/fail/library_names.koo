@@ -10,9 +10,14 @@ fn main() ! http.Error {
         body := req.json()?
         return http.text("{body}")
     })
+    // What a request is made of inside is the library's own.
+    app.get("/who", req -> http.text("{req.id}"))
+    app.get("/made", req -> http.text("{http.Request { method: "GET", path: "/" }}"))
     app.serve()?
 }
 
 //! error `http.text` takes 2 arguments, found 3
 //! error in `http.json<(int, string)>`: `(int, string)` has no method `to_json`
 //! error the type parameter `T` of `http.Request.json` is not known here
+//! error `http.Request` has no field `id`
+//! error `http.Request` cannot be built from its fields

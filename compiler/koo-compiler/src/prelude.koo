@@ -1513,42 +1513,45 @@ error HttpError { kind: HttpErrorKind, message: string }
 fn (self: HttpError) to_string() -> string { return self.message }
 
 /// A request, as its handler sees it.
-type HttpRequest = { id: int, method: string, path: string }
+type HttpRequest = { _id: int, method: string, path: string }
+
+/// A request as text is its method and its path, which is what a log wants of it.
+fn (self: HttpRequest) to_string() -> string { return "{self.method} {self.path}" }
 
 /// What a `:name` in the route's path stands for in this request.
-fn (self: HttpRequest) param(name: string) -> string { return __http_param(self.id, name) }
+fn (self: HttpRequest) param(name: string) -> string { return __http_param(self._id, name) }
 
 /// The value of a name in the query: `page` in `/orders?page=2`.
 fn (self: HttpRequest) query(name: string) -> string? {
-    if not __http_query_has(self.id, name) { return none }
-    return __http_query(self.id, name)
+    if not __http_query_has(self._id, name) { return none }
+    return __http_query(self._id, name)
 }
 
 /// The value of a header. The name is matched whatever its case.
 fn (self: HttpRequest) header(name: string) -> string? {
-    if not __http_header_has(self.id, name) { return none }
-    return __http_header(self.id, name)
+    if not __http_header_has(self._id, name) { return none }
+    return __http_header(self._id, name)
 }
 
 /// The body of the request, as text.
-fn (self: HttpRequest) body() -> string { return __http_body(self.id) }
+fn (self: HttpRequest) body() -> string { return __http_body(self._id) }
 
 /// A field of a form that a page sent as the body.
 fn (self: HttpRequest) form(name: string) -> string? {
-    if not __http_form_has(self.id, name) { return none }
-    return __http_form(self.id, name)
+    if not __http_form_has(self._id, name) { return none }
+    return __http_form(self._id, name)
 }
 
 /// A cookie the client sent back.
 fn (self: HttpRequest) cookie(name: string) -> string? {
-    if not __http_cookie_has(self.id, name) { return none }
-    return __http_cookie(self.id, name)
+    if not __http_cookie_has(self._id, name) { return none }
+    return __http_cookie(self._id, name)
 }
 
 /// What the `*` at the end of the route stands for, or `none` for a path that climbs
 /// out of where it is with `..`: what is not `none` is safe to look for as a file.
 fn (self: HttpRequest) rest() -> string? {
-    rest := __http_rest(self.id)
+    rest := __http_rest(self._id)
     if rest == "/" { return none }
     return rest
 }
@@ -1556,7 +1559,7 @@ fn (self: HttpRequest) rest() -> string? {
 /// The body of the request, read as JSON into the type that is expected:
 /// `input: NewOrder = req.json()?`.
 fn (self: HttpRequest) json<T>() -> T ! JsonError {
-    return T.from_json(__http_body(self.id))?
+    return T.from_json(__http_body(self._id))?
 }
 
 /// A response. `headers` holds whole header lines. If `file` names a file, the file is
@@ -1775,7 +1778,7 @@ fn h__loop(app: HttpApp) {
         }
         if route < 0 { break }
         id := __http_id()
-        request := HttpRequest { id, method: __http_method(id), path: __http_path(id) }
+        request := HttpRequest { _id: id, method: __http_method(id), path: __http_path(id) }
         // A panic in a handler is a bug in it. It ends the request, which is answered
         // with 500, and not the worker, which has other requests to answer.
         if __guard() {
@@ -1791,7 +1794,7 @@ fn h__loop(app: HttpApp) {
 
 /// Calls a handler, and sends what it returns, or what its failure calls for.
 fn h__answer(handler: fn(HttpRequest) -> HttpResponse ! Failure, request: HttpRequest) {
-    id := request.id
+    id := request._id
     match handler(request) {
         response => {
             if response.file == "" {

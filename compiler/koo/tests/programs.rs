@@ -1815,6 +1815,8 @@ fn a_server_answers_requests() {
         &post(port, "/orders", "not json"),
         &["400 Bad Request", "expected an object"],
     );
+    // A request as text is its method and its path.
+    has(&get(port, "/self/ada?x=1"), &["\r\n\r\nGET /self/ada"]);
     // A header that a handler sets and the server writes too is there once.
     let typed = get(port, "/typed");
     has(

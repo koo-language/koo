@@ -1269,6 +1269,8 @@ impl<'a> Checker<'a> {
             let name = self.ty_name(&Ty::Struct(id));
             let help = if self.is_time_type(&Ty::Struct(id)) {
                 "its fields are its own: write a duration as `250ms`, and get a time from `time.now()`, `Time.from_unix(seconds)` or `Time.parse(text)`"
+            } else if self.program.structs[id].name == "HttpRequest" {
+                "a request is what a client sent, and a handler is given it: to try a handler's work without a server, put the work in a function that takes what it needs of the request"
             } else {
                 "its fields are its own: a query is written as a string literal where one is expected, and a pool and its rows come from the database"
             };

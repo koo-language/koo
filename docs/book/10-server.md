@@ -59,6 +59,7 @@ The parameter of a handler is the request. It has two fields, `method` and `path
 | `req.rest()` | what a `*` at the end of the route matched, as an optional |
 | `req.query(name)` | a parameter of the query string, as an optional |
 | `req.header(name)` | a header, as an optional |
+| `"{req}"` | the request as text: its method and its path, as `GET /orders/7` |
 | `req.cookie(name)` | a cookie, as an optional |
 | `req.body()` | the body, as a string |
 | `req.form(name)` | a field of a body that is a submitted form, as an optional |
