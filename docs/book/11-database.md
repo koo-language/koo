@@ -603,6 +603,8 @@ The password is safe in either case from someone who only listens. PostgreSQL as
 
 The package speaks to PostgreSQL and to nothing else yet.
 
+A parameter of the address that the package does not know is passed over without a word, as the addresses that hosting services hand out are full of parameters meant for other clients. The cost is that a misspelled one is passed over too: `sslmod=verify-full` asks for nothing, and the connection is made as if it were not there. An address that is meant to be verified is worth trying once against a server it should refuse.
+
 The rows of a query arrive all at once, as a list, and cannot yet be read one at a time as the server sends them; a statement that would return a million rows should be given a `limit`. A value in a row is read as one of the five types of Section 11.2, or as a list of one from an array of one dimension: a column of another type, such as an array of arrays or a `numeric` of more digits than a `float` holds, is read as a `string` in the form PostgreSQL writes it, or cast in the statement to something that fits. Settings for a session, such as a limit on how long a statement may run, go in the address, as `?options=-c%20statement_timeout%3D5s`, where `%20` is a space and `%3D` an equals sign.
 
 There is nothing here that writes SQL for the program, makes tables from structures, or changes a database from one version of its design to the next. Statements are SQL, written by the programmer and checked by the database.
