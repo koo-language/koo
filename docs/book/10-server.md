@@ -402,7 +402,7 @@ Consider `add`. It computes the number of the new order from the length of the l
 | `max_body:` | the largest body of a request that is accepted, in bytes | 1048576 |
 | `log:` | whether to write a line on standard error for each request | `false` |
 
-A server started with the default `workers:` answers requests on every processor of the machine. It does so with *processes*: `serve` starts one worker process for each processor, all of them listening on the one port, and itself stays behind to watch over them. A handler runs in one of the workers. If a worker dies, the process that watches starts another in its place.
+A server started with the default `workers:` answers requests on every processor of the machine. It does so with *processes*: `serve` starts one worker process for each processor, all of them listening on the one port, and itself stays behind to watch over them. The processors that count are those the program may use. On Linux a program in a container is often allowed less than the machine has, a processor and a half of sixteen, say, and then there is a worker for each processor it is allowed, a part counting as a whole: two, in that case, and not sixteen. A handler runs in one of the workers. If a worker dies, the process that watches starts another in its place.
 
 A panic in a handler does not bring a server down, nor even a worker. A panic is a bug in the handler, and what it costs is the request that met it: the panic is written on the standard error output, as always, the client is answered with 500, and the worker goes on to its next request. Whatever the handler was in the middle of is abandoned: a transaction it had open is undone (Section 11.5), and an actor it was asking starts again (Section 9.8).
 

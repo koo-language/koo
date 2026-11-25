@@ -150,7 +150,6 @@ mod imp {
         fn getpid() -> i32;
         fn kill(process: i32, number: i32) -> i32;
         fn waitpid(process: i32, status: *mut i32, options: i32) -> i32;
-        fn sysconf(name: i32) -> i64;
         fn setrlimit(resource: i32, limit: *const [u64; 2]) -> i32;
         fn getrlimit(resource: i32, limit: *mut [u64; 2]) -> i32;
         fn opendir(path: *const u8) -> *mut u8;
@@ -206,7 +205,6 @@ mod imp {
         pub const SO_REUSEADDR: i32 = 0x4;
         pub const O_NONBLOCK: i32 = 0x4;
         pub const EAGAIN: i32 = 35;
-        pub const SC_NPROCESSORS_ONLN: i32 = 58;
         pub const RLIMIT_NOFILE: i32 = 8;
         pub const CLOCK_MONOTONIC: i32 = 6;
         const SO_NOSIGPIPE: i32 = 0x1022;
@@ -377,7 +375,6 @@ mod imp {
         pub const SO_REUSEADDR: i32 = 2;
         pub const O_NONBLOCK: i32 = 0x800;
         pub const EAGAIN: i32 = 11;
-        pub const SC_NPROCESSORS_ONLN: i32 = 84;
         pub const RLIMIT_NOFILE: i32 = 7;
         pub const CLOCK_MONOTONIC: i32 = 1;
         const EPOLLIN: u32 = 0x1;
@@ -2183,7 +2180,7 @@ mod imp {
                 start_queue();
                 return port;
             }
-            let cores = sysconf(sys::SC_NPROCESSORS_ONLN).max(1);
+            let cores = thread::processors() as i64;
             let workers = if workers <= 0 { cores } else { workers }.min(MAX_WORKERS as i64);
             // What is waiting to be printed is printed once, not once by every worker.
             koo_flush();

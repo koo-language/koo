@@ -556,9 +556,72 @@ extern "C" fn stack_signal(signal: i32, info: *const u8, context: *const u8) {
     }
 }
 
-/// How many processors the program may run on.
+/// How many processors the program may run on: those the machine has, or fewer where
+/// the program is held to fewer, as it is in a container that is allowed so much
+/// processor time and no more. A part of a processor counts as a whole one.
 pub fn processors() -> usize {
     let name = if cfg!(target_os = "macos") { 58 } else { 84 };
     let count = unsafe { sysconf(name) };
-    if count < 1 { 1 } else { count as usize }
+    let count = if count < 1 { 1 } else { count as usize };
+    count.min(allowed()).max(1)
+}
+
+/// How many processors the system lets the program use at a time, on Linux: the
+/// processors it may run on, and the time its control group is allowed, which is
+/// written as so many microseconds in each period of so many.
+#[cfg(target_os = "linux")]
+fn allowed() -> usize {
+    unsafe extern "C" {
+        fn sched_getaffinity(process: i32, size: usize, mask: *mut u8) -> i32;
+        fn open(path: *const u8, flags: i32, ...) -> i32;
+        fn read(fd: i32, buffer: *mut u8, count: usize) -> isize;
+        fn close(fd: i32) -> i32;
+    }
+    /// The numbers in a small file of the system's, where `max` stands for no limit.
+    unsafe fn numbers(path: &core::ffi::CStr) -> Option<[i64; 2]> {
+        unsafe {
+            let fd = open(path.as_ptr() as *const u8, 0);
+            if fd < 0 {
+                return None;
+            }
+            let mut text = [0u8; 64];
+            let len = read(fd, text.as_mut_ptr(), text.len());
+            close(fd);
+            let text = core::str::from_utf8(&text[..len.max(0) as usize]).ok()?;
+            let mut found = [-1i64; 2];
+            for (at, word) in text.split_ascii_whitespace().take(2).enumerate() {
+                found[at] = if word == "max" { -1 } else { word.parse().ok()? };
+            }
+            Some(found)
+        }
+    }
+    unsafe {
+        let mut most = usize::MAX;
+        let mut mask = [0u8; 1024];
+        if sched_getaffinity(0, mask.len(), mask.as_mut_ptr()) == 0 {
+            let may: usize = mask.iter().map(|byte| byte.count_ones() as usize).sum();
+            if may > 0 {
+                most = may;
+            }
+        }
+        // The second version of control groups has both numbers in one file, and the
+        // first has a file for each.
+        let (time, period) = match numbers(c"/sys/fs/cgroup/cpu.max") {
+            Some([time, period]) => (time, period),
+            None => {
+                let one = |path| numbers(path).map_or(-1, |found| found[0]);
+                let time = one(c"/sys/fs/cgroup/cpu/cpu.cfs_quota_us");
+                (time, one(c"/sys/fs/cgroup/cpu/cpu.cfs_period_us"))
+            }
+        };
+        if time > 0 && period > 0 {
+            most = most.min(((time + period - 1) / period) as usize);
+        }
+        most
+    }
+}
+
+#[cfg(not(target_os = "linux"))]
+fn allowed() -> usize {
+    usize::MAX
 }
