@@ -397,7 +397,8 @@ A handler is a `fn(http.Request) -> http.Response ! Failure`.
 | `req.query(name: string) -> string?` | a parameter of the query |
 | `req.header(name: string) -> string?` | a header |
 | `req.cookie(name: string) -> string?` | a cookie |
-| `req.body() -> string` | the body |
+| `req.body() -> string` | the body; a byte that is not text in UTF-8 is replaced by U+FFFD |
+| `req.bytes() -> [byte]` | the body as the bytes it is |
 | `req.form(name: string) -> string?` | a field of a form |
 | `req.json() -> T ! JsonError` | the body, as the type that the context expects |
 
@@ -407,6 +408,7 @@ A handler is a `fn(http.Request) -> http.Response ! Failure`.
 | `http.html(body: string, status: int = 200)` | HTML |
 | `http.json(value: T, status: int = 200)` | a value as JSON |
 | `http.send(body: string, content_type: string, status: int = 200)` | a body of a given type |
+| `http.bytes(body: [byte], content_type: string = "application/octet-stream", status: int = 200)` | a body that is bytes, which need not be text |
 | `http.status(status: int, message: string = "")` | a status, with a message as the body |
 | `http.redirect(to: string, status: int = 302)` | a redirection |
 | `http.file(path: string, status: int = 200)` | a file |

@@ -110,6 +110,10 @@ mod stub {
         unsafe { none() }
     }
     #[unsafe(no_mangle)]
+    pub unsafe extern "C" fn koo_http_body_raw(_: i64) -> *mut Header {
+        unsafe { none() }
+    }
+    #[unsafe(no_mangle)]
     pub unsafe extern "C" fn koo_http_respond(_: i64, _: i64, _: *const Header, _: *const Header, _: *const Header) {}
     #[unsafe(no_mangle)]
     pub unsafe extern "C" fn koo_http_respond_file(
@@ -2740,6 +2744,19 @@ mod imp {
         unsafe {
             match input(id) {
                 Some(data) => str_from_outside(&data[CURRENT.body.start..CURRENT.body.end]),
+                None => new_str(b""),
+            }
+        }
+    }
+
+    /// The body as the bytes it is, whatever they are. What is returned is not text
+    /// that a program may have: the prelude makes a list of bytes of it at once.
+    #[unsafe(no_mangle)]
+    #[allow(static_mut_refs)]
+    pub unsafe extern "C" fn koo_http_body_raw(id: i64) -> *mut Header {
+        unsafe {
+            match input(id) {
+                Some(data) => new_str(&data[CURRENT.body.start..CURRENT.body.end]),
                 None => new_str(b""),
             }
         }

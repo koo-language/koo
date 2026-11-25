@@ -719,6 +719,11 @@ pub const INTRINSICS: &[Intrinsic] = &[
         ret: I::Str,
     },
     Intrinsic {
+        name: "http_body_raw",
+        params: &[I::Int],
+        ret: I::Str,
+    },
+    Intrinsic {
         name: "http_body",
         params: &[I::Int],
         ret: I::Str,

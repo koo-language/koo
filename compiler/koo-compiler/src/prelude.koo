@@ -1536,6 +1536,9 @@ fn (self: HttpRequest) header(name: string) -> string? {
 /// The body of the request, as text.
 fn (self: HttpRequest) body() -> string { return __http_body(self._id) }
 
+/// The body as the bytes it is, for one that is not text: a picture, an archive.
+fn (self: HttpRequest) bytes() -> [byte] { return __str_bytes(__http_body_raw(self._id)) }
+
 /// A field of a form that a page sent as the body.
 fn (self: HttpRequest) form(name: string) -> string? {
     if not __http_form_has(self._id, name) { return none }
@@ -1628,6 +1631,11 @@ fn http__html(body: string, status: int = 200) -> HttpResponse {
 /// A response of a given type, for what the other functions do not make.
 fn http__send(body: string, content_type: string, status: int = 200) -> HttpResponse {
     return HttpResponse { status, content_type, headers: "", body }
+}
+
+/// A response whose body is bytes that need not be text, of the type that is said.
+fn http__bytes(body: [byte], content_type: string = "application/octet-stream", status: int = 200) -> HttpResponse {
+    return HttpResponse { status, content_type, headers: "", body: __bytes_to_str(body) }
 }
 
 /// A response that is a value as JSON.

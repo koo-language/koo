@@ -1231,6 +1231,19 @@ fn http(port: u16, request: &str) -> String {
     String::from_utf8_lossy(&answer).to_string()
 }
 
+/// A request and its answer as bytes, for bodies that are not text.
+fn http_bytes(port: u16, request: &[u8]) -> Vec<u8> {
+    use std::io::{Read, Write};
+    let mut stream = std::net::TcpStream::connect(("127.0.0.1", port)).expect("the server accepts");
+    stream
+        .set_read_timeout(Some(std::time::Duration::from_secs(5)))
+        .unwrap();
+    stream.write_all(request).unwrap();
+    let mut answer = Vec::new();
+    let _ = stream.read_to_end(&mut answer);
+    answer
+}
+
 fn get(port: u16, path: &str) -> String {
     http(
         port,
@@ -1815,6 +1828,25 @@ fn a_server_answers_requests() {
         &post(port, "/orders", "not json"),
         &["400 Bad Request", "expected an object"],
     );
+    // A body that is not text is had as its bytes, and bytes are sent as they are.
+    let blob = [0u8, 159, 146, 150, 255, 10, 0];
+    let posted = |path: &str| {
+        let mut request = format!(
+            "POST {path} HTTP/1.1\r\nHost: test\r\nConnection: close\r\nContent-Length: {}\r\n\r\n",
+            blob.len()
+        )
+        .into_bytes();
+        request.extend_from_slice(&blob);
+        http_bytes(port, &request)
+    };
+    let said = String::from_utf8_lossy(&posted("/hex")).to_string();
+    has(&said, &["\r\n\r\n7 009f9296ff0a00 "]);
+    let mirrored = posted("/mirror");
+    has(
+        &String::from_utf8_lossy(&mirrored),
+        &["201 Created", "Content-Type: image/png\r\n", "Content-Length: 7\r\n"],
+    );
+    assert!(mirrored.ends_with(&blob), "{mirrored:?}");
     // A request as text is its method and its path.
     has(&get(port, "/self/ada?x=1"), &["\r\n\r\nGET /self/ada"]);
     // A header that a handler sets and the server writes too is there once.

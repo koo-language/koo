@@ -62,6 +62,7 @@ The parameter of a handler is the request. It has two fields, `method` and `path
 | `"{req}"` | the request as text: its method and its path, as `GET /orders/7` |
 | `req.cookie(name)` | a cookie, as an optional |
 | `req.body()` | the body, as a string |
+| `req.bytes()` | the body, as the bytes it is, for one that is not text |
 | `req.form(name)` | a field of a body that is a submitted form, as an optional |
 | `req.json()` | the body, read as JSON into the type that is expected |
 
@@ -123,6 +124,7 @@ A response is a value, made by one of these functions:
 | `http.html(body)` | HTML |
 | `http.json(value)` | the value as JSON |
 | `http.send(body, content_type)` | a body of any other type |
+| `http.bytes(body, content_type: "image/png")` | a body that is bytes, and need not be text; `application/octet-stream` unless a type is said |
 | `http.status(code, message)` | a status with a short message, or with none |
 | `http.redirect(to)` | a redirection to another address |
 | `http.file(path)` | a file, sent as it is |

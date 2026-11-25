@@ -1,4 +1,5 @@
 // The server that `compiler/koo/tests/programs.rs` starts and sends requests to.
+import std/encoding
 import std/http
 import std/os
 
@@ -67,6 +68,9 @@ fn main() ! http.Error {
         return http.text("{counts.len} named, {known} counted")
     })
     app.get("/self/:name", req -> http.text("{req}"))
+    // A body that is not text, in and out: its bytes as they are.
+    app.post("/hex", req -> http.text("{req.bytes().len} {encoding.hex(req.bytes())} {req.body().len}"))
+    app.post("/mirror", req -> http.bytes(req.bytes(), content_type: "image/png", status: 201))
     // The type of a body is said once, and how long it is only by the server.
     app.get("/typed", req -> http.text("a,b\n").header("content-type", "text/csv").header("Content-Length", "99").header("X-Rows", "1"))
     app.get("/files/*", req -> http.text("file {req.path}"))
