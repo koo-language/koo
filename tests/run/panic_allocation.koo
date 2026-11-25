@@ -1,0 +1,43 @@
+// A list or a string too large to be made is a panic at the line that asked for it.
+
+actor Trial {
+    var done: int = 0
+
+    fn list() {
+        xs := List<int>.with_size(4611686018427387904)
+        print(xs.len)
+    }
+
+    fn room() {
+        xs := List<string>.with_capacity(9223372036854775807)
+        print(xs.len)
+    }
+
+    fn text() {
+        print("ab".repeat(4611686018427387904))
+    }
+
+    fn count() -> int {
+        done += 1
+        return done
+    }
+}
+
+fn main() {
+    trial := Trial.start()
+    trial.send.list()
+    trial.send.room()
+    trial.send.text()
+    print(trial.count())
+    print("ab".repeat(3))
+    print(List<int>.with_size(2))
+}
+
+//= 1
+//= ababab
+//= [0, 0]
+//! stderr panic: a list this large cannot be allocated
+//! stderr panic_allocation.koo:7
+//! stderr panic_allocation.koo:12
+//! stderr panic: a string this large cannot be allocated
+//! stderr panic_allocation.koo:17

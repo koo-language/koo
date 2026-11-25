@@ -1620,6 +1620,14 @@ impl Gen<'_> {
                 let ok = self.value(format!("icmp sge i64 {n}, 0"));
                 self.check(&ok, "negative size", span);
                 let size = self.sizeof(element);
+                // More elements than there are bytes to hold them is a panic here, at
+                // the line that asked, and not in the support library, which has no
+                // line to give.
+                let empty = self.value(format!("icmp eq i64 {size}, 0"));
+                let each = self.value(format!("select i1 {empty}, i64 1, i64 {size}"));
+                let most = self.value(format!("sdiv i64 {}, {each}", i64::MAX - 64));
+                let fits = self.value(format!("icmp sle i64 {n}, {most}"));
+                self.check(&fits, "a list this large cannot be allocated", span);
                 let function = if builtin == Builtin::ListWithSize {
                     "koo_list_zeroed"
                 } else {

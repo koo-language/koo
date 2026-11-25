@@ -475,7 +475,12 @@ fn (self: string) lines() -> [string] {
     return out
 }
 
-fn (self: string) repeat(times: int) -> string { return __str_repeat(self, times) }
+fn (self: string) repeat(times: int, location: string) -> string {
+    if times > 0 and self.len > 0 and times > 9223372036854775807 / self.len {
+        panic("a string this large cannot be allocated")
+    }
+    return __str_repeat(self, times)
+}
 
 /// The number of Unicode scalar values; `len` is the number of bytes.
 fn (self: string) count() -> int { return __str_count(self) }
