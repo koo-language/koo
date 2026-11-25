@@ -40,6 +40,9 @@ fn main() ! http.Error {
         agent := req.header("user-agent") else "unknown"
         return http.text("you searched for {term} with {agent}")
     })
+    // Names that a browser does not send as they are written.
+    app.get("/filter", req -> http.text("{req.query("filter[name]") else "none"}, {req.query("first name") else "none"}"))
+    app.post("/signup", req -> http.text("{req.form("user[email]") else "none"}, {req.form("full name") else "none"}"))
     app.get("/orders/:id", req -> {
         id := int.parse(req.param("id")) else return http.status(400, "an order's id is a number")
         return http.text(find(id)?)

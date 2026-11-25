@@ -1718,6 +1718,23 @@ fn a_server_answers_requests() {
     has(&get(port, "/hello/Ada%20L"), &["Hello, Ada L!"]);
     has(&get(port, "/hello/Ada/"), &["Hello, Ada!"]);
     has(&get(port, "/search?q=a+b%21"), &["you searched for a b! with unknown"]);
+    // The name of a parameter is read as its value is: `%5B` is `[`, and `+` a space.
+    has(
+        &get(port, "/filter?filter%5Bname%5D=ada&first+name=Ada+L"),
+        &["\r\n\r\nada, Ada L"],
+    );
+    has(
+        &get(port, "/filter?filter%5Bname=x&first%2Bname=y"),
+        &["\r\n\r\nnone, none"],
+    );
+    has(
+        &http(
+            port,
+            "POST /signup HTTP/1.1\r\nConnection: close\r\nContent-Type: application/x-www-form-urlencoded\r\n\
+             Content-Length: 43\r\n\r\nuser%5Bemail%5D=a%40b.example&full+name=Ada",
+        ),
+        &["\r\n\r\na@b.example, Ada"],
+    );
     has(&get(port, "/orders/2"), &["200 OK", "order 2"]);
     has(
         &get(port, "/orders/x"),

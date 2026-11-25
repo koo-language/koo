@@ -2574,11 +2574,40 @@ mod imp {
         }
     }
 
+    /// Whether a name, as a query or a form writes it, is `name`: a browser writes
+    /// `filter[name]` as `filter%5Bname%5D`, and a space as `+`. The escapes are read as
+    /// `decoded` reads those of a value.
+    fn is_name(raw: &[u8], name: &[u8]) -> bool {
+        if raw == name {
+            return true;
+        }
+        let hex = |b: u8| (b as char).to_digit(16).map(|d| d as u8);
+        let (mut at, mut matched) = (0, 0);
+        while at < raw.len() {
+            let byte = raw[at];
+            let (value, width) = match (
+                byte,
+                raw.get(at + 1).copied().and_then(hex),
+                raw.get(at + 2).copied().and_then(hex),
+            ) {
+                (b'%', Some(high), Some(low)) => (high * 16 + low, 3),
+                (b'+', ..) => (b' ', 1),
+                _ => (byte, 1),
+            };
+            if name.get(matched) != Some(&value) {
+                return false;
+            }
+            matched += 1;
+            at += width;
+        }
+        matched == name.len()
+    }
+
     /// The value of a name among `name=value` pairs joined by `&`, as it is written.
     fn pair<'a>(pairs: &'a [u8], name: &[u8]) -> Option<&'a [u8]> {
         for pair in pairs.split(|b| *b == b'&') {
             let equals = pair.iter().position(|b| *b == b'=').unwrap_or(pair.len());
-            if pair[..equals] == *name {
+            if is_name(&pair[..equals], name) {
                 return Some(pair.get(equals + 1..).unwrap_or(&[]));
             }
         }
