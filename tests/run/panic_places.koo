@@ -1,0 +1,91 @@
+// Where a panic in the library is reported: at the call. Each is in an actor, which
+// starts again, so that one program can show them all.
+
+import std/random
+
+actor Trial {
+    var done: int = 0
+
+    fn slice_list() {
+        xs := [1, 2]
+        print(xs.slice(1, 9))
+    }
+
+    fn slice_text() {
+        print("héllo".slice(0, 2))
+    }
+
+    fn insert() {
+        var xs := [1, 2]
+        xs.insert(7, 1)
+    }
+
+    fn sum() {
+        big := 9223372036854775807
+        print([big, big].sum())
+    }
+
+    fn chain() {
+        big := 9223372036854775807
+        print([big, big].map(x -> x - 1).sum())
+    }
+
+    fn power() {
+        print(2.pow(-1))
+    }
+
+    fn chance() {
+        print(random.int(5, 5))
+    }
+
+    fn long() {
+        d := 1h
+        print(d * 9223372036854775807)
+    }
+
+    fn later() {
+        print(Time.from_unix(9223372035) + 1h)
+    }
+
+    fn count() -> int {
+        done += 1
+        return done
+    }
+}
+
+fn main() {
+    // An actor that panics too often stays stopped, so there are two.
+    first := Trial.start()
+    first.send.slice_list()
+    first.send.slice_text()
+    first.send.insert()
+    first.send.sum()
+    print(first.count())
+    second := Trial.start()
+    second.send.chain()
+    second.send.power()
+    second.send.chance()
+    second.send.long()
+    second.send.later()
+    print(second.count())
+    print([1h, 30min].sum())
+}
+
+//= 1
+//= 1
+//= 1h30min
+//! stderr panic: slice out of range
+//! stderr panic_places.koo:11
+//! stderr panic: string offsets out of range or not on a character boundary
+//! stderr panic_places.koo:15
+//! stderr panic: index out of range
+//! stderr panic_places.koo:20
+//! stderr panic: integer overflow
+//! stderr panic_places.koo:25
+//! stderr panic_places.koo:30
+//! stderr panic: a negative exponent
+//! stderr panic_places.koo:34
+//! stderr panic: random.int(5, 5): there is no number from 5 up to 5
+//! stderr panic_places.koo:38
+//! stderr panic_places.koo:43
+//! stderr panic_places.koo:47

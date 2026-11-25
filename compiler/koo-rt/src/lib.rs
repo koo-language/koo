@@ -242,9 +242,11 @@ pub unsafe extern "C" fn koo_panic(message: *const u8, len: i64, file: *const He
     out.push(message);
     let said = out.len;
     let mut place = Buffer::new();
-    if line > 0 {
+    if line > 0 || line == WHOLE {
         place.push(unsafe { bytes(file) });
-        let _ = write!(place, ":{line}");
+        if line > 0 {
+            let _ = write!(place, ":{line}");
+        }
         out.push(b"\n  at ");
         out.push(&place.data[..place.len]);
     } else if line < 0 {
@@ -256,7 +258,11 @@ pub unsafe extern "C" fn koo_panic(message: *const u8, len: i64, file: *const He
     }
     out.push(b"\n");
     let fields = [(
-        if line > 0 { &b"at"[..] } else { &b"in"[..] },
+        if line > 0 || line == WHOLE {
+            &b"at"[..]
+        } else {
+            &b"in"[..]
+        },
         log::Field::Text(&place.data[..place.len]),
     )];
     unsafe {
@@ -269,6 +275,32 @@ pub unsafe extern "C" fn koo_panic(message: *const u8, len: i64, file: *const He
     };
     // A panic ends the program, unless it is in a message that it only ends.
     unsafe { actor::leave() }
+}
+
+/// The line that says `file` is a whole place already, the file and the line of it.
+const WHOLE: i64 = -2;
+
+/// A panic in a function of the library: at the place in the program that called the
+/// function, if the function was told it, and else in the function, by its name. With
+/// neither there is nothing to say of where.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn koo_panic_from(message: *const u8, len: i64, name: *const Header, place: *const Header) -> ! {
+    unsafe {
+        if !place.is_null() && !bytes(place).is_empty() {
+            koo_panic(message, len, place, WHOLE)
+        } else if !bytes(name).is_empty() {
+            koo_panic(message, len, name, -1)
+        } else {
+            koo_panic(message, len, name, 0)
+        }
+    }
+}
+
+/// `panic(message)` in a function of the library.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn koo_panic_str_from(message: *const Header, name: *const Header, place: *const Header) -> ! {
+    let text = unsafe { bytes(message) };
+    unsafe { koo_panic_from(text.as_ptr(), text.len() as i64, name, place) }
 }
 
 /// `panic(message)` in a program.
@@ -652,19 +684,33 @@ pub unsafe extern "C" fn koo_str_ends_with(s: *const Header, suffix: *const Head
     unsafe { bytes(s).ends_with(bytes(suffix)) }
 }
 
-/// The text from byte offset `from` to `to`. An offset out of range or inside a scalar
-/// value is a programming error (Section 4.4).
+/// Whether a text has a part from byte offset `from` to `to`: the offsets are in range,
+/// in order, and neither is inside a scalar value.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn koo_str_slice(s: *const Header, from: i64, to: i64) -> *mut Header {
+pub unsafe extern "C" fn koo_str_slice_ok(s: *const Header, from: i64, to: i64) -> bool {
     let text = unsafe { text(s) };
-    let ok = from >= 0
+    from >= 0
         && from <= to
         && to as usize <= text.len()
         && text.is_char_boundary(from as usize)
-        && text.is_char_boundary(to as usize);
-    if !ok {
-        fatal(b"panic: string offsets out of range or not on a character boundary\n");
+        && text.is_char_boundary(to as usize)
+}
+
+/// A panic that the support library raises itself, with nothing to say of where: like
+/// any panic, it ends the program, or only the message or the request it is in.
+fn panic_here(message: &[u8]) -> ! {
+    unsafe { koo_panic(message.as_ptr(), message.len() as i64, core::ptr::null(), 0) }
+}
+
+/// The text from byte offset `from` to `to`. An offset out of range or inside a scalar
+/// value is a programming error (Section 4.4), which `slice` in the prelude has
+/// looked for already.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn koo_str_slice(s: *const Header, from: i64, to: i64) -> *mut Header {
+    if !unsafe { koo_str_slice_ok(s, from, to) } {
+        panic_here(b"string offsets out of range or not on a character boundary");
     }
+    let text = unsafe { text(s) };
     unsafe { str_of(&text[from as usize..to as usize]) }
 }
 
@@ -746,7 +792,7 @@ pub unsafe extern "C" fn koo_str_repeat(s: *const Header, times: i64) -> *mut He
     let times = times.max(0);
     let total = (text.len() as i64).checked_mul(times).unwrap_or(-1);
     if total < 0 {
-        fatal(b"panic: a string this large cannot be allocated\n");
+        panic_here(b"a string this large cannot be allocated");
     }
     let mut out = unsafe { koo_str_new(total) };
     for _ in 0..times {
@@ -1259,7 +1305,7 @@ fn list_bytes(cap: i64, elem_size: i64) -> i64 {
         .and_then(|data| data.checked_add(HEADER as i64));
     match bytes {
         Some(bytes) if cap >= 0 => bytes,
-        _ => fatal(b"panic: a list this large cannot be allocated\n"),
+        _ => panic_here(b"a list this large cannot be allocated"),
     }
 }
 

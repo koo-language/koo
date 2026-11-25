@@ -103,6 +103,9 @@ struct FnState {
     id: FnId,
     /// Whether it comes from the prelude.
     prelude: bool,
+    /// For a function of the prelude that is told where the program called it: where
+    /// that is kept, a string of the file and the line.
+    called_from: Option<String>,
     /// The source file it is in, for panic reports.
     file: String,
     /// Instructions for the entry block: every `alloca` and its zeroing.
@@ -835,6 +838,12 @@ impl<'a> Gen<'a> {
             }
             self.f.locals[index] = Some(slot);
         }
+        if function.prelude && !function.name.starts_with("test.") {
+            self.f.called_from = function.locals[..function.params]
+                .iter()
+                .position(|local| local.name == "location" && local.ty == Ty::Str)
+                .and_then(|index| self.f.locals[index].clone());
+        }
 
         self.block_body(&function.body, None);
         // Reaching the end returns `()`.
@@ -879,8 +888,21 @@ impl<'a> Gen<'a> {
                 Some((self.string_ids["the prelude"], 0))
             }
         };
+        let called_from = self.f.called_from.clone().map(|slot| {
+            let name = library_name(&function.name).unwrap_or_default();
+            self.string(&name);
+            (slot, self.string_ids[&name])
+        });
         for (label, message, line) in &self.f.panics {
             let len = self.messages[*message].len();
+            if let Some((slot, name)) = &called_from {
+                let _ = writeln!(
+                    text,
+                    "{label}:\n  %from.{label} = load ptr, ptr {slot}\n  \
+                     call void @koo_panic_from(ptr @msg.{message}, i64 {len}, ptr @str.{name}, ptr %from.{label})\n  unreachable"
+                );
+                continue;
+            }
             let (file, line) = match within {
                 Some(place) => place,
                 None => (self.string_ids[&self.f.file], *line as i64),
@@ -959,6 +981,8 @@ declare noalias nonnull ptr @koo_alloc_zeroed(i64)
 declare void @koo_free(ptr)
 declare void @koo_panic(ptr, i64, ptr, i64) noreturn cold
 declare void @koo_panic_str(ptr, ptr, i64) noreturn cold
+declare void @koo_panic_from(ptr, i64, ptr, ptr) noreturn cold
+declare void @koo_panic_str_from(ptr, ptr, ptr) noreturn cold
 declare void @koo_main_failed(ptr) noreturn cold
 declare void @koo_flush()
 declare void @koo_exit_main()
@@ -1055,8 +1079,9 @@ static:
 /// The name of a function of the library as a program knows it, for a panic that
 /// happens inside it: `random__int` is `random.int`. Nothing for a function that the
 /// library has for its own use, whose name would mean nothing to the program.
-fn library_name(name: &str) -> Option<String> {
-    // A lambda, or a method that stands behind an operator, has no name to give.
+pub(super) fn library_name(name: &str) -> Option<String> {
+    // A lambda, a method that stands behind an operator, or the one loop that a chain
+    // of calls was made into, has no name to give.
     if name.starts_with("lambda ") || name.contains("._") {
         return None;
     }
@@ -1066,5 +1091,33 @@ fn library_name(name: &str) -> Option<String> {
             Some(format!("{package}.{function}"))
         }
         Some(_) => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    /// A function of the library that a program calls, and that panics by its own
+    /// choice, is told where the program called it, so that the panic says the line.
+    #[test]
+    fn a_library_function_that_panics_says_where() {
+        let prelude = crate::PRELUDE;
+        let mut starts: Vec<usize> = prelude.match_indices("\nfn ").map(|(at, _)| at + 1).collect();
+        starts.push(prelude.len());
+        let mut without = Vec::new();
+        for pair in starts.windows(2) {
+            let function = &prelude[pair[0]..pair[1]];
+            let header = function.lines().next().unwrap();
+            let name = header.rsplit_once('(').map_or(header, |(before, _)| before);
+            let name = name.rsplit([' ', ')']).next().unwrap();
+            // What the library has for its own use, behind one letter: `e__require`.
+            let own = name.split_once("__").is_some_and(|(package, _)| package.len() < 2) || name.starts_with('_');
+            if function.contains("panic(") && !own && !header.contains("location: string") {
+                without.push(header.to_string());
+            }
+        }
+        assert!(
+            without.is_empty(),
+            "these panic without `location: string` as a last parameter: {without:#?}"
+        );
     }
 }

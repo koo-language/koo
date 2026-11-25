@@ -1,5 +1,5 @@
-// A panic inside a function of the library says which function it was, as the program
-// knows it, and not a line of the library.
+// A panic inside a function of the library is reported at the line of the program that
+// called the function, and not at a line of the library.
 
 fn main() {
     var names := ["ada", "bob"]
@@ -10,4 +10,5 @@ fn main() {
 //= 2
 //! exit 101
 //! stderr panic: index out of range
-//! stderr in `[T].remove<string>`
+//! stderr at
+//! stderr panic_library.koo:7

@@ -74,6 +74,11 @@ pub const INTRINSICS: &[Intrinsic] = &[
         ret: I::Bool,
     },
     Intrinsic {
+        name: "str_slice_ok",
+        params: &[I::Str, I::Int, I::Int],
+        ret: I::Bool,
+    },
+    Intrinsic {
         name: "str_slice",
         params: &[I::Str, I::Int, I::Int],
         ret: I::Str,

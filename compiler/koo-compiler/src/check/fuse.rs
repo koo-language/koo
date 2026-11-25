@@ -150,12 +150,16 @@ impl Shape {
                     "return none",
                 )
             }
-            End::Sum => (
-                ty.clone(),
-                format!("    var total := {ty}.zero()\n"),
-                format!("total += {value}"),
-                "return total",
-            ),
+            End::Sum => {
+                // Where the program wrote `sum`, as `sum` itself is told (the prelude).
+                params.push("location: string".to_string());
+                (
+                    ty.clone(),
+                    format!("    var total := {ty}.zero()\n"),
+                    format!("total += {value}"),
+                    "return total",
+                )
+            }
         };
         let generics = if type_params.is_empty() {
             String::new()

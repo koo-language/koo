@@ -11,7 +11,10 @@ fn int.zero() -> int { return 0 }
 fn float.zero() -> float { return 0.0 }
 
 /// `self` raised to a power that is not negative. Overflow panics, as it does for `*`.
-fn (self: int) pow(exponent: int) -> int {
+// A function that may panic over what a program gives it ends with a parameter
+// `location`, which no program writes: the compiler gives it the file and the line of
+// the call, and a panic in the function is reported there (`koo-compiler/src/llvm.rs`).
+fn (self: int) pow(exponent: int, location: string) -> int {
     if exponent < 0 { panic("a negative exponent") }
     var result := 1
     var base := self
@@ -153,7 +156,7 @@ fn (self: [T]) index_of(wanted: T) -> int? {
 }
 
 /// The sum of the elements, for a type with `+` and a `zero`.
-fn (self: [T]) sum() -> T {
+fn (self: [T]) sum(location: string) -> T {
     var total := T.zero()
     for item in self { total += item }
     return total
@@ -190,7 +193,7 @@ fn (self: [T]) join(separator: string) -> string {
 }
 
 /// The elements from index `from` up to, not including, index `to`.
-fn (self: [T]) slice(from: int, to: int) -> [T] {
+fn (self: [T]) slice(from: int, to: int, location: string) -> [T] {
     if from < 0 or to > self.len or from > to { panic("slice out of range") }
     var out := List<T>.with_capacity(to - from)
     for i in from..to { out.push(self[i]) }
@@ -248,7 +251,7 @@ fn (self: var [T]) extend(other: [T]) {
 }
 
 /// Puts `item` at `index`, moving what was there and after it up by one.
-fn (self: var [T]) insert(index: int, item: T) {
+fn (self: var [T]) insert(index: int, item: T, location: string) {
     if index < 0 or index > self.len { panic("index out of range") }
     self.push(item)
     var i := self.len - 1
@@ -259,7 +262,7 @@ fn (self: var [T]) insert(index: int, item: T) {
 }
 
 /// Takes out the element at `index`, moving what was after it down by one.
-fn (self: var [T]) remove(index: int) -> T {
+fn (self: var [T]) remove(index: int, location: string) -> T {
     item := self[index]
     var i := index
     while i + 1 < self.len {
@@ -420,7 +423,10 @@ fn (self: string) ends_with(suffix: string) -> bool {
 
 /// The text from byte offset `from` up to `to`. An offset that is out of range or inside
 /// a character panics.
-fn (self: string) slice(from: int, to: int) -> string {
+fn (self: string) slice(from: int, to: int, location: string) -> string {
+    if not __str_slice_ok(self, from, to) {
+        panic("string offsets out of range or not on a character boundary")
+    }
     return __str_slice(self, from, to)
 }
 
@@ -1051,11 +1057,12 @@ fn (self: Duration) seconds() -> float { return float.from(self._ns) / 100000000
 fn (self: Duration) abs() -> Duration { return Duration { _ns: self._ns.abs() } }
 fn (self: Duration) compare(other: Duration) -> int { return self._ns.compare(other._ns) }
 
-fn (self: Duration) _add(other: Duration) -> Duration { return Duration { _ns: self._ns + other._ns } }
-fn (self: Duration) _sub(other: Duration) -> Duration { return Duration { _ns: self._ns - other._ns } }
-fn (self: Duration) _mul(by: int) -> Duration { return Duration { _ns: self._ns * by } }
-fn (self: Duration) _div(by: int) -> Duration { return Duration { _ns: self._ns / by } }
-fn (self: Duration) _neg() -> Duration { return Duration { _ns: -self._ns } }
+fn Duration.zero() -> Duration { return Duration { _ns: 0 } }
+fn (self: Duration) _add(other: Duration, location: string) -> Duration { return Duration { _ns: self._ns + other._ns } }
+fn (self: Duration) _sub(other: Duration, location: string) -> Duration { return Duration { _ns: self._ns - other._ns } }
+fn (self: Duration) _mul(by: int, location: string) -> Duration { return Duration { _ns: self._ns * by } }
+fn (self: Duration) _div(by: int, location: string) -> Duration { return Duration { _ns: self._ns / by } }
+fn (self: Duration) _neg(location: string) -> Duration { return Duration { _ns: -self._ns } }
 
 /// A duration as it is written in a program: `1h30min`, `250ms`, `0s`.
 fn (self: Duration) to_string() -> string {
@@ -1125,8 +1132,8 @@ fn Duration.parse(text: string) -> Duration ! ParseError {
     return Duration { _ns: sign * total }
 }
 
-fn (self: Time) _add(by: Duration) -> Time { return Time { _ns: self._ns + by._ns } }
-fn (self: Time) _sub(by: Duration) -> Time { return Time { _ns: self._ns - by._ns } }
+fn (self: Time) _add(by: Duration, location: string) -> Time { return Time { _ns: self._ns + by._ns } }
+fn (self: Time) _sub(by: Duration, location: string) -> Time { return Time { _ns: self._ns - by._ns } }
 fn (self: Time) _since(earlier: Time) -> Duration { return Duration { _ns: self._ns - earlier._ns } }
 fn (self: Time) compare(other: Time) -> int { return self._ns.compare(other._ns) }
 
@@ -1141,7 +1148,7 @@ fn (self: Time) unix() -> int {
 fn (self: Time) unix_nanos() -> int { return self._ns }
 
 /// The time so many seconds after the beginning of 1970.
-fn Time.from_unix(seconds: int) -> Time { return Time { _ns: seconds * 1000000000 } }
+fn Time.from_unix(seconds: int, location: string) -> Time { return Time { _ns: seconds * 1000000000 } }
 
 /// The byte at a position as a number, or -1 if there is none.
 fn t__at(b: [byte], at: int) -> int {
@@ -1724,7 +1731,7 @@ fn crypto__verify_password(password: string, hashed: string) -> bool {
 }
 
 /// A number from `low` up to, and not including, `high`, each as likely as another.
-fn random__int(low: int, high: int) -> int {
+fn random__int(low: int, high: int, location: string) -> int {
     if high <= low { panic("random.int({low}, {high}): there is no number from {low} up to {high}") }
     return __random_between(low, high)
 }
@@ -1733,7 +1740,7 @@ fn random__int(low: int, high: int) -> int {
 fn random__float() -> float { return __random_float() }
 
 /// So many bytes.
-fn random__bytes(count: int) -> [byte] {
+fn random__bytes(count: int, location: string) -> [byte] {
     if count < 0 { panic("random.bytes({count}): a count is not negative") }
     return __random_bytes(count)
 }

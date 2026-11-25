@@ -249,6 +249,19 @@ impl Checker<'_> {
             kind: ParamKind::Borrow,
             expr,
         }));
+        // The arithmetic of durations and times panics as that of numbers does, and
+        // says where: the methods are told the place of the operator.
+        if self.sigs[id]
+            .params
+            .last()
+            .is_some_and(|last| last.name == "location" && last.ty == Ty::Str)
+        {
+            let kind = self.call_location();
+            args.push(Arg {
+                kind: ParamKind::Borrow,
+                expr: self.mk(kind, Ty::Str, span),
+            });
+        }
         Some(Expr {
             kind: ExprKind::Call { func: id, args },
             ty: ret,

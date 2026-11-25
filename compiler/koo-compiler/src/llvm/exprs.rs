@@ -2,7 +2,7 @@
 
 use koo_syntax::Span;
 
-use super::{Gen, Glue, ScopeKind, is_aggregate};
+use super::{Gen, Glue, ScopeKind, is_aggregate, library_name};
 use crate::hir::*;
 use crate::intrinsics::I;
 
@@ -328,12 +328,22 @@ impl Gen<'_> {
                 let text = self.borrow(message);
                 // A panic the library raises says which of its functions the program
                 // called; the line of the library would only be noise.
-                let (file, line) = if self.f.prelude {
-                    self.library_place()
+                if let Some(slot) = self.f.called_from.clone() {
+                    // The function was told where the program called it.
+                    let name = library_name(&self.p.functions[self.f.id].name).unwrap_or_default();
+                    let name = self.string(&name);
+                    let place = self.value(format!("load ptr, ptr {slot}"));
+                    self.emit(format!(
+                        "call void @koo_panic_str_from(ptr {text}, ptr {name}, ptr {place})"
+                    ));
                 } else {
-                    (self.file_string(), self.line(expr.span) as i64)
-                };
-                self.emit(format!("call void @koo_panic_str(ptr {text}, ptr {file}, i64 {line})"));
+                    let (file, line) = if self.f.prelude {
+                        self.library_place()
+                    } else {
+                        (self.file_string(), self.line(expr.span) as i64)
+                    };
+                    self.emit(format!("call void @koo_panic_str(ptr {text}, ptr {file}, i64 {line})"));
+                }
                 self.terminate("unreachable");
             }
             _ if matches!(expr.ty, Ty::Unit | Ty::Never | Ty::Unknown) => {

@@ -965,6 +965,11 @@ impl<'a> Checker<'a> {
         at: Option<Span>,
     ) -> (Vec<Option<&'e ast::Arg>>, bool) {
         let mut slots: Vec<Option<&ast::Arg>> = vec![None; names.len()];
+        // A function of the library may end with a parameter for where it was called
+        // from, which the compiler fills in (`finish_call`): it is not a program's to
+        // give, by its name or by its place.
+        let hidden = at.is_none() && !self.body_in_prelude && names.last().is_some_and(|last| last == "location");
+        let names = &names[..names.len() - usize::from(hidden)];
         let mut positional = 0;
         let mut paired = true;
         let mut extra: Option<Span> = None;
@@ -986,7 +991,7 @@ impl<'a> Checker<'a> {
                     }
                 },
             };
-            if index >= slots.len() {
+            if index >= names.len() {
                 self.expr(&arg.value, None);
                 extra = Some(extra.map_or(arg.value.span, |first| first.to(arg.value.span)));
                 continue;
@@ -1032,6 +1037,26 @@ impl<'a> Checker<'a> {
         self.finish_call(id, receiver, slots, checked, paired, span)
     }
 
+    /// What a function of the library is told of where it was called: the place of the
+    /// call, if a program makes it. A function of the library that calls another passes
+    /// on what it was told itself, its own place being of no use to anyone, and one
+    /// that was told nothing has nothing to pass on.
+    pub(super) fn call_location(&mut self) -> ExprKind {
+        if !self.body_in_prelude {
+            return ExprKind::Location;
+        }
+        match self
+            .resolve_local("location")
+            .filter(|id| self.locals[*id].ty == Ty::Str)
+        {
+            Some(local) => {
+                self.used[local] = true;
+                ExprKind::Local(local)
+            }
+            None => ExprKind::Str(String::new()),
+        }
+    }
+
     /// Completes a call once its arguments are paired with parameters. An argument that
     /// inference already checked comes in `checked`.
     fn finish_call(
@@ -1067,10 +1092,14 @@ impl<'a> Checker<'a> {
                 // A function of the standard library that reports where it was called
                 // from takes that as a last parameter, which the call does not write.
                 if param.name == "location" && param.ty == Ty::Str && sig.at.is_none() {
+                    // Where the program called the library is what a function of the
+                    // library passes on to another: its own place is of no use to
+                    // anyone. One that was not told has nothing to pass on.
+                    let kind = self.call_location();
                     out.push(Arg {
                         kind: param.kind,
                         expr: Expr {
-                            kind: ExprKind::Location,
+                            kind,
                             ty: Ty::Str,
                             span,
                         },
