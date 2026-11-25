@@ -20,14 +20,14 @@ fn binds(pattern: &Pattern) -> bool {
     }
 }
 
-/// Whether a pattern matches every value of the type it is written for.
-fn irrefutable(pattern: &Pattern) -> bool {
-    match pattern {
-        Pattern::Wildcard | Pattern::Bind(_) => true,
-        Pattern::Struct { fields } => fields.iter().all(|(_, p)| irrefutable(p)),
-        Pattern::Tuple(parts) => parts.iter().all(irrefutable),
-        _ => false,
-    }
+/// What a pattern says of a value, for finding out whether the arms of a `match` cover
+/// every case: anything at all; a value made one of the ways its type has, with the
+/// shapes of its parts; or one value among too many to list, as `7` is of the integers.
+#[derive(Clone)]
+enum Shape {
+    Any,
+    Made(usize, Vec<Shape>),
+    One,
 }
 
 impl<'a> Checker<'a> {
@@ -428,78 +428,26 @@ impl<'a> Checker<'a> {
 
     fn check_exhaustive(&mut self, ty: &Ty, arms: &[Arm], span: Span) {
         // Only arms without a guard are certain to match.
-        let patterns: Vec<&Pattern> = arms
+        let rows: Vec<Vec<Shape>> = arms
             .iter()
             .filter(|arm| arm.guard.is_none())
             .flat_map(|arm| arm.patterns.iter())
+            .flat_map(|pattern| self.shapes(pattern, ty))
+            .map(|shape| vec![shape])
             .collect();
-        if patterns.iter().any(|p| irrefutable(p)) {
-            return;
-        }
-        let mut missing: Vec<String> = Vec::new();
-        match ty {
-            Ty::Enum(id) => {
-                for (index, variant) in self.program.enums[*id].variants.iter().enumerate() {
-                    let covered = patterns.iter().any(|p| match p {
-                        Pattern::Variant { variant, fields } => {
-                            *variant == index && fields.iter().all(|(_, p)| irrefutable(p))
-                        }
-                        _ => false,
-                    });
-                    if !covered {
-                        missing.push(format!("`{}`", variant.name));
-                    }
+        let mut steps = 0;
+        let found = self.uncovered(std::slice::from_ref(ty), &rows, 8, &mut steps);
+        let missing: Vec<String> = found
+            .into_iter()
+            .map(|case| match case[0].as_str() {
+                // Nothing to name but "anything else", whatever its parts.
+                vague if vague.chars().all(|c| "_(), ".contains(c)) => {
+                    "the remaining values: add a `_` arm".to_string()
                 }
-            }
-            Ty::Optional(_) => {
-                if !patterns.iter().any(|p| matches!(p, Pattern::None)) {
-                    missing.push("`none`".to_string());
-                }
-                if !patterns
-                    .iter()
-                    .any(|p| matches!(p, Pattern::Some(inner) if irrefutable(inner)))
-                {
-                    missing.push("a value".to_string());
-                }
-            }
-            Ty::Result(_, set) => {
-                if !patterns
-                    .iter()
-                    .any(|p| matches!(p, Pattern::Ok(inner) if irrefutable(inner)))
-                {
-                    missing.push("the success value".to_string());
-                }
-                let any = patterns.iter().any(|p| matches!(p, Pattern::Err { error: None, .. }));
-                if !any {
-                    match set {
-                        ErrSet::Any => missing.push("`! e` for the remaining errors".to_string()),
-                        ErrSet::Of(ids) => {
-                            for id in ids {
-                                let covered = patterns.iter().any(|p| match p {
-                                    Pattern::Err {
-                                        error: Some(error),
-                                        fields,
-                                        ..
-                                    } => error == id && fields.iter().all(|(_, p)| irrefutable(p)),
-                                    _ => false,
-                                });
-                                if !covered {
-                                    missing.push(format!("`! {}`", self.program.errors[*id].name));
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-            Ty::Bool => {
-                for value in [true, false] {
-                    if !patterns.iter().any(|p| matches!(p, Pattern::Bool(b) if *b == value)) {
-                        missing.push(format!("`{value}`"));
-                    }
-                }
-            }
-            _ => missing.push("the remaining values: add a `_` arm".to_string()),
-        }
+                plain @ ("a value" | "the success value" | "`! e` for the remaining errors") => plain.to_string(),
+                written => format!("`{written}`"),
+            })
+            .collect();
         if !missing.is_empty() {
             let found = self.ty_name(ty);
             self.error(span, format!("this `match` does not cover {}", missing.join(", ")));
@@ -509,5 +457,170 @@ impl<'a> Checker<'a> {
                 self.help("add an arm for each, or a last arm `_ => ...` for every case not named");
             }
         }
+    }
+
+    /// The ways a value of a type is made, each with a name and what it is made of; or
+    /// nothing for a type with too many values to list, an `int` or a `string`.
+    fn makers(&self, ty: &Ty) -> Option<Vec<(String, Vec<Ty>)>> {
+        let of = |fields: &[FieldDef]| fields.iter().map(|field| field.ty.clone()).collect::<Vec<Ty>>();
+        Some(match ty {
+            Ty::Bool => vec![("true".to_string(), Vec::new()), ("false".to_string(), Vec::new())],
+            Ty::Unit => vec![("()".to_string(), Vec::new())],
+            Ty::Enum(id) => self.program.enums[*id]
+                .variants
+                .iter()
+                .map(|variant| (variant.name.clone(), of(&variant.fields)))
+                .collect(),
+            Ty::Optional(inner) => vec![
+                ("none".to_string(), Vec::new()),
+                ("a value".to_string(), vec![(**inner).clone()]),
+            ],
+            Ty::Result(ok, set) => {
+                let mut makers = vec![("the success value".to_string(), vec![(**ok).clone()])];
+                match set {
+                    // Every error there is: one more case, which only `! e` covers.
+                    ErrSet::Any => makers.push(("`! e` for the remaining errors".to_string(), Vec::new())),
+                    ErrSet::Of(ids) => {
+                        for id in ids {
+                            let error = &self.program.errors[*id];
+                            makers.push((format!("! {}", error.name), of(&error.fields)));
+                        }
+                    }
+                }
+                makers
+            }
+            Ty::Tuple(types) => vec![(String::new(), types.clone())],
+            Ty::Struct(id) => vec![(
+                self.program.structs[*id].name.clone(),
+                of(&self.program.structs[*id].fields),
+            )],
+            _ => return None,
+        })
+    }
+
+    /// A pattern as the ways of making a value that it matches. There is more than one
+    /// only for `! e` on a result with a list of errors, which is each of them.
+    fn shapes(&self, pattern: &Pattern, ty: &Ty) -> Vec<Shape> {
+        // The patterns of the parts of a value, by their places, with anything where
+        // the pattern names none.
+        let parts = |checker: &Self, fields: &[(usize, Pattern)], types: &[Ty]| -> Vec<Vec<Shape>> {
+            let mut made: Vec<Vec<Shape>> = vec![Vec::new()];
+            for (index, ty) in types.iter().enumerate() {
+                let choices = match fields.iter().find(|(at, _)| *at == index) {
+                    Some((_, pattern)) => checker.shapes(pattern, ty),
+                    None => vec![Shape::Any],
+                };
+                made = made
+                    .into_iter()
+                    .flat_map(|sofar| {
+                        choices.iter().map(move |choice| {
+                            let mut next = sofar.clone();
+                            next.push(choice.clone());
+                            next
+                        })
+                    })
+                    .collect();
+            }
+            made
+        };
+        let numbered =
+            |patterns: &[Pattern]| -> Vec<(usize, Pattern)> { patterns.iter().cloned().enumerate().collect() };
+        let makers = self.makers(ty);
+        let fields_of = |maker: usize| {
+            makers
+                .as_ref()
+                .and_then(|makers| makers.get(maker))
+                .map(|(_, types)| types.clone())
+        };
+        let made = |checker: &Self, maker: usize, fields: &[(usize, Pattern)]| -> Vec<Shape> {
+            match fields_of(maker) {
+                Some(types) => parts(checker, fields, &types)
+                    .into_iter()
+                    .map(|parts| Shape::Made(maker, parts))
+                    .collect(),
+                None => vec![Shape::One],
+            }
+        };
+        match (pattern, ty) {
+            (Pattern::Wildcard | Pattern::Bind(_), _) => vec![Shape::Any],
+            (Pattern::Bool(value), _) => vec![Shape::Made(usize::from(!*value), Vec::new())],
+            (Pattern::None, _) => vec![Shape::Made(0, Vec::new())],
+            (Pattern::Some(inner), _) => made(self, 1, &[(0, (**inner).clone())]),
+            (Pattern::Ok(inner), _) => made(self, 0, &[(0, (**inner).clone())]),
+            (Pattern::Err { error, fields, .. }, Ty::Result(_, set)) => match (error, set) {
+                (None, ErrSet::Any) => vec![Shape::Made(1, Vec::new())],
+                (None, ErrSet::Of(ids)) => (0..ids.len()).flat_map(|at| made(self, at + 1, &[])).collect(),
+                (Some(_), ErrSet::Any) => vec![Shape::One],
+                (Some(error), ErrSet::Of(ids)) => match ids.iter().position(|id| id == error) {
+                    Some(at) => made(self, at + 1, fields),
+                    None => vec![Shape::One],
+                },
+            },
+            (Pattern::Variant { variant, fields }, _) => made(self, *variant, fields),
+            (Pattern::Struct { fields }, _) => made(self, 0, fields),
+            (Pattern::Tuple(patterns), _) => made(self, 0, &numbered(patterns)),
+            _ => vec![Shape::One],
+        }
+    }
+
+    /// Values that no row matches: up to `limit` of them, each as the text of its
+    /// parts, one for each of `tys`. A row is the shapes of an arm, a column for each
+    /// type. The search gives up, and asks for a `_`, when the cases are too many.
+    fn uncovered(&self, tys: &[Ty], rows: &[Vec<Shape>], limit: usize, steps: &mut usize) -> Vec<Vec<String>> {
+        *steps += 1;
+        if limit == 0 {
+            return Vec::new();
+        }
+        if *steps > 20_000 {
+            return vec![vec!["_".to_string(); tys.len()]];
+        }
+        let Some((first, rest)) = tys.split_first() else {
+            return if rows.is_empty() { vec![Vec::new()] } else { Vec::new() };
+        };
+        let after = |row: &Vec<Shape>| row[1..].to_vec();
+        let Some(makers) = self.makers(first) else {
+            // Too many values to name: only an arm that takes anything covers them.
+            let rows: Vec<Vec<Shape>> = rows
+                .iter()
+                .filter(|row| matches!(row[0], Shape::Any))
+                .map(after)
+                .collect();
+            return self
+                .uncovered(rest, &rows, limit, steps)
+                .into_iter()
+                .map(|mut case| {
+                    case.insert(0, "_".to_string());
+                    case
+                })
+                .collect();
+        };
+        let mut found = Vec::new();
+        for (maker, (name, parts)) in makers.iter().enumerate() {
+            let rows: Vec<Vec<Shape>> = rows
+                .iter()
+                .filter_map(|row| match &row[0] {
+                    Shape::Any => Some([vec![Shape::Any; parts.len()], after(row)].concat()),
+                    Shape::Made(by, inner) if *by == maker => Some([inner.clone(), after(row)].concat()),
+                    _ => None,
+                })
+                .collect();
+            let tys: Vec<Ty> = parts.iter().chain(rest).cloned().collect();
+            for case in self.uncovered(&tys, &rows, limit - found.len(), steps) {
+                let (inner, tail) = case.split_at(parts.len());
+                let plain = inner.iter().all(|part| part == "_");
+                let shown = match first {
+                    Ty::Tuple(_) => format!("({})", inner.join(", ")),
+                    Ty::Optional(_) | Ty::Result(..) if !plain => inner[0].clone(),
+                    Ty::Struct(_) if plain => "_".to_string(),
+                    Ty::Enum(_) | Ty::Struct(_) if !plain => format!("{name} {{ .. }}"),
+                    _ => name.clone(),
+                };
+                found.push([vec![shown], tail.to_vec()].concat());
+                if found.len() == limit {
+                    return found;
+                }
+            }
+        }
+        found
     }
 }

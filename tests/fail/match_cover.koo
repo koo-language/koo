@@ -1,0 +1,36 @@
+enum Light { Red, Amber, Green }
+enum Shape { Circle { r: float }, Rect { w: float, h: float }, Dot }
+
+fn main() {
+    light := Light.Red
+    match (light, true) {
+        (Light.Green, true) => print("go")
+        (Light.Amber, _) => print("slow")
+        (Light.Red, false) => print("stop")
+    }
+    shape := Shape.Dot
+    match (shape, 1) {
+        (Shape.Dot, _) => print("dot")
+        (Shape.Circle { r }, 1) => print("one circle")
+    }
+    nested := ((true, false), Light.Green)
+    match nested {
+        ((true, _), Light.Green) => print("a")
+        ((false, true), _) => print("b")
+        ((_, false), Light.Red) => print("c")
+    }
+    match (1, "x") {
+        (1, "x") => print("both")
+        (_, "y") => print("y")
+    }
+    a: int? = 1
+    match (a, true) {
+        (none, true) => print("none")
+    }
+}
+
+//! error this `match` does not cover `(Red, true)`, `(Green, false)`
+//! error this `match` does not cover `(Circle, _)`, `(Rect, _)`
+//! error this `match` does not cover `((true, true), Red)`, `((true, true), Amber)`, `((true, false), Amber)`, `((false, false), Amber)`, `((false, false), Green)`
+//! error this `match` does not cover the remaining values: add a `_` arm
+//! error this `match` does not cover `(none, false)`, `(a value, true)`, `(a value, false)`

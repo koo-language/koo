@@ -1,0 +1,64 @@
+// A `match` is complete when its arms cover every case, however the cases are nested:
+// in a tuple, in a variant with fields, in an optional.
+
+enum Light { Red, Amber, Green }
+enum Shape { Circle { r: float }, Rect { w: float, h: float }, Dot }
+
+fn go(light: Light, clear: bool) -> string {
+    match (light, clear) {
+        (Light.Green, true) => return "go"
+        (Light.Green, false) => return "wait"
+        (Light.Amber, _) => return "slow"
+        (Light.Red, _) => return "stop"
+    }
+}
+
+fn both(a: bool, b: bool) -> int {
+    match (a, b) {
+        (true, true) => return 3
+        (true, false) => return 2
+        (false, true) => return 1
+        (false, false) => return 0
+    }
+}
+
+fn either(a: int?, b: bool) -> int {
+    match (a, b) {
+        (none, false) => return 0
+        (none, true) => return 1
+        (x, _) => return x else -1
+    }
+}
+
+fn corners(shape: Shape?) -> int {
+    match shape {
+        none => return -1
+        Shape.Circle { r } => return 0
+        Shape.Rect { w, h } => return 4
+        Shape.Dot => return 0
+    }
+}
+
+fn nested(pair: ((bool, bool), Light)) -> string {
+    match pair {
+        ((true, _), Light.Green) => return "a"
+        ((false, true), _) => return "b"
+        ((_, false), Light.Red) => return "c"
+        ((true, _), _) => return "d"
+        ((false, false), _) => return "e"
+    }
+}
+
+fn main() {
+    print("{go(Light.Green, true)} {go(Light.Green, false)} {go(Light.Amber, true)} {go(Light.Red, false)}")
+    print("{both(true, true)}{both(true, false)}{both(false, true)}{both(false, false)}")
+    print("{either(none, false)} {either(none, true)} {either(2, true)}")
+    print("{corners(none)} {corners(Shape.Dot)} {corners(Shape.Rect { w: 1.0, h: 2.0 })}")
+    print("{nested(((true, true), Light.Green))} {nested(((false, true), Light.Red))} {nested(((true, false), Light.Red))} {nested(((true, true), Light.Amber))} {nested(((false, false), Light.Amber))}")
+}
+
+//= go wait slow stop
+//= 3210
+//= 0 1 2
+//= -1 0 4
+//= a b c d e
