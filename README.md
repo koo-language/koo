@@ -2,11 +2,11 @@
 
 Koo is a compiled programming language for backend services. It aims for the performance of Rust with the ease of a scripting language: no garbage collector, no borrow checker, no `async`/`await`. Programs compile to native binaries for x86-64 and arm64, and to WebAssembly.
 
-> **Status: early.** The language is specified in [`SPEC.md`](SPEC.md) (version 0.5, draft) and its grammar in [`spec/grammar.ebnf`](spec/grammar.ebnf). The compiler builds and runs programs written in the part of the language described under [What works today](#what-works-today), and the [tour](docs/tour.md) teaches that part with programs the test suite runs. Most of the standard library, concurrency, packages and WebAssembly are specified and not yet built. It is not ready for production use.
+> **Status: early.** The language is specified in [`SPEC.md`](SPEC.md) (version 0.5, draft) and its grammar in [`spec/grammar.ebnf`](spec/grammar.ebnf). The compiler builds and runs programs written in the part of the language described under [What works today](#what-works-today). Two documents teach that part, and the test suite runs every program in both: the [tour](docs/tour.md), which is short, and [The Koo Programming Language](docs/book/README.md), a book in the manner of Kernighan and Ritchie's, with a tutorial, a chapter for each part of the language, exercises, a reference manual and a summary of the library. Most of the standard library, tasks and channels, packages and WebAssembly are specified and not yet built. It is not ready for production use.
 
 ## Try it
 
-You need a recent stable Rust toolchain and `clang` on your `PATH`.
+Koo runs on macOS and on Linux, on x86-64 and arm64. You need a recent stable Rust toolchain and clang 15 or newer on your `PATH` (`xcode-select --install` on macOS, `apt install clang` on Debian and Ubuntu). If your clang has another name, say so: `KOO_CLANG=clang-19`.
 
 ```sh
 cargo build --release
@@ -15,9 +15,12 @@ cargo build --release
 ./target/release/koo build --release examples/inventory.koo -o inventory
 ./target/release/koo test tests/test/stack_test.koo
 ./target/release/koo run tests/packages/shop        # a program in several files
+./target/release/koo run examples/http/orders.koo   # a JSON API on localhost:8080
+./target/release/koo run examples/http/counter.koo  # a server whose requests share an actor
+docker build -f examples/http/Dockerfile -t orders . # the same API as a 2.4 MB container
 ```
 
-Then read the [tour](docs/tour.md): it goes through the language in about fifteen short programs.
+Then read the [tour](docs/tour.md), which goes through the language in about fifteen short programs, or the [book](docs/book/README.md), which goes through it properly.
 
 ```koo
 type Item = { sku: string, qty: int, price: float }
@@ -109,6 +112,8 @@ fn main() ! sql.Error | http.Error {
 | `wasm32-none` | Core WebAssembly module for plugins and embedding | 1 |
 | `x86_64-macos`, `x86_64-windows`, `arm64-windows` | Native binary | 2 |
 
+The table is where the language is going. Today the compiler builds for the machine it runs on, and that machine is macOS on arm64, or Linux on x86-64 or arm64. The whole test suite passes on macOS and on arm64 Linux. On x86-64 Linux it was run under emulation, where everything passes but one test of the parser that the emulator runs out of memory on; it has not been run on x86-64 hardware yet. On Linux, `koo build --static` links everything in, so the program runs in an empty container ([`examples/http/Dockerfile`](examples/http/Dockerfile) makes one of 2.4 MB). Not yet: building for another machine than the one at hand, Windows, and WebAssembly.
+
 ## What works today
 
 The compiler implements the part of the language below and rejects everything else with a message that says so.
@@ -126,16 +131,21 @@ The compiler implements the part of the language below and rejects everything el
 | Safety | Checked integer arithmetic, bounds-checked indexing, no null; a panic reports the file and line |
 | Text | Interpolation with formats (`{x:8.2}`, `{id:05}`, `{name:>10}`), text blocks, raw strings, a text form for every value |
 | Built in | About sixty methods on lists, strings, optionals and numbers (`map`, `filter`, `fold`, `sort_by`, `join`, `split`, `trim`, `replace`, ...), written in Koo |
-| Standard packages | `std/os` (arguments, environment, exit), `std/io` (files, standard input and output), `std/test` (assertions) |
+| JSON | `value.to_json()` and `Type.from_json(text)` for every struct and enum made of numbers, strings, booleans, lists, optionals, maps with string keys and other such types, with nothing to import or annotate. A text that does not fit is refused with the path to the mistake (`/items/3/qty`) |
+| HTTP | `std/http`: a server with routes (`/orders/:id`, `/files/*`), queries, headers, forms, cookies, bodies whole or in chunks, JSON in and out, files from a directory, 404 and 405 by itself, and a log of requests. One event loop per core, each in a process that is replaced if a handler panics. A body that does not fit its type is answered with 400 and the path |
+| Actors | `actor Name { fields, methods }`, `Name.start(...)`, ask (`handle.method(...)`), tell (`handle.send.method(...)`), `handle.stop()`, typed errors across the boundary, handles in messages, restart after a panic, and a panic in place of a cycle of asks that would wait for ever. What actors are told runs on every core, and what they hand each other is shared between threads without being copied or locked. One actor serves every process of a server. An actor lives in the process that starts it, and asking it from there costs about what a call does |
+| Standard packages | `std/os` (arguments, environment, exit), `std/io` (files, standard input and output), `std/http`, `std/test` (assertions) |
 | Packages | A directory is a package: its files are one program and share one namespace. `koo run dir`, `koo test dir` |
-| Diagnostics | Every error names its place and says what to do; a name that is nearly right gets a "did you mean", and habits from other languages (`nil`, `println`, `.length`, `String`) get the Koo spelling |
-| Tooling | `koo run`, `koo build`, `koo check`, `koo test`, `koo parse`, with `--release`, `--emit-llvm` and `--sanitize` |
+| Diagnostics | Every error says what is wrong, marks the place, points at the declaration or the earlier line that explains it, and shows the corrected line where there is one thing that was meant. A name that is nearly right gets a "did you mean". Syntax from other languages (`let`, `function`, `class`, `elif`, `&&`, `x++`, `'text'`, `null`, `try`, C's `for`, `int x = 5`, `.length`) is named for what it is and answered with the Koo that was meant |
+| Tooling | `koo run`, `koo build`, `koo check`, `koo test`, `koo parse`, with `--release`, `--emit-llvm`, `--sanitize` and `--sanitize=thread` |
 
-Not yet: importing one package of your own from another, the package manager, the rest of the standard library (HTTP, JSON, SQL, time), interface values, tasks, actors and everything else concurrent, `Decimal`, resources, `defer`, `==` on maps, variadic parameters, the WebAssembly targets, Linux and Windows (the compiler has only been run on macOS on Apple Silicon), the formatter and the language server.
+Not yet: importing one package of your own from another, the package manager, the rest of the standard library (SQL, time, an HTTP client; and in the server HTTPS, HTTP/2 and streamed bodies), interface values, tasks, channels and `select`, and of actors the generic ones, `try_send`, mailbox sizes and `spawn` inside one, `Decimal`, resources, `defer`, `==` on maps, variadic parameters, the WebAssembly targets, Linux and Windows (the compiler has only been run on macOS on Apple Silicon), the formatter and the language server.
 
 What has been checked, and how:
 
 - The test suite builds every test program unoptimized and optimized, compares its output, and fails if it ends with memory still allocated. The same programs pass under AddressSanitizer.
+- Every program in the [book](docs/book/README.md) and the tour is built and run by the test suite, and what it does is compared to the letter with what the page says: what it prints, what a panic or a failing `main` writes, what the compiler says of a program that is wrong on purpose, what `koo test` reports, and what a server answers to the requests listed. The outputs on those pages are written there by the programs (`KOO_BLESS=1 cargo test the_book_is_true`), not typed.
+- Every test program with actors is also built with ThreadSanitizer and run, on macOS and Linux, with no report. With the step that freezes a message turned off, the same run reports twelve races, so the check does see what it is there to see.
 - The compiler has had four independent adversarial reviews, each of which wrote programs meant to break it. The third found sixteen problems, four of them memory-unsafe, in lambdas, generics and maps. The fourth went back over those fixes with about a hundred new programs and found them sound, and found seven new problems elsewhere: two memory-unsafe ones in `compare`, three ways to crash or stall the compiler with recursive or fast-growing types, and two wrong results (sorting floats with a NaN among them, and a tuple that skipped an element's side effect). All were fixed and became regression tests (`tests/run/blocks.koo`, `tests/run/review4.koo`, `tests/fail/blocks.koo`, `tests/fail/review.koo`, `tests/fail/review4.koo`). The fixes for the fourth have not been reviewed independently yet.
 - Known and not fixed: a program that calls itself without end, or frees a value nested hundreds of thousands deep, ends with a crash where the specification asks for a panic; a `match` on a tuple sometimes needs a `_` arm that is not strictly necessary; a `var` method cannot be called on a temporary.
 - That is far from proof. The compiler is new, nobody outside the project has used it, and it has not been fuzzed at scale. Expect bugs.
@@ -165,6 +175,39 @@ What has been checked, and how:
 - On `matmul` and `errors` it is about 1.3 times slower than Rust even with checks on. In `matmul` the inner loop reads a list's length from memory on every pass, where Rust keeps it in a register. In `errors` the whole loop is inlined and allocates nothing; the cause has not been tracked down.
 - These are eleven small single-threaded programs, not the benchmark suite the specification defines in Section 13.6. They say nothing yet about services, concurrency or large programs, and the optimizations the specification plans for reference counts are mostly not implemented.
 
+### A server
+
+`sh bench/http/run.sh` starts the same "Hello, world!" server in Koo, in Rust (axum 0.7 on tokio) and in Node 24, each held to one core, and sends each requests over 16 kept-open connections from one load generator ([`bench/http/load.rs`](bench/http/load.rs)) on the same machine:
+
+| Server | Requests a second |
+| --- | --- |
+| Koo, one worker | 236,000 |
+| Rust, axum, one thread | 200,000 |
+| Node | 112,000 |
+
+- The three move together from one run of the script to another with what else the machine is doing: an earlier session measured 305,000, 270,000 and 133,000. What holds is the order and roughly the ratios: Koo a little ahead of axum, and about twice Node.
+- This measures the server's own cost for a request: reading it, routing it, calling the handler and writing the response. It says nothing about what a handler does, and a real handler does more than return thirteen bytes.
+- The load generator runs on the same eight cores as the server, so the numbers are bounded by it as well. With every core serving, Koo and axum measure about the same as each other and no more than on one core: the generator, not either server, is then what is being measured.
+- Koo's server is one event loop per process (`kqueue` on macOS, `epoll` on Linux), with parsing and routing in the support library, and by default one process per core under one that restarts them. Nothing in it waits on a slow client, but a handler that itself waits (on a file, say) holds up the other requests of its worker until tasks exist.
+
+### Actors
+
+`sh bench/actors/run.sh` runs five programs in Koo and in Erlang (OTP 29, a `gen_server` for each actor), on the same machine with 8 cores. Times are from start to end by the clock, the best of three runs.
+
+| | Koo | Erlang |
+| --- | --- | --- |
+| Ten million asks of one actor, one after the other | 0.08 s (8 ns each) | 8.3 s (830 ns each) |
+| A million actors started, asked twice and kept | 0.10 s, 171 MB | 3.7 s, 2,800 MB |
+| A message passed round a ring of a thousand actors, twenty million times | 0.86 s (43 ns a hop) | 5.0 s (250 ns a hop) |
+| Sixteen actors tell sixty-four others 12.8 million things at once | 0.46 s, 590 MB | 1.2 s, 272 MB |
+| Sixteen actors each count the primes among a million numbers | 0.58 s | 2.3 s |
+
+- An ask in Koo runs on the asker's own thread, with the actor held meanwhile: when nobody else wants the actor that is two atomic exchanges around a call. A call in Erlang always crosses between two processes that the virtual machine schedules. That is the first row, and it is the widest gap.
+- What is told runs on a pool of threads, one for each processor. A message is a small function value put on the actor's list, with nothing copied: what it carries is frozen, and shared. In Erlang a message is copied to the heap of the process it goes to.
+- The last row is mostly the difference between compiled code and Erlang's virtual machine, with both using every core.
+- Where Erlang is ahead: in the fourth row Koo holds twice the memory, because nothing slows down a sender that tells faster than its actor listens, and Erlang makes such a sender pay. Erlang can also stop a process that runs too long and let another have the core, keeps each process's memory apart so that one can be collected or killed alone, and runs across machines. Koo does none of that yet.
+- A worker of a server is a process, and asks an actor through the process that owns it, over a socket, which costs a few microseconds: the server in [`examples/http/counter.koo`](examples/http/counter.koo) answers about 125,000 requests a second with an ask in each.
+
 Compile times are not comparable yet: every program here is small enough that both compilers finish in about a tenth of a second.
 
 ## Roadmap
@@ -187,7 +230,7 @@ cargo test                # everything, including the programs in tests/, docs/t
 python3 bench/run.py      # the benchmarks, against Rust
 ```
 
-The end-to-end tests build each program in `tests/run` unoptimized and optimized, run it, and fail if it prints the wrong thing, exits with the wrong status, or ends with memory still allocated. Each program in `tests/fail` must be rejected with exactly the errors it lists, and each program in the tour must print what the tour says.
+The end-to-end tests build each program in `tests/run` unoptimized and optimized, run it, and fail if it prints the wrong thing, exits with the wrong status, or ends with memory still allocated. Each program in `tests/fail` must be rejected with exactly the errors it lists, the 151 mistakes in `tests/diag` must be explained word for word as the files there say, a server is started and sent some forty requests, well formed and not, on one process and on three, and each program in the tour must print what the tour says.
 
 | Path | Contents |
 | --- | --- |
