@@ -273,7 +273,7 @@ fn main() {
 
 `shelf.all()` hands out the actor's own list. `main` adds to what it was given, and the shelf is none the worse.
 
-The second is that not every type can be a message. A message is made of numbers, strings, booleans, lists, optionals, maps with string keys, and the structures, enumerations and errors of the program that are made of those; and handles, so that one actor can be told about another. A function cannot be a message, and neither, at present, can a tuple. The compiler rejects a method that asks for one:
+The second is that not every type can be a message. A message is made of numbers, bytes, strings, booleans, lists, optionals, maps with string keys, and the structures, enumerations and errors of the program that are made of those; and handles, so that one actor can be told about another. A function cannot be a message, and neither, at present, can a tuple. The compiler rejects a method that asks for one:
 
 ```koo
 actor Table {
@@ -297,7 +297,7 @@ error: this type cannot be sent to an actor, or back from one
 4 |     fn set(at: (int, int), value: string) {
   |                ^^^^^^^^^^
   |
-  = help: a message is made of numbers, strings, booleans, lists, optionals, maps with string keys, the program's structs, enums and errors made of those, and the handles of actors; a function, a tuple or a generic type cannot cross from one actor to another yet
+  = help: a message is made of numbers, bytes, strings, booleans, lists, optionals, maps with string keys, the program's structs, enums and errors made of those, and the handles of actors; a function, a tuple or a generic type cannot cross from one actor to another yet
 
 1 error
 ```

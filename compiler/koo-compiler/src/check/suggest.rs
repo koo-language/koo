@@ -108,6 +108,13 @@ impl<'a> Checker<'a> {
                     .filter(|(o, _)| *o == owner)
                     .map(|(_, name)| name.clone()),
             );
+            // Its generic methods too: `transaction<T, E>` of a `sql.Pool`.
+            names.extend(
+                self.plain_generic_methods
+                    .iter()
+                    .filter(|((o, _), (_, is_method))| *o == owner && *is_method)
+                    .map(|((_, name), _)| name.clone()),
+            );
         }
         let key = match ty {
             Ty::List(_) => Some(OwnerKey::List),

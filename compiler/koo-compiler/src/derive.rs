@@ -20,7 +20,7 @@ use koo_syntax::Span;
 use koo_syntax::ast::*;
 
 /// The types whose JSON the prelude has.
-const BUILT_IN: [&str; 4] = ["int", "float", "bool", "string"];
+const BUILT_IN: [&str; 5] = ["int", "float", "bool", "string", "byte"];
 
 /// What the compiler writes for a program, and what it found that it cannot write.
 pub struct Derived {
@@ -201,7 +201,7 @@ impl<'a> Deriver<'a> {
     /// nothing of it to freeze.
     fn scalar(&self, ty: &'a Type) -> bool {
         match &self.resolved(ty).kind {
-            TypeKind::Named { path, .. } => matches!(path[0].name.as_str(), "int" | "float" | "bool"),
+            TypeKind::Named { path, .. } => matches!(path[0].name.as_str(), "int" | "float" | "bool" | "byte"),
             _ => false,
         }
     }
@@ -219,6 +219,7 @@ impl<'a> Deriver<'a> {
                 "float" => "j__float(text, var at)".to_string(),
                 "bool" => "j__bool(text, var at)".to_string(),
                 "string" => "j__str(text, var at)".to_string(),
+                "byte" => "j__byte(text, var at)".to_string(),
                 name => format!("{name}._json_read(text, var at)"),
             },
             _ => {
@@ -466,7 +467,7 @@ impl<'a> Deriver<'a> {
         self.problems.push((
             span,
             format!("{what} cannot be sent to an actor, or back from one"),
-            "a message is made of numbers, strings, booleans, lists, optionals, maps with string keys, the \
+            "a message is made of numbers, bytes, strings, booleans, lists, optionals, maps with string keys, the \
              program's structs, enums and errors made of those, and the handles of actors; a function, a tuple \
              or a generic type cannot cross from one actor to another yet"
                 .to_string(),

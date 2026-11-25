@@ -946,6 +946,20 @@ fn j__end(text: string, at: int) ! JsonError {
 
 fn (self: int) _json_write(out: var string) { out += "{self}" }
 
+/// A byte is a number in JSON, from 0 to 255, and bytes are an array of them.
+fn (self: byte) _json_write(out: var string) { out += "{int.from(self)}" }
+
+fn (self: byte) to_json() -> string { return "{int.from(self)}" }
+
+fn j__byte(text: string, at: var int) -> byte ! JsonError {
+    start := __json_ws(text, at)
+    number := j__int(text, var at)?
+    return byte.from(number) else {
+        at = start
+        fail JsonError { message: "expected a byte, which is a whole number from 0 to 255, found {number}", path: "" }
+    }
+}
+
 fn (self: int) to_json() -> string { return "{self}" }
 
 fn int.from_json(text: string) -> int ! JsonError {
@@ -1061,6 +1075,7 @@ fn Map<K, V>.from_json(text: string) -> Map<string, V> ! JsonError {
 }
 
 fn int._json_read(text: string, at: var int) -> int ! JsonError { return j__int(text, var at)? }
+fn byte._json_read(text: string, at: var int) -> byte ! JsonError { return j__byte(text, var at)? }
 fn float._json_read(text: string, at: var int) -> float ! JsonError { return j__float(text, var at)? }
 fn bool._json_read(text: string, at: var int) -> bool ! JsonError { return j__bool(text, var at)? }
 fn string._json_read(text: string, at: var int) -> string ! JsonError { return j__str(text, var at)? }

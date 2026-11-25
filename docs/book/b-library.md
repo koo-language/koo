@@ -300,7 +300,7 @@ Set[1, 2] 0
 
 | | |
 | --- | --- |
-| `value.to_json() -> string` | the value as JSON; for `int`, `float`, `bool`, `string`, lists, optionals, maps with string keys, and the structures and enumerations made of them |
+| `value.to_json() -> string` | the value as JSON; for `int`, `float`, `bool`, `string`, `byte` (a number from 0 to 255), lists, optionals, maps with string keys, and the structures and enumerations made of them |
 | `Type.from_json(text: string) -> Type ! JsonError` | the value that the text is; for structures, enumerations and `int` |
 | `List<T>.from_json(text: string) -> [T] ! JsonError`, `Map<string, V>.from_json(text: string) -> [string: V] ! JsonError` | a list read from a JSON array, and a map from a JSON object; the elements are any of the types above, lists, maps with string keys, or optionals of them |
 

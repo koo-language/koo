@@ -1,0 +1,44 @@
+// A byte is a number in JSON, and bytes are an array of numbers: a struct that holds
+// bytes is written and read like any other, and is a message an actor can be given.
+
+type Signed = { body: string, mac: [byte], salt: byte? }
+
+actor Vault {
+    var kept: [Signed] = []
+
+    fn keep(signed: Signed) -> int {
+        kept.push(signed)
+        return kept.len
+    }
+
+    fn last_mac() -> [byte] {
+        return kept[kept.len - 1].mac
+    }
+}
+
+fn main() ! JsonError {
+    signed := Signed { body: "x", mac: "yz".bytes(), salt: none }
+    text := signed.to_json()
+    print(text)
+    print(Signed.from_json(text)?)
+    print(List<byte>.from_json("[0, 255]")?)
+    match Signed.from_json("\{\"body\":\"x\",\"mac\":[1,256]}") {
+        s => print(s)
+        ! e => print("{e.path}: {e.message}")
+    }
+    match Signed.from_json("\{\"body\":\"x\",\"mac\":[1],\"salt\":-1}") {
+        s => print(s)
+        ! e => print("{e.path}: {e.message}")
+    }
+    vault := Vault.start()
+    print(vault.keep(signed))
+    print(vault.last_mac())
+}
+
+//= {"body":"x","mac":[121,122]}
+//= Signed { body: "x", mac: [121, 122], salt: none }
+//= [0, 255]
+//= /mac/1: expected a byte, which is a whole number from 0 to 255, found 256
+//= /salt: expected a byte, which is a whole number from 0 to 255, found -1
+//= 1
+//= [121, 122]

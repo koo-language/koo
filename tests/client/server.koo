@@ -13,6 +13,11 @@ actor Visits {
         return seen
     }
 
+    // Bytes go to another process and back as they are.
+    fn same_bytes(bytes: [byte]) -> [byte] {
+        return bytes
+    }
+
     // What it is given, as it was given: a float goes to another process and back.
     fn same(x: float) -> float {
         return x
@@ -84,6 +89,7 @@ fn main() ! http.Error {
         }
         return http.text("{after - before}\n")
     })
+    app.get("/bytes", req -> http.text("{visits.same_bytes("a\u{ff}".bytes())}\n"))
     app.get("/ratio", req -> {
         done := float.parse(req.query("done") else "0") else 0.0
         total := float.parse(req.query("total") else "0") else 0.0
