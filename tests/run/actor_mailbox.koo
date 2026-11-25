@@ -1,0 +1,90 @@
+// An actor's mail has a limit (Section 7.3). A thread that tells an actor whose mail is
+// full waits for room; `try_send` does not wait, and says whether there was room. An
+// actor that tells itself with its mail full could wait for nobody but itself, which is
+// a panic.
+
+@mailbox(4)
+actor Slow {
+    var seen: int = 0
+
+    fn work(n: int) {
+        var x := 0
+        for i in 0..2000000 {
+            x = (x + i + n) % 1000003
+        }
+        seen += 1
+    }
+
+    fn count() -> int {
+        return seen
+    }
+}
+
+@mailbox(2)
+actor Echo {
+    var ticks: int = 0
+
+    fn flood() {
+        for i in 0..10 {
+            self.send.tick()
+        }
+    }
+
+    fn tick() {
+        ticks += 1
+    }
+
+    fn count() -> int {
+        return ticks
+    }
+}
+
+actor Relay {
+    var passed: int = 0
+
+    fn pass(left: int) {
+        passed += 1
+        if left > 0 {
+            self.send.pass(left - 1)
+        }
+    }
+
+    fn count() -> int {
+        return passed
+    }
+}
+
+fn main() {
+    // Twenty at once, to an actor that takes its time and keeps four waiting.
+    slow := Slow.start()
+    var accepted := 0
+    for i in 0..20 {
+        if slow.try_send.work(i) {
+            accepted += 1
+        }
+    }
+    print(accepted >= 4 and accepted < 20)
+
+    // `send` waits for room, so none of these is lost.
+    for i in 0..10 {
+        slow.send.work(i)
+    }
+    print(slow.count() == accepted + 10)
+
+    // One message at a time is never too many, however many there are in all.
+    relay := Relay.start()
+    relay.send.pass(5000)
+    print(relay.count())
+
+    // The two that fit are done, by the actor that started again.
+    echo := Echo.start()
+    echo.send.flood()
+    print(echo.count())
+}
+
+//= true
+//= true
+//= 5001
+//= 2
+//! stderr `Echo` cannot be told `tick`: its mailbox is full
+//! stderr the actor `Echo` panicked, and starts again

@@ -143,14 +143,14 @@ The compiler implements the part of the language below and rejects everything el
 | Built in | About sixty methods on lists, strings, optionals and numbers (`map`, `filter`, `fold`, `sort_by`, `join`, `split`, `trim`, `replace`, ...), written in Koo |
 | JSON | `value.to_json()` and `Type.from_json(text)` for every struct and enum made of numbers, strings, booleans, lists, optionals, maps with string keys and other such types, with nothing to import or annotate. A text that does not fit is refused with the path to the mistake (`/items/3/qty`) |
 | HTTP | `std/http`: a server with routes (`/orders/:id`, `/files/*`), queries, headers, forms, cookies, bodies whole or in chunks, JSON in and out, files from a directory, 404 and 405 by itself, and a log of requests. One event loop per core, each in a process that is replaced if a handler panics. A body that does not fit its type is answered with 400 and the path |
-| Actors | `actor Name { fields, methods }`, `Name.start(...)`, ask (`handle.method(...)`), tell (`handle.send.method(...)`), `handle.stop()`, typed errors across the boundary, handles in messages, restart after a panic, and a panic in place of a cycle of asks that would wait for ever. What actors are told runs on every core, and what they hand each other is shared between threads without being copied or locked. One actor serves every process of a server. An actor lives in the process that starts it, and asking it from there costs about what a call does |
+| Actors | `actor Name { fields, methods }`, `Name.start(...)`, ask (`handle.method(...)`), tell (`handle.send.method(...)`), `handle.stop()`, typed errors across the boundary, handles in messages, restart after a panic, and a panic in place of a cycle of asks that would wait for ever. What actors are told runs on every core, and what they hand each other is shared between threads without being copied or locked. An actor's mail is limited (`@mailbox(n)`): `send` waits for room and `try_send` does not. One actor serves every process of a server. An actor lives in the process that starts it, and asking it from there costs about what a call does |
 | Standard packages | `std/os` (arguments, environment, exit), `std/io` (files, standard input and output), `std/http`, `std/test` (assertions) |
 | Packages | A directory is a package: its files are one program and share one namespace. `koo run dir`, `koo test dir` |
 | Diagnostics | Every error says what is wrong, marks the place, points at the declaration or the earlier line that explains it, and shows the corrected line where there is one thing that was meant. A name that is nearly right gets a "did you mean". Syntax from other languages (`let`, `function`, `class`, `elif`, `&&`, `x++`, `'text'`, `null`, `try`, C's `for`, `int x = 5`, `.length`) is named for what it is and answered with the Koo that was meant |
 | Tooling | `koo run`, `koo build`, `koo check`, `koo test`, `koo parse`, with `--release`, `--emit-llvm`, `--sanitize` and `--sanitize=thread` |
 | Editors | Syntax highlighting for Visual Studio Code, in [`editors/vscode`](editors/vscode) |
 
-Not yet: importing one package of your own from another, the package manager, the rest of the standard library (SQL, time, an HTTP client; and in the server HTTPS, HTTP/2 and streamed bodies), interface values, tasks, channels and `select`, and of actors the generic ones, `try_send`, mailbox sizes and `spawn` inside one, `Decimal`, resources, `defer`, `==` on maps, variadic parameters, the WebAssembly targets, Linux and Windows (the compiler has only been run on macOS on Apple Silicon), the formatter and the language server.
+Not yet: importing one package of your own from another, the package manager, the rest of the standard library (SQL, time, an HTTP client; and in the server HTTPS, HTTP/2 and streamed bodies), interface values, tasks, channels and `select`, and of actors the generic ones and `spawn` inside one, `Decimal`, resources, `defer`, variadic parameters, the WebAssembly targets, Windows, the formatter and the language server.
 
 What has been checked, and how:
 
@@ -208,15 +208,16 @@ What has been checked, and how:
 | | Koo | Erlang |
 | --- | --- | --- |
 | Ten million asks of one actor, one after the other | 0.08 s (8 ns each) | 8.3 s (830 ns each) |
-| A million actors started, asked twice and kept | 0.10 s, 171 MB | 3.7 s, 2,800 MB |
-| A message passed round a ring of a thousand actors, twenty million times | 0.86 s (43 ns a hop) | 5.0 s (250 ns a hop) |
-| Sixteen actors tell sixty-four others 12.8 million things at once | 0.46 s, 590 MB | 1.2 s, 272 MB |
-| Sixteen actors each count the primes among a million numbers | 0.58 s | 2.3 s |
+| A million actors started, asked twice and kept | 0.11 s, 194 MB | 3.7 s, 2,800 MB |
+| A message passed round a ring of a thousand actors, twenty million times | 0.99 s (50 ns a hop) | 5.0 s (250 ns a hop) |
+| Sixteen actors tell sixty-four others 12.8 million things at once | 0.48 s, 44 MB | 1.1 s, 224 MB |
+| Sixteen actors each count the primes among a million numbers | 0.68 s | 2.4 s |
 
 - An ask in Koo runs on the asker's own thread, with the actor held meanwhile: when nobody else wants the actor that is two atomic exchanges around a call. A call in Erlang always crosses between two processes that the virtual machine schedules. That is the first row, and it is the widest gap.
 - What is told runs on a pool of threads, one for each processor. A message is a small function value put on the actor's list, with nothing copied: what it carries is frozen, and shared. In Erlang a message is copied to the heap of the process it goes to.
 - The last row is mostly the difference between compiled code and Erlang's virtual machine, with both using every core.
-- Where Erlang is ahead: in the fourth row Koo holds twice the memory, because nothing slows down a sender that tells faster than its actor listens, and Erlang makes such a sender pay. Erlang can also stop a process that runs too long and let another have the core, keeps each process's memory apart so that one can be collected or killed alone, and runs across machines. Koo does none of that yet.
+- An actor's mail has a limit, 1,024 messages unless it says otherwise with `@mailbox(n)`, and a sender that reaches it waits. That is why the fourth program holds 44 MB: before there was a limit it held 590 MB, with the same time.
+- Where Erlang is ahead: it can stop a process that runs too long and let another have the core, keeps each process's memory apart so that one can be collected or killed alone, has supervision trees, and runs across machines. Koo does none of that yet.
 - A worker of a server is a process, and asks an actor through the process that owns it, over a socket, which costs a few microseconds: the server in [`examples/http/counter.koo`](examples/http/counter.koo) answers about 125,000 requests a second with an ask in each.
 
 Compile times are not comparable yet: every program here is small enough that both compilers finish in about a tenth of a second.

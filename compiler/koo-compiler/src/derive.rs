@@ -37,6 +37,11 @@ pub fn send_type(actor: &str) -> String {
     format!("Actor{actor}Send")
 }
 
+/// The type of what `handle.try_send` is, for an actor of a name.
+pub fn try_type(actor: &str) -> String {
+    format!("Actor{actor}Try")
+}
+
 /// The type that holds the fields of an actor of a name.
 pub fn state_type(actor: &str) -> String {
     format!("Actor{actor}State")
@@ -44,7 +49,7 @@ pub fn state_type(actor: &str) -> String {
 
 /// The function that holds the body of an actor's method.
 pub fn method_function(actor: &str, method: &str) -> String {
-    format!("{}__{method}", snake(actor))
+    format!("{}__{method}", own(actor))
 }
 
 const UNREADABLE: &str = "else e => panic(\"a message between actors could not be read: {e.message}\")";
@@ -54,6 +59,8 @@ struct Deriver<'a> {
     /// The error types with fields, and the names that stand for several errors.
     error_sets: HashMap<&'a str, &'a [Type]>,
     actors: Vec<&'a ActorDecl>,
+    /// How many messages may wait for each actor that says, with `@mailbox(n)`.
+    mailboxes: HashMap<&'a str, i64>,
     problems: Vec<(Span, String, String)>,
     unwritten: Vec<String>,
     enums: HashMap<&'a str, &'a EnumDecl>,
@@ -64,6 +71,15 @@ struct Deriver<'a> {
     readers: HashMap<String, usize>,
     out: String,
     count: usize,
+}
+
+/// What the names of the functions written for an actor begin with. No name of the
+/// prelude's begins so, whatever the actor is called: an actor `A`, `Io` or `J` would
+/// otherwise have functions with the names of the prelude's own. The function behind a
+/// method is this, `__` and the method's name; the others have names that begin with
+/// one more `_`, which no method's does.
+fn own(actor: &str) -> String {
+    format!("actor__{}", snake(actor))
 }
 
 /// `OrderLine` as `order_line`.
@@ -449,7 +465,10 @@ impl<'a> Deriver<'a> {
     /// Returns whether the actor was written.
     fn an_actor(&mut self, actor: &'a ActorDecl) -> bool {
         let name = actor.name.name.as_str();
-        let (send, state, lower) = (send_type(name), state_type(name), snake(name));
+        let (send, state, lower) = (send_type(name), state_type(name), own(name));
+        let attempt = try_type(name);
+        // A thousand and twenty-four messages may wait, unless the actor says how many.
+        let mailbox = self.mailboxes.get(name).copied().unwrap_or(0);
         let mut stubs = String::new();
         let mut arms = String::new();
         // The fields, as the function behind a method is given them.
@@ -576,9 +595,16 @@ impl<'a> Deriver<'a> {
                      next__ := 0\n        id__ := self.id\n        \
                      __actor_tell(id__, () -> {{\n            __actor_letter(next__, id__)\n            \
                      var cell__: [{state}] = __actor_take(id__, \"{called}\")\n            \
-                     {local}\n            __actor_put(id__, cell__)\n        }})\n        return\n    }}\n\
-                     {pack}    __actor_send(self.home, \"{name} {{self.id}} send.{called}\", out__)\n}}\n\n",
-                    local = call(&format!("{lower}__handle(id__, __actor_home())")),
+                     {local}\n            __actor_put(id__, cell__)\n        }}, \"{called}\")\n        return\n    }}\n\
+                     {pack}    __actor_send(self.home, \"{name} {{self.id}} send.{called}\", out__)\n}}\n\n\
+                     fn (self: {attempt}) {called}({typed}) -> bool {{\n    if __actor_local(self.home) {{\n        {frozen}        \
+                     next__ := 0\n        id__ := self.id\n        \
+                     return __actor_try_tell(id__, () -> {{\n            __actor_letter(next__, id__)\n            \
+                     var cell__: [{state}] = __actor_take(id__, \"{called}\")\n            \
+                     {local}\n            __actor_put(id__, cell__)\n        }})\n    }}\n\
+                     {pack}    __actor_send(self.home, \"{name} {{self.id}} send.{called}\", out__)\n    return true\n}}\n\n",
+                    typed = params.join(", "),
+                    local = call(&format!("{lower}___handle(id__, __actor_home())")),
                 );
             }
 
@@ -663,8 +689,8 @@ impl<'a> Deriver<'a> {
         }
         let _ = write!(
             self.out,
-            "fn {lower}__handle(id: int, home: string) -> {name} {{\n    \
-             return {name} {{ id, home, send: {send} {{ id, home }} }}\n}}\n\n\
+            "fn {lower}___handle(id: int, home: string) -> {name} {{\n    \
+             return {name} {{ id, home, send: {send} {{ id, home }}, try_send: {attempt} {{ id, home }} }}\n}}\n\n\
              fn (self: {name}) _json_write(out: var string) {{\n    out += \"\\{{\\\"id\\\":{{self.id}},\\\"home\\\":\"\n    \
              self.home._json_write(var out)\n    out += \"}}\"\n}}\n\n\
              fn {name}._json_read(text: string, at: var int) -> {name} ! JsonError {{\n    \
@@ -675,17 +701,17 @@ impl<'a> Deriver<'a> {
              \"home\" => {{\n                value := j__str(text, var at)?\n                home = value\n            }}\n            \
              _ => j__skip(text, var at)?\n        }}\n    }}\n    \
              the_id := id else fail j__missing(\"id\")\n    the_home := home else fail j__missing(\"home\")\n    \
-             return {lower}__handle(the_id, the_home)\n}}\n\n\
+             return {lower}___handle(the_id, the_home)\n}}\n\n\
              fn {name}.start({given}) -> {name} {{\n{kept}    cell__: [{state}] = [{state} {{ {set} }}]\n    \
-             return {lower}__handle(__actor_new(\"{name}\", cell__), __actor_home())\n}}\n\n\
+             return {lower}___handle(__actor_new(\"{name}\", cell__, {mailbox}), __actor_home())\n}}\n\n\
              fn (self: {name}) stop() {{\n    if not __actor_local(self.home) {{\n        \
              __actor_ask(self.home, \"{name} {{self.id}} stop\", \"[]\")\n        return\n    }}\n    \
              if not __actor_alive(self.id) {{ return }}\n    \
              state__: [{state}] = __actor_end(self.id, 0)\n    initial__: [{state}] = __actor_end(self.id, 1)\n}}\n\n\
-             fn {lower}__stop_all() {{\n    __actor_scan()\n    while true {{\n        \
+             fn {lower}___stop_all() {{\n    __actor_scan()\n    while true {{\n        \
              id := __actor_any(\"{name}\")\n        if id < 0 {{ break }}\n        \
-             {lower}__handle(id, __actor_home()).stop()\n    }}\n}}\n\n\
-             fn {lower}__remote(self: {name}, method: string, text: string) {{\n    __json_begin()\n    \
+             {lower}___handle(id, __actor_home()).stop()\n    }}\n}}\n\n\
+             fn {lower}___remote(self: {name}, method: string, text: string) {{\n    __json_begin()\n    \
              var at := 0\n    var first := true\n    match method {{\n{arms}            \
              \"stop\" => {{\n                self.stop()\n                __actor_reply(\"\", \"null\")\n            }}\n            \
              _ => panic(\"the actor `{name}` has no method `{{method}}`\")\n    }}\n}}\n\n{stubs}",
@@ -800,6 +826,7 @@ pub fn derive(package: &File, json: bool) -> Derived {
         structs: HashMap::new(),
         error_sets: HashMap::new(),
         actors: Vec::new(),
+        mailboxes: HashMap::new(),
         unwritten: Vec::new(),
         problems: Vec::new(),
         enums: HashMap::new(),
@@ -856,6 +883,43 @@ pub fn derive(package: &File, json: bool) -> Derived {
             },
             ItemKind::Actor(decl) if decl.type_params.is_empty() && decl.satisfies.is_empty() => {
                 deriver.actors.push(decl);
+                for attribute in &item.attrs {
+                    // `@mailbox(n)`: how many messages may wait for the actor (Section 7.3).
+                    let size = match (attribute.name.name.as_str(), attribute.args.as_slice()) {
+                        (
+                            "mailbox",
+                            [
+                                AttrArg {
+                                    name: None,
+                                    value:
+                                        AttrValue::Literal(Expr {
+                                            kind: ExprKind::Int(size),
+                                            ..
+                                        }),
+                                },
+                            ],
+                        ) => size.replace('_', "").parse::<i64>().ok().filter(|size| *size > 0),
+                        _ => None,
+                    };
+                    match size {
+                        Some(size) => {
+                            deriver.mailboxes.insert(&decl.name.name, size);
+                        }
+                        None if attribute.name.name == "mailbox" => deriver.problems.push((
+                            attribute.span,
+                            "`@mailbox` takes one number, greater than zero".to_string(),
+                            "it is the most messages that may wait for the actor: `@mailbox(4096)`".to_string(),
+                        )),
+                        None => deriver.problems.push((
+                            attribute.span,
+                            format!(
+                                "the attribute `@{}` is not supported by this compiler yet",
+                                attribute.name.name
+                            ),
+                            "an actor may say `@mailbox(n)`, the most messages that may wait for it".to_string(),
+                        )),
+                    }
+                }
             }
             _ => {}
         }
@@ -904,12 +968,12 @@ pub fn derive(package: &File, json: bool) -> Derived {
     let mut stopped = String::new();
     for actor in deriver.actors.clone() {
         if deriver.an_actor(actor) {
-            let (name, lower) = (&actor.name.name, snake(&actor.name.name));
+            let (name, lower) = (&actor.name.name, own(&actor.name.name));
             let _ = writeln!(
                 handed,
-                "        \"{name}\" => {lower}__remote({lower}__handle(id, __actor_home()), parts[2], text)"
+                "        \"{name}\" => {lower}___remote({lower}___handle(id, __actor_home()), parts[2], text)"
             );
-            stopped.insert_str(0, &format!("    {lower}__stop_all()\n"));
+            stopped.insert_str(0, &format!("    {lower}___stop_all()\n"));
         }
     }
     let _ = write!(

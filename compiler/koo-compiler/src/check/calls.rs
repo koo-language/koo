@@ -904,7 +904,7 @@ impl<'a> Checker<'a> {
                         if self.program.structs[*id]
                             .name
                             .strip_prefix("Actor")
-                            .and_then(|rest| rest.strip_suffix("Send"))
+                            .and_then(|rest| rest.strip_suffix("Send").or(rest.strip_suffix("Try")))
                             .is_some_and(|actor| {
                                 self.free_fns
                                     .contains_key(&crate::derive::method_function(actor, method))

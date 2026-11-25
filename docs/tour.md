@@ -814,7 +814,9 @@ fn main() {
 
 The workers of a server are processes, not threads, and reach an actor through the process that has it, with the arguments sent as text.
 
-What is not there yet: a method that loops for ever keeps its thread, and when every thread is kept nothing else that was told runs; nothing slows down a sender that tells faster than its actor can listen, so the letters pile up in memory; a panic in a message that was told leaks what the message was holding; and generic actors, `try_send`, mailbox sizes, `spawn` inside an actor, and functions or tuples in messages are not built.
+An actor's mail has a limit, 1,024 messages unless the actor says otherwise with `@mailbox(n)` before its declaration. `send` to an actor whose mail is full waits for room, so a sender cannot get ahead of an actor without end, and `handle.try_send.method(...)` does not wait: it returns whether there was room.
+
+What is not there yet: a method that loops for ever keeps its thread, and when every thread is kept nothing else that was told runs; a panic in a message that was told leaks what the message was holding; and generic actors, `spawn` inside an actor, and functions or tuples in messages are not built.
 
 ## Tests
 

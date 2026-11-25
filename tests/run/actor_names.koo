@@ -1,0 +1,40 @@
+// An actor and its methods may have any names: none is taken by what the compiler
+// writes for actors, or by the standard packages.
+actor A {
+    var n: int = 0
+
+    fn job() -> int {
+        n += 1
+        return n
+    }
+
+    fn stop_all() {
+        n = 0
+    }
+}
+
+actor Io {
+    fn write(text: string) -> string {
+        return "io actor: {text}"
+    }
+}
+
+actor J {
+    fn int(text: string) -> int {
+        return text.len
+    }
+}
+
+fn main() {
+    a := A.start()
+    print(a.job())
+    a.send.stop_all()
+    print(a.job())
+    print(Io.start().write("x"))
+    print(J.start().int("four"))
+}
+
+//= 1
+//= 1
+//= io actor: x
+//= 4

@@ -372,8 +372,11 @@ declares an actor, and the type `Name` of its handles. In the body of a method, 
 `Name.start(field: expression, ...)` creates an actor, with a value for each field that has no default, and returns a handle. For a handle `h`:
 
 - `h.method(arguments)` *asks*: it executes the method with exclusive use of the actor's fields and yields its result, waiting first for any other execution of a method of that actor, and for every message told to the actor before, to end;
-- `h.send.method(arguments)` *tells*, and is allowed for a method with no return type and no error set: the method will be executed later, on another thread, after the messages told to that actor earlier;
+- `h.send.method(arguments)` *tells*, and is allowed for a method with no return type and no error set: the method will be executed later, on another thread, after the messages told to that actor earlier. If as many messages are waiting for the actor as its mailbox holds, the thread waits until there are fewer;
+- `h.try_send.method(arguments)` tells if the mailbox has room, and yields a `bool` that says whether it did;
 - `h.stop()` stops the actor.
+
+A mailbox holds 1,024 messages, or the number given by `@mailbox(n)` on a line before the declaration of the actor.
 
 The types of a method's parameters and result, and of the fields given to `start`, are restricted to those that can be messages: `int`, `float`, `bool`, `string`, lists and optionals of message types, maps from `string` to a message type, structures, enumerations and errors whose fields are message types, and handles. The fields given to `start` may in addition be of types that the others exclude, provided they contain no function.
 
@@ -421,6 +424,6 @@ The text form of a value is:
 
 ## A.10 Panics
 
-A program *panics* when an `int` operation overflows; when an integer is divided by zero; when a list is subscripted out of range, or `remove`, `insert` or `swap` is given a position that does not exist; when a string is sliced at a position that is out of range or inside a character; when an actor that is stopped is asked; when an ask would wait for an actor that is waiting for the asker; when a thread's stack is exhausted, by calls nested too deeply or by the release of a value nested too deeply; and when `panic` is called.
+A program *panics* when an `int` operation overflows; when an integer is divided by zero; when a list is subscripted out of range, or `remove`, `insert` or `swap` is given a position that does not exist; when a string is sliced at a position that is out of range or inside a character; when an actor that is stopped is asked; when an ask would wait for an actor that is waiting for the asker, or a tell for room in the mailbox of one; when a thread's stack is exhausted, by calls nested too deeply or by the release of a value nested too deeply; and when `panic` is called.
 
 A panic writes `panic:`, a message, and for most panics the file and line, on the standard error output. Unless it occurs in a message that was told to an actor, it ends the program with status 101; an exhausted stack ends the program wherever it occurs. In a message that was told, it ends the message; each actor that was in the middle of a method at that point is started again with the fields it was started with, unless it has been started again five times within the last minute, in which case it is stopped.

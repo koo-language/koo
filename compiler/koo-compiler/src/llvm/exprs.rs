@@ -538,12 +538,7 @@ impl Gen<'_> {
                     operands.push(format!("{llty} {value}"));
                 }
                 let operands = operands.join(", ");
-                if let Some((ty, place)) = emptied {
-                    self.emit(format!("call void @koo_{name}({operands})"));
-                    self.zero(&ty, &place);
-                    return "zeroinitializer".to_string();
-                }
-                match &expr.ty {
+                let result = match &expr.ty {
                     Ty::Unit => {
                         self.emit(format!("call void @koo_{name}({operands})"));
                         "zeroinitializer".to_string()
@@ -553,7 +548,11 @@ impl Gen<'_> {
                         let llty = self.llty(ty);
                         self.value(format!("call {llty} @koo_{name}({operands})"))
                     }
+                };
+                if let Some((ty, place)) = emptied {
+                    self.zero(&ty, &place);
                 }
+                result
             }
             ExprKind::Builtin(builtin, args) => self.gen_builtin(*builtin, args, expr, None),
             ExprKind::ErrorLit(id, values) => {

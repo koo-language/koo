@@ -143,7 +143,7 @@ The [specification](../../SPEC.md) describes more than the compiler builds. For 
 
 *Constants.* A constant at the top level is a number, a string, or `true` or `false`; it cannot be a list, a structure or a computed value.
 
-*Concurrency.* Of the concurrency that the specification describes, actors are built, as Chapter 9 describes them, with the limits listed in Section 9.10. Tasks, `spawn`, `scope`, channels and `select` are not.
+*Concurrency.* Of the concurrency that the specification describes, actors are built, as Chapter 9 describes them, with the limits listed in Section 9.11. Tasks, `spawn`, `scope`, channels and `select` are not.
 
 *Packages.* A program is one package. One package of your own cannot yet import another, and there is no package manager. The standard packages are `std/io`, `std/os`, `std/http` and `std/test`.
 

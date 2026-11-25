@@ -55,6 +55,10 @@ const QUEUED: u32 = 4;
 /// A thread sleeps until the actor is let go of.
 const WAITERS: u32 = 8;
 const ALIVE: u32 = 16;
+/// A thread sleeps until there is room in the actor's mail.
+const FULL: u32 = 32;
+/// How many letters may wait for an actor that does not say (Section 7.3).
+const MAILBOX: u32 = 1024;
 
 /// An actor. Everything after `holder` is touched only by the thread that has the slot
 /// locked, but for `mail`, which anyone adds to.
@@ -77,6 +81,10 @@ struct Slot {
     mail: AtomicPtr<Job>,
     /// Letters taken from `mail`, the oldest first.
     inbox: *mut Job,
+    /// How many letters are in `mail`, and the most there may be: a thread that would
+    /// leave one more waits until whoever runs the mail has taken what is there.
+    waiting: AtomicU32,
+    room: u32,
 }
 
 /// A letter: what was told to an actor. It is a function value of the program's, as
@@ -528,13 +536,50 @@ unsafe fn fresh_mail(slot: *mut Slot) -> *mut Job {
             (*slot).word.fetch_or(MAIL, AcqRel);
         }
         let mut oldest = core::ptr::null_mut();
+        let mut taken = 0;
         while !newest.is_null() {
             let next = (*newest).next;
             (*newest).next = oldest;
             oldest = newest;
             newest = next;
+            taken += 1;
         }
+        // There is room again, and the threads that waited for it are told.
+        (*slot).waiting.fetch_sub(taken, AcqRel);
+        make_room(slot);
         oldest
+    }
+}
+
+/// Wakes the threads that wait for room in an actor's mail.
+unsafe fn make_room(slot: *mut Slot) {
+    unsafe {
+        if (*slot).word.load(Acquire) & FULL != 0 {
+            (*slot).word.fetch_and(!FULL, AcqRel);
+            let bench = bench_of(slot);
+            bench.lock();
+            bench.wake_all();
+            bench.unlock();
+        }
+    }
+}
+
+/// Where threads sleep that wait for an actor: one of a few places, by where the actor is.
+unsafe fn bench_of(slot: *mut Slot) -> &'static Gate {
+    &BENCHES[(slot as usize / core::mem::size_of::<Slot>()) % BENCHES.len()]
+}
+
+/// A worker is about to sleep until there is room in a mailbox. Another is started in
+/// its place, so that the actor it waits for has a thread to run on however many
+/// workers are waiting. Returns whether there is one: there is a most to how many
+/// threads a program has.
+unsafe fn stand_in() -> bool {
+    unsafe {
+        if WORKERS.load(SeqCst) >= thread::MOST_THREADS - 8 || !thread::start(work) {
+            return false;
+        }
+        WORKERS.fetch_add(1, SeqCst);
+        true
     }
 }
 
@@ -601,15 +646,83 @@ pub unsafe extern "C" fn koo_actor_runner(runner: usize) {
     RUNNER.store(runner, Release);
 }
 
-/// Tells an actor: leaves it a letter, which becomes the support library's. A letter
-/// for an actor that is stopped is thrown away.
+/// Tells an actor: leaves it a letter, which becomes the support library's. If the
+/// actor's mail is full, the thread waits until there is room, which is what keeps a
+/// sender from getting ahead of an actor without end (Section 7.3). A letter for an
+/// actor that is stopped is thrown away.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn koo_actor_tell(id: i64, job: *mut Job) {
+pub unsafe extern "C" fn koo_actor_tell(id: i64, job: *mut Job, method: *const Header) {
+    unsafe {
+        leave_letter(id, job, Some(bytes(method)));
+    }
+}
+
+/// Tells an actor if there is room in its mail, and says whether there was.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn koo_actor_try_tell(id: i64, job: *mut Job) -> bool {
+    unsafe { leave_letter(id, job, None) }
+}
+
+/// Leaves a letter. With the name of the method, it waits for room; without, it gives
+/// up, throws the letter away and returns false.
+unsafe fn leave_letter(id: i64, job: *mut Job, wait: Option<&[u8]>) -> bool {
     unsafe {
         let Some(slot) = slot_of(id) else {
             drop_job(job);
-            return;
+            return wait.is_some();
         };
+        while (*slot).waiting.fetch_add(1, AcqRel) >= (*slot).room {
+            (*slot).waiting.fetch_sub(1, AcqRel);
+            let Some(method) = wait else {
+                drop_job(job);
+                return false;
+            };
+            let me = me();
+            // The thread that would make room may be waiting for this one: then the
+            // wait would never end, and it is a panic. An actor that tells itself is
+            // the plainest case, since only it could make room.
+            gates();
+            WAITS.lock();
+            me.waiting_for.store(index_of(id) + 1, Release);
+            let for_ever = waits_for_itself(me.index, slot);
+            if for_ever {
+                me.waiting_for.store(0, Release);
+            }
+            WAITS.unlock();
+            if for_ever {
+                drop_job(job);
+                die(&[
+                    b"`",
+                    kind_name((*slot).kind as usize),
+                    b"` cannot be told `",
+                    method,
+                    b"`: its mailbox is full, and what would make room in it is waiting for this message \
+                      to end. Give the actor a larger `@mailbox`, or send less at a time.",
+                ]);
+            }
+            // A worker that waits leaves another in its place. If there can be no
+            // other, the letter is left all the same: a mailbox over its limit is
+            // better than a program that stands still.
+            if me.worker && !stand_in() {
+                me.waiting_for.store(0, Release);
+                (*slot).waiting.fetch_add(1, AcqRel);
+                break;
+            }
+            (*slot).word.fetch_or(FULL, AcqRel);
+            let bench = bench_of(slot);
+            bench.lock();
+            while (*slot).waiting.load(Acquire) >= (*slot).room
+                && (*slot).word.load(Acquire) & (FULL | ALIVE) == FULL | ALIVE
+            {
+                bench.wait();
+            }
+            bench.unlock();
+            me.waiting_for.store(0, Release);
+            if slot_of(id).is_none() {
+                drop_job(job);
+                return true;
+            }
+        }
         (*job).id = id;
         handing(job);
         let mut newest = (*slot).mail.load(Relaxed);
@@ -627,14 +740,14 @@ pub unsafe extern "C" fn koo_actor_tell(id: i64, job: *mut Job) {
             let queue = word & (LOCKED | QUEUED) == 0;
             let new = word | MAIL | if queue { QUEUED } else { 0 };
             if new == word {
-                return;
+                return true;
             }
             match (*slot).word.compare_exchange_weak(word, new, AcqRel, Relaxed) {
                 Ok(_) => {
                     if queue {
                         enqueue(index_of(id));
                     }
-                    return;
+                    return true;
                 }
                 Err(now) => word = now,
             }
@@ -855,7 +968,7 @@ unsafe fn settle() {
 /// Makes an actor of a kind from the state it starts with, and returns its number.
 #[unsafe(no_mangle)]
 #[allow(static_mut_refs)]
-pub unsafe extern "C" fn koo_actor_new(kind: *const Header, initial: *mut Header) -> i64 {
+pub unsafe extern "C" fn koo_actor_new(kind: *const Header, initial: *mut Header, mailbox: i64) -> i64 {
     unsafe {
         let name = bytes(kind);
         MAKING.lock();
@@ -915,6 +1028,11 @@ pub unsafe extern "C" fn koo_actor_new(kind: *const Header, initial: *mut Header
         (*slot).state = initial;
         (*slot).initial = initial;
         (*slot).kind = known.unwrap_or(0) as u32;
+        (*slot).room = if mailbox > 0 {
+            mailbox.min(u32::MAX as i64 / 2) as u32
+        } else {
+            MAILBOX
+        };
         (*slot).word.fetch_or(ALIVE, AcqRel);
         unlock(slot, index);
         (((*slot).generation.load(Relaxed) as i64) << 32) | index as i64
@@ -1060,6 +1178,7 @@ pub unsafe extern "C" fn koo_actor_end(id: i64, which: i64) -> *mut Header {
         let initial = core::mem::replace(&mut (*slot).initial, core::ptr::null_mut());
         (*slot).generation.fetch_add(1, AcqRel);
         (*slot).word.fetch_and(!ALIVE, AcqRel);
+        make_room(slot);
         MAKING.lock();
         FREE.push(index);
         MAKING.unlock();
@@ -1163,6 +1282,7 @@ unsafe fn restart(slot: *mut Slot, index: u32) -> *mut Header {
             // What it started with stays where it is, for the end of the program to forget.
             (*slot).generation.fetch_add(1, AcqRel);
             (*slot).word.fetch_and(!ALIVE, AcqRel);
+            make_room(slot);
             out.push(b"` panicked too often, and stays stopped\n");
             core::ptr::null_mut()
         } else {

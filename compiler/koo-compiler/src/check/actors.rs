@@ -15,7 +15,7 @@ use std::collections::HashMap;
 use koo_syntax::{Span, ast};
 
 use super::{Checker, FnAt, FnSig, ParamSig, TypeName};
-use crate::derive::{method_function, send_type, state_type};
+use crate::derive::{method_function, send_type, state_type, try_type};
 use crate::hir::*;
 
 impl<'a> Checker<'a> {
@@ -29,7 +29,12 @@ impl<'a> Checker<'a> {
             );
             return;
         }
-        let names = [name.name.clone(), send_type(&name.name), state_type(&name.name)];
+        let names = [
+            name.name.clone(),
+            send_type(&name.name),
+            try_type(&name.name),
+            state_type(&name.name),
+        ];
         if names.iter().any(|name| self.is_type_name(name)) {
             self.already_declared(name.span, &name.name, &format!("type {}", name.name));
             return;
@@ -55,9 +60,10 @@ impl<'a> Checker<'a> {
     /// Gives an actor's types their fields.
     pub(super) fn actor_fields(&mut self, decl: &'a ast::ActorDecl) {
         let name = &decl.name.name;
-        let (Some(handle), Some(send), Some(state)) = (
+        let (Some(handle), Some(send), Some(attempt), Some(state)) = (
             self.actor_struct(name),
             self.actor_struct(&send_type(name)),
+            self.actor_struct(&try_type(name)),
             self.actor_struct(&state_type(name)),
         ) else {
             return;
@@ -75,13 +81,19 @@ impl<'a> Checker<'a> {
         ];
         self.program.structs[send].fields = name_it.clone();
         self.defaults[send] = vec![None, None];
+        self.program.structs[attempt].fields = name_it.clone();
+        self.defaults[attempt] = vec![None, None];
         let mut fields = name_it;
         fields.push(FieldDef {
             name: "send".to_string(),
             ty: Ty::Struct(send),
         });
+        fields.push(FieldDef {
+            name: "try_send".to_string(),
+            ty: Ty::Struct(attempt),
+        });
         self.program.structs[handle].fields = fields;
-        self.defaults[handle] = vec![None, None, None];
+        self.defaults[handle] = vec![None, None, None, None];
         let mut fields: Vec<FieldDef> = Vec::new();
         let mut defaults = Vec::new();
         for field in &decl.fields {

@@ -272,7 +272,7 @@ pub const INTRINSICS: &[Intrinsic] = &[
     // Actors (`koo-rt/src/actor.rs`).
     Intrinsic {
         name: "actor_new",
-        params: &[I::Str, I::Cell],
+        params: &[I::Str, I::Cell, I::Int],
         ret: I::Int,
     },
     Intrinsic {
@@ -287,8 +287,13 @@ pub const INTRINSICS: &[Intrinsic] = &[
     },
     Intrinsic {
         name: "actor_tell",
-        params: &[I::Int, I::Given],
+        params: &[I::Int, I::Given, I::Str],
         ret: I::Unit,
+    },
+    Intrinsic {
+        name: "actor_try_tell",
+        params: &[I::Int, I::Given],
+        ret: I::Bool,
     },
     Intrinsic {
         name: "actor_letter",

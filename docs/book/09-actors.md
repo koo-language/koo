@@ -443,7 +443,97 @@ The second message panicked. The actor started afresh, with `done` at zero, ran 
 
 Starting again from a known state is the oldest remedy for a program that has got into a state nobody foresaw, and it is right for it to be the default: an actor that has panicked has, by definition, a bug, and its state is under suspicion. But an actor that panics again and again is not being cured by it. An actor that panics more than five times in a minute is left stopped.
 
-## 9.9 Stopping
+## 9.9 A Limit on Mail
+
+A tell does not wait for the actor, so nothing stops a program from telling an actor faster than the actor can listen. Were the messages simply to pile up, a program with a slow actor would use more and more memory until there was none. So the mail of an actor has a limit: 1,024 messages may wait for an actor, and a thread that tells it one more waits itself, until the actor has caught up. The fast sender is slowed to the pace of the slow receiver, which is called *backpressure*, and nobody has to arrange it.
+
+The limit can be set for an actor by writing `@mailbox(n)` before its declaration. And where waiting is not what is wanted, there is `try_send`, used like `send`, which does not wait: it leaves the message if there is room and returns `true`, or returns `false` and leaves nothing.
+
+```koo
+// An actor that takes its time, and lets only four messages wait.
+@mailbox(4)
+actor Printer {
+    var printed: int = 0
+
+    fn page(n: int) {
+        var work := 0
+        for i in 0..3000000 {
+            work = (work + i + n) % 1000003
+        }
+        printed += 1
+    }
+
+    fn count() -> int {
+        return printed
+    }
+}
+
+fn main() {
+    printer := Printer.start()
+
+    var accepted := 0
+    for n in 0..20 {
+        if printer.try_send.page(n) {
+            accepted += 1
+        }
+    }
+    print("some of the twenty were refused: {accepted < 20}")
+
+    for n in 0..10 {
+        printer.send.page(n)
+    }
+    print("every page that was accepted was printed: {printer.count() == accepted + 10}")
+}
+```
+
+```text
+some of the twenty were refused: true
+every page that was accepted was printed: true
+```
+
+How many of the twenty are accepted depends on how quickly the printer gets to work, and differs from one run to the next; that some are refused, and that none of the ten sent with `send` is lost, does not.
+
+There is one sender that cannot be made to wait: the actor itself. If an actor tells itself something while its mail is full, the only one who could make room is the one waiting for it. More generally, a thread may wait for room in the mail of an actor that cannot run until that very thread is done. Like a circle of asks, this is a wait that could never end, and it is a panic that says so:
+
+```koo
+@mailbox(2)
+actor Echo {
+    var ticks: int = 0
+
+    fn flood() {
+        for i in 0..10 {
+            self.send.tick()
+        }
+    }
+
+    fn tick() {
+        ticks += 1
+    }
+
+    fn count() -> int {
+        return ticks
+    }
+}
+
+fn main() {
+    echo := Echo.start()
+    echo.send.flood()
+    print(echo.count())
+}
+```
+
+```text
+2
+```
+
+```log
+panic: `Echo` cannot be told `tick`: its mailbox is full, and what would make room in it is waiting for this message to end. Give the actor a larger `@mailbox`, or send less at a time.
+koo: the actor `Echo` panicked, and starts again
+```
+
+`self`, in a method of an actor, is the actor's own handle. The first two ticks fitted in the mail; the third did not, the message `flood` panicked, the actor started again, and then did the two ticks that were waiting.
+
+## 9.10 Stopping
 
 An actor lives until it is stopped by `handle.stop()`, or until the end of the program. When the program ends, which is when `main` has returned and all that was told has been done, the actors that remain are stopped.
 
@@ -474,17 +564,15 @@ Hello, Ada!
 panic: `greet` was asked of an actor that is stopped (ActorStopped)
 ```
 
-## 9.10 What Is Not There
+## 9.11 What Is Not There
 
 Actors are the newest part of Koo, and the part that will grow the most. It is as well to know the limits of what is built.
 
 A method that never returns keeps the thread it is running on. There is no mechanism yet that takes a thread away from a method that has had it for too long. If every thread is kept by such a method, nothing else that was told can run.
 
-Nothing slows down a sender. If messages are told to an actor faster than it can deal with them, they wait, and the memory they wait in grows for as long as the imbalance lasts.
-
 When a told message panics, the storage that the message was using at that moment is not freed.
 
-The specification describes more than this: actors with type parameters, ways to bound an actor's mail and to try to send without waiting, to supervise one actor from another, and to reach an actor on another machine. None of that is built.
+The specification describes more than this: actors with type parameters, ways to supervise one actor from another, and to reach an actor on another machine. None of that is built.
 
 **Exercise 9-1.** Write an actor `Stock` that holds the quantity in stock of each of a set of items, with methods to add stock, to take stock, failing if there is not enough, and to report. Write a program that takes from it in a loop, and reports what is left.
 

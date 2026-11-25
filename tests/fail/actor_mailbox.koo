@@ -1,0 +1,34 @@
+// What an actor may say of itself before its declaration.
+@mailbox(0)
+actor Empty {
+    fn f() {
+    }
+}
+
+@mailbox("many")
+actor Vague {
+    fn f() {
+    }
+}
+
+@supervise(restart)
+actor Watched {
+    fn f() {
+    }
+}
+
+actor Quiet {
+    fn count() -> int {
+        return 1
+    }
+}
+
+fn main() {
+    quiet := Quiet.start()
+    quiet.try_send.count()
+}
+
+//! error `@mailbox` takes one number, greater than zero
+//! error `@mailbox` takes one number, greater than zero
+//! error the attribute `@supervise` is not supported by this compiler yet
+//! error `count` cannot be sent and forgotten
