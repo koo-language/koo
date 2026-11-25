@@ -304,7 +304,7 @@ Set[1, 2] 0
 | `Type.from_json(text: string) -> Type ! JsonError` | the value that the text is; for structures, enumerations and `int` |
 | `List<T>.from_json(text: string) -> [T] ! JsonError`, `Map<string, V>.from_json(text: string) -> [string: V] ! JsonError` | a list read from a JSON array, and a map from a JSON object; the elements are any of the types above, lists, maps with string keys, or optionals of them |
 
-`JsonError` has the fields `message: string` and `path: string`. Section 8.7 gives the correspondence between types and JSON.
+The key of a field is its name, or what `@json("key")` after the field's type says; `@json(rename: camel)` before a type, or `pascal` or `kebab`, names all its fields that way. `JsonError` has the fields `message: string` and `path: string`. Section 8.7 gives the correspondence between types and JSON.
 
 ## B.9 Durations and Times
 

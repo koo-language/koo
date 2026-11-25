@@ -1017,9 +1017,8 @@ impl<'a> Checker<'a> {
                 self.related(first.map(|f| f.name.span), "first declared here");
                 continue;
             }
-            if !field.attrs.is_empty() {
-                self.unsupported(field.attrs[0].span, "attributes on fields are");
-            }
+            // What a field's attributes may be, and what is wrong with one, is said
+            // where JSON is written (`derive.rs`).
             let ty = self.resolve_type(&field.ty);
             let default = match &field.default {
                 Some(default) if allow_defaults => self.const_expr(default, Some(&ty)).map(|e| self.coerce(e, &ty)),

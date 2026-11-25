@@ -1,0 +1,21 @@
+// What is wrong with an attribute, and two fields that would have one key.
+
+@json(rename: shouting)
+type A = { a: int }
+
+@json(rename: camel)
+type B = { user_id: int, user: int @json("userId"), c: int @json(skip), d: int @sql("dd"), e: int @json("") }
+
+@table("x")
+type C = { first_name: string, other: string @json("first_name") }
+
+fn main() {
+}
+
+//! error `@json` on a type says how its fields are named in JSON
+//! error the fields `user_id` and `user` have one key in JSON, `userId`
+//! error `@json` on a field takes the key, as a string
+//! error the attribute `@sql` is not supported by this compiler yet
+//! error `@json` on a field takes the key, as a string
+//! error the attribute `@table` is not supported by this compiler yet
+//! error the fields `first_name` and `other` have one key in JSON, `first_name`

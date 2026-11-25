@@ -61,6 +61,11 @@ struct Deriver<'a> {
     actors: Vec<&'a ActorDecl>,
     /// How many messages may wait for each actor that says, with `@mailbox(n)`.
     mailboxes: HashMap<&'a str, i64>,
+    /// How the fields of a type are named in JSON, for each type that says, with
+    /// `@json(rename: camel)`.
+    renames: HashMap<&'a str, Rename>,
+    /// The one for the type whose fields are being written.
+    rename: Rename,
     problems: Vec<(Span, String, String)>,
     unwritten: Vec<String>,
     enums: HashMap<&'a str, &'a EnumDecl>,
@@ -80,6 +85,68 @@ struct Deriver<'a> {
 /// one more `_`, which no method's does.
 fn own(actor: &str) -> String {
     format!("actor__{}", snake(actor))
+}
+
+/// How the name of a field becomes its key in JSON (Section 10.4).
+#[derive(Clone, Copy, PartialEq)]
+enum Rename {
+    /// As it is written, which is the default: `created_at`.
+    Snake,
+    /// `createdAt`.
+    Camel,
+    /// `CreatedAt`.
+    Pascal,
+    /// `created-at`.
+    Kebab,
+}
+
+impl Rename {
+    fn of(&self, name: &str) -> String {
+        match self {
+            Rename::Snake => name.to_string(),
+            Rename::Kebab => name.replace('_', "-"),
+            Rename::Camel | Rename::Pascal => {
+                let mut out = String::new();
+                let mut upper = *self == Rename::Pascal;
+                for c in name.chars() {
+                    if c == '_' {
+                        upper = true;
+                    } else if upper {
+                        out.push(c.to_ascii_uppercase());
+                        upper = false;
+                    } else {
+                        out.push(c);
+                    }
+                }
+                out
+            }
+        }
+    }
+}
+
+/// The key that a field's own `@json("createdAt")` gives it, if it has one.
+fn own_key(field: &Field) -> Option<&str> {
+    field.attrs.iter().find_map(
+        |attribute| match (attribute.name.name.as_str(), attribute.args.as_slice()) {
+            (
+                "json",
+                [
+                    AttrArg {
+                        name: None,
+                        value:
+                            AttrValue::Literal(Expr {
+                                kind: ExprKind::Str(parts),
+                                ..
+                            }),
+                    },
+                ],
+            ) => match parts.as_slice() {
+                [StrPart::Lit(key)] if !key.is_empty() && !key.contains(['"', '\\', '{', '}']) => Some(key.as_str()),
+                _ => None,
+            },
+            _ => None,
+        },
+    )
 }
 
 /// `OrderLine` as `order_line`.
@@ -279,6 +346,60 @@ impl<'a> Deriver<'a> {
         );
     }
 
+    /// The key of a field in JSON: the one it is given by `@json("...")`, or its name
+    /// as the type's policy has names.
+    fn key(&self, field: &Field) -> String {
+        match own_key(field) {
+            Some(key) => key.to_string(),
+            None => self.rename.of(&field.name.name),
+        }
+    }
+
+    /// What is wrong with the attributes of fields, and with keys that two fields of
+    /// one object would share.
+    fn check_keys(&mut self, fields: &'a [Field], rename: Rename) {
+        let mut seen: HashMap<String, &'a Field> = HashMap::new();
+        for field in fields {
+            for attribute in &field.attrs {
+                if attribute.name.name != "json" {
+                    self.problems.push((
+                        attribute.span,
+                        format!(
+                            "the attribute `@{}` is not supported by this compiler yet",
+                            attribute.name.name
+                        ),
+                        "a field may have `@json(\"key\")`, which is its key in JSON".to_string(),
+                    ));
+                } else if own_key(field).is_none() {
+                    self.problems.push((
+                        attribute.span,
+                        "`@json` on a field takes the key, as a string".to_string(),
+                        "write `@json(\"createdAt\")`: a key that is not empty, with no quote, backslash or brace in it".to_string(),
+                    ));
+                }
+            }
+            if field.name.name.starts_with('_') {
+                continue;
+            }
+            let key = match own_key(field) {
+                Some(key) => key.to_string(),
+                None => rename.of(&field.name.name),
+            };
+            if let Some(first) = seen.get(&key) {
+                self.problems.push((
+                    field.name.span,
+                    format!(
+                        "the fields `{}` and `{}` have one key in JSON, `{key}`",
+                        first.name.name, field.name.name
+                    ),
+                    "give one of them another key with `@json(\"...\")`".to_string(),
+                ));
+            } else {
+                seen.insert(key, field);
+            }
+        }
+    }
+
     /// The statements that write the fields of an object, each read from `value_of(field)`.
     fn write_fields(&self, fields: &'a [Field], value_of: &dyn Fn(usize, &Field) -> String, started: bool) -> String {
         let shown: Vec<(usize, &Field)> = fields
@@ -294,7 +415,7 @@ impl<'a> Deriver<'a> {
             let _ = writeln!(out, "    var count := {}", usize::from(started));
         }
         for (position, (index, field)) in shown.iter().enumerate() {
-            let (name, value) = (&field.name.name, value_of(*index, field));
+            let (name, value) = (&self.key(field), value_of(*index, field));
             if counted {
                 let comma = "if count > 0 { out += \",\" }\n        count += 1";
                 if self.is_optional(&field.ty) {
@@ -342,7 +463,7 @@ impl<'a> Deriver<'a> {
         out.push_str("    while j__more(text, var at, 125, var first)? {\n        key := j__key(text, var at)?\n");
         out.push_str("        match key {\n");
         for (index, field) in &shown {
-            let (name, read) = (&field.name.name, self.reader(&field.ty));
+            let (name, read) = (&self.key(field), self.reader(&field.ty));
             let _ = write!(
                 out,
                 "            \"{name}\" => {{\n                \
@@ -363,7 +484,8 @@ impl<'a> Deriver<'a> {
             if self.is_optional(&field.ty) {
                 let _ = writeln!(out, "        {name}: f{index},");
             } else {
-                let _ = writeln!(out, "        {name}: f{index} else fail j__missing(\"{name}\"),");
+                let key = self.key(field);
+                let _ = writeln!(out, "        {name}: f{index} else fail j__missing(\"{key}\"),");
             }
         }
         out.push_str("    }\n");
@@ -764,6 +886,7 @@ impl<'a> Deriver<'a> {
     }
 
     fn a_struct(&mut self, name: &'a str, fields: &'a [Field]) {
+        self.rename = self.renames.get(name).copied().unwrap_or(Rename::Snake);
         let writes = self.write_fields(fields, &|_, field| format!("self.{}", field.name.name), false);
         let _ = write!(
             self.out,
@@ -779,6 +902,7 @@ impl<'a> Deriver<'a> {
 
     fn an_enum(&mut self, decl: &'a EnumDecl) {
         let name = decl.name.name.as_str();
+        self.rename = self.renames.get(name).copied().unwrap_or(Rename::Snake);
         let plain = decl.variants.iter().all(|variant| variant.fields.is_none());
         let mut writes = String::new();
         let mut reads = String::new();
@@ -869,6 +993,8 @@ pub fn derive(package: &File, json: bool, rows: bool, envs: bool) -> Derived {
         error_sets: HashMap::new(),
         actors: Vec::new(),
         mailboxes: HashMap::new(),
+        renames: HashMap::new(),
+        rename: Rename::Snake,
         unwritten: Vec::new(),
         problems: Vec::new(),
         enums: HashMap::new(),
@@ -898,6 +1024,73 @@ pub fn derive(package: &File, json: bool, rows: bool, envs: bool) -> Derived {
     }
     let mut order: Vec<&str> = Vec::new();
     for item in &package.items {
+        // `@json(rename: camel)` on a type: how its fields are named in JSON. On an
+        // actor an attribute is the actor's, and is looked at below.
+        let (named, fields): (Option<&str>, Vec<&[Field]>) = match &item.kind {
+            ItemKind::Type(decl) => match &decl.body {
+                TypeBody::Struct(fields) => (Some(decl.name.name.as_str()), vec![fields.as_slice()]),
+                _ => (Some(decl.name.name.as_str()), Vec::new()),
+            },
+            ItemKind::Enum(decl) => (
+                Some(decl.name.name.as_str()),
+                decl.variants
+                    .iter()
+                    .filter_map(|variant| variant.fields.as_deref())
+                    .collect(),
+            ),
+            ItemKind::Error(decl) => match &decl.body {
+                ErrorBody::Fields(fields) => (Some(decl.name.name.as_str()), vec![fields.as_slice()]),
+                _ => (Some(decl.name.name.as_str()), Vec::new()),
+            },
+            _ => (None, Vec::new()),
+        };
+        if let Some(name) = named {
+            let mut rename = Rename::Snake;
+            for attribute in &item.attrs {
+                let policy = match (attribute.name.name.as_str(), attribute.args.as_slice()) {
+                    (
+                        "json",
+                        [
+                            AttrArg {
+                                name: Some(key),
+                                value: AttrValue::Path { path, args: None },
+                            },
+                        ],
+                    ) if key.name == "rename" && path.len() == 1 => match path[0].name.as_str() {
+                        "snake" => Some(Rename::Snake),
+                        "camel" => Some(Rename::Camel),
+                        "pascal" => Some(Rename::Pascal),
+                        "kebab" => Some(Rename::Kebab),
+                        _ => None,
+                    },
+                    _ => None,
+                };
+                match policy {
+                    Some(policy) => rename = policy,
+                    None if attribute.name.name == "json" => deriver.problems.push((
+                        attribute.span,
+                        "`@json` on a type says how its fields are named in JSON".to_string(),
+                        "write `@json(rename: camel)`, or `snake`, `pascal` or `kebab`; the rest of what the \
+                         specification gives `@json` is not supported by this compiler yet"
+                            .to_string(),
+                    )),
+                    None => deriver.problems.push((
+                        attribute.span,
+                        format!(
+                            "the attribute `@{}` is not supported by this compiler yet",
+                            attribute.name.name
+                        ),
+                        "a type may have `@json(rename: camel)`".to_string(),
+                    )),
+                }
+            }
+            if rename != Rename::Snake {
+                deriver.renames.insert(name, rename);
+            }
+            for fields in fields {
+                deriver.check_keys(fields, rename);
+            }
+        }
         match &item.kind {
             ItemKind::Type(decl) if decl.type_params.is_empty() && !decl.resource => match &decl.body {
                 TypeBody::Struct(fields) if !hand_written.contains(decl.name.name.as_str()) => {

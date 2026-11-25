@@ -1,0 +1,46 @@
+// The key of a field in JSON is its name, unless the field says another with
+// `@json("key")` or its type names all its fields another way with `@json(rename: ...)`.
+
+@json(rename: camel)
+type Token = { access_token: string, expires_in: int = 3600, kind: string @json("token_type"), refresh_token: string? }
+
+type Event = { at: string @json("@timestamp"), level: string }
+
+@json(rename: kebab)
+enum Change {
+    Created { new_name: string }
+    Renamed { old_name: string, new_name: string }
+}
+
+@json(rename: pascal)
+error Refused { error_code: int }
+
+fn main() ! JsonError {
+    token := Token.from_json("\{\"accessToken\":\"abc\",\"token_type\":\"bearer\"}")?
+    print(token)
+    print(token.to_json())
+    match Token.from_json("\{\"access_token\":\"abc\",\"token_type\":\"bearer\"}") {
+        t => print(t)
+        ! e => print("{e.path}: {e.message}")
+    }
+    match Token.from_json("\{\"accessToken\":7,\"token_type\":\"bearer\"}") {
+        t => print(t)
+        ! e => print("{e.path}: {e.message}")
+    }
+    print(Event { at: "2026-11-25T00:00:00Z", level: "info" }.to_json())
+    print(Event.from_json("\{\"@timestamp\":\"now\",\"level\":\"warn\"}")?)
+    change := Change.Renamed { old_name: "a", new_name: "b" }
+    print(change.to_json())
+    print(Change.from_json(change.to_json())?)
+    print(Refused { error_code: 7 }.to_json())
+}
+
+//= Token { access_token: "abc", expires_in: 3600, kind: "bearer", refresh_token: none }
+//= {"accessToken":"abc","expiresIn":3600,"token_type":"bearer"}
+//= /accessToken: `accessToken` is missing
+//= /accessToken: expected a string, found a number
+//= {"@timestamp":"2026-11-25T00:00:00Z","level":"info"}
+//= Event { at: "now", level: "warn" }
+//= {"type":"renamed","old-name":"a","new-name":"b"}
+//= Renamed { old_name: "a", new_name: "b" }
+//= {"ErrorCode":7}
