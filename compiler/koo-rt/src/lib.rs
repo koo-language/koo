@@ -1678,7 +1678,12 @@ const JSON_NEST_MAX: i64 = 128;
 /// Begins reading a text.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn koo_json_begin() {
-    unsafe { thread::me().json_nest = 0 };
+    unsafe {
+        let me = thread::me();
+        me.json_nest = 0;
+        // What is read is anyone's, until the reader says it is another process's.
+        me.json_wire = false;
+    }
 }
 
 /// Says whether the JSON the thread writes from here on is for another process of the

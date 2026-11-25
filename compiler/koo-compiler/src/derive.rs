@@ -587,7 +587,7 @@ impl<'a> Deriver<'a> {
                 value = if valued { " value__" } else { "" },
             );
             if valued {
-                stubs.push_str("    __json_begin()\n    var at__ := 0\n");
+                stubs.push_str("    __json_begin()\n    __json_wire(true)\n    var at__ := 0\n");
             }
             if !errors.is_empty() {
                 stubs.push_str("    kind__ := __actor_kind()\n");
@@ -595,13 +595,16 @@ impl<'a> Deriver<'a> {
                     let _ = write!(
                         stubs,
                         "    if kind__ == \"{error}\" {{\n        failed__ := {error}._json_read(text__, var at__) \
-                         {UNREADABLE}\n        fail failed__\n    }}\n"
+                         {UNREADABLE}\n        __json_wire(false)\n        fail failed__\n    }}\n"
                     );
                 }
             }
             if let Some(ret) = &sig.ret {
                 let read = self.reader(ret).replace("(text, var at)", "(text__, var at__)");
-                let _ = write!(stubs, "    value__ := {read} {UNREADABLE}\n    return value__\n");
+                let _ = write!(
+                    stubs,
+                    "    value__ := {read} {UNREADABLE}\n    __json_wire(false)\n    return value__\n"
+                );
             }
             stubs.push_str("}\n\n");
             // To tell: for a method with nothing to send back. What is told is a function
@@ -618,7 +621,7 @@ impl<'a> Deriver<'a> {
                      var cell__: [{state}] = __actor_take(id__, \"{called}\")\n            \
                      {local}\n            __actor_put(id__, cell__)\n        }}, \"{called}\")\n        return\n    }}\n\
                      {pack}    \
-                     while __actor_ask(self.home, \"{name} {{self.id}} try.{called}\", out__) != \"true\" {{\n        \
+                     while __actor_ask(self.home, \"{name} {{self.id}} try.{called}\", out__) == \"false\" {{\n        \
                      __sleep(1000000)\n    }}\n}}\n\n\
                      fn (self: {attempt}) {called}({typed}) -> bool {{\n    if __actor_local(self.home) {{\n        {frozen}        \
                      next__ := 0\n        id__ := self.id\n        \
@@ -633,7 +636,8 @@ impl<'a> Deriver<'a> {
 
             // For a message from another process: the arguments are read, and the actor
             // is asked or told as this process would itself.
-            let mut read = format!("                j__open(text, var at, 91) {UNREADABLE}\n");
+            let mut read =
+                format!("                __json_wire(true)\n                j__open(text, var at, 91) {UNREADABLE}\n");
             for (i, param) in sig.params.iter().enumerate() {
                 let reader = self.reader(&param.ty);
                 let _ = write!(
@@ -642,6 +646,8 @@ impl<'a> Deriver<'a> {
                      a{i} := {reader} {UNREADABLE}\n"
                 );
             }
+            // What the actor does with them may write JSON for anyone.
+            read.push_str("                __json_wire(false)\n");
             let given: Vec<String> = (0..sig.params.len()).map(|i| format!("a{i}")).collect();
             let given = given.join(", ");
             let answer = |value: &str, kind: &str| {
@@ -677,12 +683,15 @@ impl<'a> Deriver<'a> {
                 // What another process tells: it is left for the actor if the actor has
                 // room, and the process is told whether it was. A process that means
                 // to wait for room asks again, so that this one, which answers for
-                // every actor, never waits on one of them.
+                // every actor, never waits on one of them. There is no room to wait
+                // for in an actor that is stopped: what is told to it is dropped, as
+                // it is in the actor's own process.
                 let _ = write!(
                     arms,
                     "            \"try.{called}\" => {{\n{read}                \
                      if self.try_send.{called}({given}) {{\n                    __actor_reply(\"\", \"true\")\n                \
-                     }} else {{\n                    __actor_reply(\"\", \"false\")\n                }}\n            }}\n"
+                     }} else if __actor_alive(self.id) {{\n                    __actor_reply(\"\", \"false\")\n                \
+                     }} else {{\n                    __actor_reply(\"\", \"gone\")\n                }}\n            }}\n"
                 );
             }
         }

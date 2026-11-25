@@ -1,0 +1,24 @@
+// JSON has no way to write a float that is not a number: such a float is written as
+// `null`, and the words for one are not read, though the processes of one program use
+// them between themselves.
+
+type Reading = { value: float }
+
+fn main() {
+    print(Reading { value: 0.0 / 0.0 }.to_json())
+    print(Reading { value: 1.0 / 0.0 }.to_json())
+    for text in ["\{\"value\":NaN}", "\{\"value\":Infinity}", "\{\"value\":-Infinity}", "\{\"value\":", "\{\"value\":1.5}"] {
+        match Reading.from_json(text) {
+            reading => print(reading.value)
+            ! e => print("{e.path}: {e.message}")
+        }
+    }
+}
+
+//= {"value":null}
+//= {"value":null}
+//= /value: expected a number, found something that is not JSON
+//= /value: expected a number, found something that is not JSON
+//= /value: expected a number, found a number that is not written as JSON writes one
+//= /value: expected a number, found the end of the text
+//= 1.5

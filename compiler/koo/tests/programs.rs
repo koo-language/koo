@@ -1519,6 +1519,8 @@ fn a_stopping_server_answers_what_it_has_in_hand() {
         std::thread::sleep(std::time::Duration::from_millis(700));
         let got = get(port, "/send");
         assert!(got.ends_with("\r\n\r\n6\n"), "with {workers} workers: {got}");
+        let got = get(port, "/gone");
+        assert!(got.ends_with("\r\n\r\nfalse\n"), "with {workers} workers: {got}");
         // A float that is not a number is itself when it comes back from an actor,
         // though the actor is in another process.
         for (asked, answer) in [

@@ -1242,6 +1242,9 @@ pub unsafe extern "C" fn koo_actor_end(id: i64, which: i64) -> *mut Header {
                 }
                 let job = inbox;
                 inbox = (*job).next;
+                // A letter that is thrown away waits no more than one that was run:
+                // the next actor to be kept here starts with all its room.
+                (*slot).waiting.fetch_sub(1, AcqRel);
                 drop_job(job);
             }
             return core::mem::replace(&mut (*slot).state, core::ptr::null_mut());

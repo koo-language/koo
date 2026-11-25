@@ -2251,6 +2251,7 @@ mod imp {
     #[unsafe(no_mangle)]
     pub unsafe extern "C" fn koo_http_panicked() {
         unsafe {
+            crate::thread::me().json_wire = false;
             PANICS += 1;
             if CHILD && PANICS >= MOST_PANICS {
                 STOP = true;

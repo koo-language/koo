@@ -3,15 +3,14 @@
 // actor that tells itself with its mail full could wait for nobody but itself, which is
 // a panic.
 
+import std/time
+
 @mailbox(4)
 actor Slow {
     var seen: int = 0
 
     fn work(n: int) {
-        var x := 0
-        for i in 0..2000000 {
-            x = (x + i + n) % 1000003
-        }
+        time.sleep(20ms)
         seen += 1
     }
 
@@ -71,6 +70,20 @@ fn main() {
     }
     print(slow.count() == accepted + 10)
 
+    // An actor stopped with messages waiting leaves no less room for the next.
+    for i in 0..4 {
+        slow.send.work(i)
+    }
+    slow.stop()
+    next := Slow.start()
+    var room := 0
+    for i in 0..4 {
+        if next.try_send.work(i) {
+            room += 1
+        }
+    }
+    print(room)
+
     // One message at a time is never too many, however many there are in all.
     relay := Relay.start()
     relay.send.pass(5000)
@@ -84,6 +97,7 @@ fn main() {
 
 //= true
 //= true
+//= 4
 //= 5001
 //= 2
 //! stderr `Echo` cannot be told `tick`: its mailbox is full

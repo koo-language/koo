@@ -55,6 +55,13 @@ fn main() ! http.Error {
     // Twenty messages at once to an actor with room for four: whether there was room
     // is the actor's to say, whichever process the handler is in.
     printer := Printer.start()
+    // What is told to an actor that is stopped is dropped, and nobody waits.
+    stopped := Printer.start()
+    stopped.stop()
+    app.get("/gone", req -> {
+        stopped.send.page(1)
+        return http.text("{stopped.try_send.page(2)}\n")
+    })
     app.get("/try", req -> {
         var accepted := 0
         for n in 0..20 {

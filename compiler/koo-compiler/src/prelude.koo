@@ -798,7 +798,11 @@ fn j__found(text: string, at: int) -> string {
     if b == 91 { return "an array" }
     if __json_word(text, at, "true") >= 0 or __json_word(text, at, "false") >= 0 { return "a boolean" }
     if __json_word(text, at, "null") >= 0 { return "null" }
-    if b == 45 or (b >= 48 and b <= 57) { return "a number" }
+    // What begins as a number and is none: `-`, `1.`, `01`.
+    if b == 45 or (b >= 48 and b <= 57) {
+        if __json_number(text, at) < 0 { return "a number that is not written as JSON writes one" }
+        return "a number"
+    }
     return "something that is not JSON"
 }
 
@@ -826,9 +830,8 @@ fn j__int(text: string, at: var int) -> int ! JsonError {
 fn j__float(text: string, at: var int) -> float ! JsonError {
     at = __json_ws(text, at)
     // The three floats that are not numbers, as one process of a program writes them
-    // for another.
-    first := __str_byte(text, at)
-    if first == 78 or first == 73 or (first == 45 and __str_byte(text, at + 1) == 73) {
+    // for another, and for no one else: JSON has no such numbers.
+    if __json_is_wire() {
         nan := __json_word(text, at, "NaN")
         if nan >= 0 {
             at = nan
