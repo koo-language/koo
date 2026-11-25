@@ -202,6 +202,9 @@ pub struct Thread {
     pub json_int: i64,
     pub json_float: f64,
     pub json_nest: i64,
+    /// How deep a reading that begins now already is: more than nothing while a
+    /// function of the program reads a part of a text that is being read.
+    pub json_base: i64,
     /// Whether what the thread writes as JSON is for another process of the program.
     pub json_wire: bool,
     pub held: *mut Held,

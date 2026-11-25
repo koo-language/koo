@@ -945,7 +945,15 @@ fn j__key(text: string, at: var int) -> string ! JsonError {
 fn j__skip(text: string, at: var int) ! JsonError {
     at = __json_ws(text, at)
     end := __json_skip(text, at)
-    if end < 0 { fail j__expected(text, at, "a value") }
+    if end < 0 {
+        // An object or an array that is begun and cannot be passed over is cut short,
+        // malformed inside, or nested too deeply to follow.
+        first := __str_byte(text, at)
+        if first == 123 or first == 91 {
+            fail JsonError { message: "this value is not well formed, or is nested too deeply", path: "" }
+        }
+        fail j__expected(text, at, "a value")
+    }
     at = end
 }
 

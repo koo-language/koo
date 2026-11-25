@@ -1751,7 +1751,10 @@ const JSON_NEST_MAX: i64 = 128;
 pub unsafe extern "C" fn koo_json_begin() {
     unsafe {
         let me = thread::me();
-        me.json_nest = 0;
+        // A reading begins as deep as it is: at the top, or, when a function of the
+        // program reads a part of a text for a reading that is under way, as deep as
+        // that part lies, so that the limit on depth is one limit for the whole text.
+        me.json_nest = me.json_base;
         // What is read is anyone's, until the reader says it is another process's.
         me.json_wire = false;
     }
@@ -1762,6 +1765,13 @@ pub unsafe extern "C" fn koo_json_begin() {
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn koo_json_depth() -> i64 {
     unsafe { thread::me().json_nest }
+}
+
+/// Says how deep a reading that begins from here on already is, and returns what was
+/// said before, to be said again afterwards.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn koo_json_base(depth: i64) -> i64 {
+    unsafe { core::mem::replace(&mut thread::me().json_base, depth) }
 }
 
 /// Puts the thread's reading back where it was when such a function has returned:

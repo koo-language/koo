@@ -1,0 +1,61 @@
+// The limit on how deeply a text may be nested is one limit for the whole text, also
+// where a type reads itself with a function of its own that reads other types, which
+// hold the first again; and two more shapes of a type with JSON: a key of its own on
+// a field of a generic structure, and an enum that reads itself.
+
+type Helper = { kids: [Wrapper] }
+
+type Wrapper = { inner: Helper }
+
+fn Wrapper.from_json(text: string) -> Wrapper ! JsonError {
+    inner := Helper.from_json(text)?
+    return Wrapper { inner }
+}
+
+@json(rename: camel)
+type Page<T> = { items: [T], next_page: int? @json("next"), page_size: int = 10 }
+
+enum Shape {
+    Dot
+    Circle { radius: float }
+}
+
+fn Shape.from_json(text: string) -> Shape ! JsonError {
+    if text.trim() == "\"dot\"" { return Shape.Dot }
+    radius := float.parse(text.trim()) else fail JsonError { message: "expected a radius or \"dot\", found {text}", path: "" }
+    return Shape.Circle { radius }
+}
+
+type Drawing = { shapes: [Shape] }
+
+fn main() {
+    for depth in [3, 40, 3000] {
+        text := "\{\"kids\":[".repeat(depth) + "\{\"kids\":[]}" + "]}".repeat(depth)
+        match Helper.from_json(text) {
+            h => print("{depth} deep: read")
+            ! e => print("{depth} deep: {e.message}")
+        }
+    }
+    // Twice, to see that one reading leaves nothing behind for the next.
+    print(Helper.from_json("\{\"kids\":[\{\"kids\":[]}]}") else Helper { kids: [] })
+    page := Page<int> { items: [1, 2], next_page: 3 }
+    print(page.to_json())
+    print(Page<int>.from_json("\{\"items\":[4],\"next\":5,\"pageSize\":2}") else page)
+    drawing := Drawing { shapes: [Shape.Dot, Shape.Circle { radius: 2.5 }] }
+    print(drawing.to_json())
+    print(Drawing.from_json("\{\"shapes\":[\"dot\", 1.5]}") else drawing)
+    match Drawing.from_json("\{\"shapes\":[\"dot\", true]}") {
+        d => print(d)
+        ! e => print("{e.path}: {e.message}")
+    }
+}
+
+//= 3 deep: read
+//= 40 deep: read
+//= 3000 deep: this value is not well formed, or is nested too deeply
+//= Helper { kids: [Wrapper { inner: Helper { kids: [] } }] }
+//= {"items":[1,2],"next":3,"pageSize":10}
+//= Page<int> { items: [4], next_page: 5, page_size: 2 }
+//= {"shapes":[{"type":"dot"},{"type":"circle","radius":2.5}]}
+//= Drawing { shapes: [Dot, Circle { radius: 1.5 }] }
+//= /shapes/1: expected a radius or "dot", found true
