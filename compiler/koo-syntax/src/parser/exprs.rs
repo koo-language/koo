@@ -126,6 +126,28 @@ impl Parser {
         } else {
             return Ok(lhs);
         };
+        // `zero<int>(xs)`: the type arguments of a function written at a call, as other
+        // languages have them.
+        if let ExprKind::Binary {
+            op: BinaryOp::Lt,
+            lhs,
+            rhs,
+        } = &expr.kind
+            && let ExprKind::Name(function) = &lhs.kind
+            && !function.is_upper()
+            && let ExprKind::Name(argument) = &rhs.kind
+            && (argument.is_upper() || matches!(argument.name.as_str(), "int" | "float" | "bool" | "string" | "byte"))
+            && *self.peek() == Tok::Gt
+            && *self.peek2() == Tok::LParen
+        {
+            let span = expr.span.to(self.span());
+            self.report_help(
+                span,
+                format!("the type arguments of `{}` are not written at a call", function.name),
+                "they follow from the arguments, or from the type that is expected of what the call returns: write the call without them, and where they are still not known, declare the type of the variable the result goes to",
+            );
+            return Err(());
+        }
         if self.comparison_op().is_some() || self.at_kw(Kw::Is) {
             let span = self.span();
             self.report_help(

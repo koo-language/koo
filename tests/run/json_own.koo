@@ -1,0 +1,49 @@
+// A type that writes its own `to_json` and `from_json` is written and read by them
+// wherever it is: alone, as a field of a structure, in a list, in an optional. The
+// path to a mistake still leads to it.
+
+type Money = { cents: int }
+
+fn (self: Money) to_json() -> string {
+    return "\"{self.cents / 100}.{self.cents % 100:02}\""
+}
+
+fn Money.from_json(text: string) -> Money ! JsonError {
+    plain := text.trim().replace("\"", "")
+    amount := float.parse(plain) else fail JsonError { message: "expected an amount, found {text}", path: "" }
+    return Money { cents: (amount * 100.0).round() else 0 }
+}
+
+// One that writes only its own `to_json` is read as the compiler would read it.
+type Tag = { name: string }
+
+fn (self: Tag) to_json() -> string {
+    return "\"#{self.name}\""
+}
+
+type Line = { sku: string, price: Money, was: Money?, tags: [Tag] }
+
+enum Tree<T> {
+    Leaf
+    Node { value: T }
+}
+
+fn main() ! JsonError {
+    line := Line { sku: "nails", price: Money { cents: 1999 }, was: none, tags: [Tag { name: "new" }] }
+    text := line.to_json()
+    print(text)
+    print(Line.from_json("\{\"sku\": \"x\", \"price\": 5, \"was\": \"7.50\", \"tags\": [\{\"name\": \"old\"}]}")?)
+    print(List<Money>.from_json("[1, \"2.25\"]")?)
+    match Line.from_json("\{\"sku\": \"x\", \"price\": true, \"tags\": []}") {
+        l => print(l)
+        ! e => print("{e.path}: {e.message}")
+    }
+    // A variant of a generic enum, written with its type in full.
+    print("{Tree<int>.Leaf} {Tree<int>.Node { value: 3 }}")
+}
+
+//= {"sku":"nails","price":"19.99","tags":["#new"]}
+//= Line { sku: "x", price: Money { cents: 500 }, was: Money { cents: 750 }, tags: [Tag { name: "old" }] }
+//= [Money { cents: 100 }, Money { cents: 225 }]
+//= /price: expected an amount, found true
+//= Leaf Node { value: 3 }

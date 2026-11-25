@@ -1,0 +1,26 @@
+// Mistakes that are named for what they are.
+
+error Missing { key: string }
+
+fn find(key: string) -> int ! Missing {
+    if key == "" { fail Missing { key } }
+    return 1
+}
+
+type Box<T> = { items: [T] }
+
+fn (self: Box<T>) size() -> int {
+    return self.items.len
+}
+
+fn main() {
+    match find("a") {
+        n => print(n)
+        Missing { .. } => print("missing")
+        ! e => print("failed")
+    }
+    print(Box { items: [1, 2] }.size())
+}
+
+//! error `Missing` is an error, and this arm is for a value
+//! error the type arguments of `Box` are not known here

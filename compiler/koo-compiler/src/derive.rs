@@ -1079,7 +1079,12 @@ pub fn derive(package: &File, json: bool, rows: bool, envs: bool) -> Derived {
         out: String::new(),
         count: 0,
     };
-    // A type that gives itself one of these functions keeps its own, and gets none.
+    // A type that gives itself one of these functions keeps its own: the compiler
+    // writes the others, and what joins the type's own to them, so that a structure
+    // which holds the type is written with the type's `to_json` and read with its
+    // `from_json`. A function of another shape than the compiler's is not one it can
+    // join to, and the type then gets nothing, as it did.
+    let mut theirs: HashMap<&str, HashSet<&str>> = HashMap::new();
     let mut hand_written: HashSet<&str> = HashSet::new();
     for item in &package.items {
         if let ItemKind::Fn(decl) = &item.kind
@@ -1092,8 +1097,29 @@ pub fn derive(package: &File, json: bool, rows: bool, envs: bool) -> Derived {
                 FnTarget::Method { ty: Some(ty), .. } | FnTarget::TypeLevel(ty) => Some(ty),
                 _ => None,
             };
-            if let Some(TypeKind::Named { path, .. }) = owner.map(|ty| &ty.kind) {
-                hand_written.insert(path[0].name.as_str());
+            if let Some(TypeKind::Named { path, args }) = owner.map(|ty| &ty.kind) {
+                let name = path[0].name.as_str();
+                let named = |ty: &Type, wanted: &str| matches!(&ty.kind, TypeKind::Named { path, args } if path.len() == 1 && args.is_empty() && path[0].name == wanted);
+                let fits = match (decl.sig.name.name.as_str(), &decl.sig.target) {
+                    ("to_json", FnTarget::Method { .. }) => {
+                        decl.sig.params.is_empty()
+                            && decl.sig.errors == ErrorSpec::None
+                            && decl.sig.ret.as_ref().is_some_and(|ret| named(ret, "string"))
+                    }
+                    ("from_json", FnTarget::TypeLevel(_)) => {
+                        decl.sig.params.len() == 1
+                            && named(&decl.sig.params[0].ty, "string")
+                            && decl.sig.ret.as_ref().is_some_and(|ret| named(ret, name))
+                            && matches!(&decl.sig.errors, ErrorSpec::Set(errors)
+                                if errors.len() == 1 && named(&errors[0], "JsonError"))
+                    }
+                    _ => false,
+                };
+                if fits && path.len() == 1 && args.is_empty() {
+                    theirs.entry(name).or_default().insert(decl.sig.name.name.as_str());
+                } else {
+                    hand_written.insert(name);
+                }
             }
         }
     }
@@ -1267,10 +1293,40 @@ pub fn derive(package: &File, json: bool, rows: bool, envs: bool) -> Derived {
         if !types || !deriver.ok.contains(name) {
             continue;
         }
+        let before = deriver.out.len();
         if let Some(fields) = deriver.structs.get(name).copied() {
             deriver.a_struct(name, fields);
         } else if let Some(decl) = deriver.enums.get(name).copied() {
             deriver.an_enum(decl);
+        }
+        // What the type has of its own takes the place of what was written for it.
+        if let Some(own) = theirs.get(name) {
+            let written = deriver.out.split_off(before);
+            for function in written.split_inclusive("\n}\n\n") {
+                let taken = (own.contains("to_json")
+                    && (function.starts_with(&format!("fn (self: {name}) to_json("))
+                        || function.starts_with(&format!("fn (self: {name}) _json_write("))))
+                    || (own.contains("from_json")
+                        && (function.starts_with(&format!("fn {name}.from_json("))
+                            || function.starts_with(&format!("fn {name}._json_read("))));
+                if !taken {
+                    deriver.out.push_str(function);
+                }
+            }
+            if own.contains("to_json") {
+                let _ = write!(
+                    deriver.out,
+                    "fn (self: {name}) _json_write(out: var string) {{\n    out += self.to_json()\n}}\n\n"
+                );
+            }
+            if own.contains("from_json") {
+                let _ = write!(
+                    deriver.out,
+                    "fn {name}._json_read(text: string, at: var int) -> {name} ! JsonError {{\n    \
+                     start := __json_ws(text, at)\n    at = start\n    j__skip(text, var at)?\n    \
+                     value := {name}.from_json(text.slice(start, at))?\n    return value\n}}\n\n"
+                );
+            }
         }
     }
     // `Type.from_row(row)`, for a program that says `from_row`: a struct whose every

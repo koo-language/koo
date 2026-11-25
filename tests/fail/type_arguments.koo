@@ -1,0 +1,10 @@
+fn zero<T>(xs: [T]) -> int {
+    return xs.len
+}
+
+fn main() {
+    empty: [int] = []
+    print(zero<int>(empty))
+}
+
+//! error the type arguments of `zero` are not written at a call

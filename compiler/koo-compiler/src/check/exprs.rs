@@ -599,6 +599,27 @@ impl<'a> Checker<'a> {
             };
             return self.field(&of, name, span, expected);
         }
+        // `Tree<int>.Leaf`: a variant of a generic enum, written with the type in full.
+        if let ast::ExprKind::TypeApp { base: generic, .. } = &base.kind
+            && let ast::ExprKind::Name(type_name) = &generic.kind
+            && self.generic_types.contains_key(&type_name.name)
+            && let Some(Ty::Enum(id)) = self.literal_type(base, expected)
+        {
+            return match self.program.enums[id].variants.iter().position(|v| v.name == name.name) {
+                Some(variant) => self.variant_value(id, variant, span),
+                None => {
+                    let known = self.program.enums[id].variants.iter().map(|v| v.name.clone()).collect();
+                    self.error_near(
+                        name.span,
+                        format!("`{}` has no variant `{}`", self.ty_name(&Ty::Enum(id)), name.name),
+                        &name.name,
+                        known,
+                        None,
+                    );
+                    self.unknown(span)
+                }
+            };
+        }
         // `Payment.Cash`: a variant written with its enum.
         if let ast::ExprKind::Name(type_name) = &base.kind
             && type_name.is_upper()
@@ -1139,7 +1160,10 @@ impl<'a> Checker<'a> {
                     self.error_help(
                         ty.span,
                         format!("the type arguments of `{}` are not known here", name.name),
-                        format!("write them: `{}<{params}>`", name.name),
+                        format!(
+                            "say what `{params}` is: `{0}<int>`, or whatever it holds, in place of `{0}`",
+                            name.name
+                        ),
                     );
                     return None;
                 }

@@ -417,6 +417,16 @@ impl<'a> Checker<'a> {
                         };
                         Pattern::Struct { fields }
                     }
+                    // An error, where the value of a result is matched: the arm for an
+                    // error begins with `!`.
+                    _ if matches!(self.type_names.get(&name.name), Some(TypeName::Error(_))) => {
+                        self.error_help(
+                            span,
+                            format!("`{}` is an error, and this arm is for a value", name.name),
+                            format!("an arm for an error begins with `!`: `! {} ... => ...`", name.name),
+                        );
+                        Pattern::Wildcard
+                    }
                     _ => mismatch(self, &format!("`{}`", name.name)),
                 }
             }
