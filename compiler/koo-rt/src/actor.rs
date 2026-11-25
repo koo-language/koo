@@ -590,6 +590,11 @@ unsafe fn stand_in() -> bool {
     }
 }
 
+/// Gives up a function value of the program's that the support library was given.
+pub unsafe fn drop_function(function: *mut Header) {
+    unsafe { drop_job(function as *mut Job) }
+}
+
 /// Gives up a function value of the program's.
 unsafe fn drop_job(job: *mut Job) {
     unsafe {
@@ -645,6 +650,11 @@ unsafe fn run_mail(slot: *mut Slot, me: &mut Thread, most: usize) {
         (*slot).state = (*me.held.add(at)).state;
         (*me.held.add(at)).state = core::ptr::null_mut();
     }
+}
+
+/// The function of the program that runs a letter, or 0 if the program has not said.
+pub fn runner() -> usize {
+    RUNNER.load(Acquire)
 }
 
 /// Says which function of the program runs a letter. Called as the program starts.

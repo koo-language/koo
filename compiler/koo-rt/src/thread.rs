@@ -266,6 +266,33 @@ unsafe fn join<'a>() -> &'a mut Thread {
     }
 }
 
+/// A block that is not any thread's yet: for a handler of a server that has a stack of
+/// its own (`fiber.rs`), and with it its own guards, its own last query, and whatever
+/// else a thread has of its own. Nothing if there can be no more.
+pub unsafe fn spare_block() -> *mut Thread {
+    unsafe {
+        REGISTRY.lock();
+        let index = THREAD_COUNT.load(Relaxed);
+        let block = if index == MOST_THREADS {
+            core::ptr::null_mut()
+        } else {
+            calloc(1, core::mem::size_of::<Thread>()) as *mut Thread
+        };
+        if !block.is_null() {
+            (*block).index = index as u32 + 1;
+            THREADS[index].store(block, Release);
+            THREAD_COUNT.store(index + 1, Release);
+        }
+        REGISTRY.unlock();
+        block
+    }
+}
+
+/// Makes a block the calling thread's own, until another is.
+pub unsafe fn become_block(block: *mut Thread) {
+    unsafe { pthread_setspecific(KEY.load(Relaxed) - 1, block as *const u8) };
+}
+
 /// The thread with an index, if it is one of this process's.
 pub unsafe fn thread<'a>(index: u32) -> Option<&'a Thread> {
     unsafe {

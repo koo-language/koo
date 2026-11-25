@@ -25,7 +25,7 @@ Where a command takes a file it also takes a directory, which is a *package*: al
 
 The compiler translates a program into the intermediate language of LLVM, and uses `clang` to turn that into an executable, so `clang`, version 15 or later, must be installed. If it is installed under another name, the environment variable `KOO_CLANG` gives the name.
 
-Some environment variables affect a program as it runs. `KOO_LOG_LEVEL`, `KOO_LOG` and `KOO_LOG_TIME` say what the program logs and in what form (Section 8.10). `KOO_THREADS` is the number of threads that run what actors are told; without it there is one for each processor. And if `KOO_LEAKS` is set, a program that ends normally with memory still allocated says so and ends with status 102. This too is a check on the compiler, since a Koo program has no way to leak memory by its own doing.
+Some environment variables affect a program as it runs. `KOO_LOG_LEVEL`, `KOO_LOG` and `KOO_LOG_TIME` say what the program logs and in what form (Section 8.10). `KOO_THREADS` is the number of threads that run what actors are told; without it there is one for each processor. `KOO_SIDE_BY_SIDE=off` makes a worker of a server answer one request at a time, as it did before a handler that waits could be left to wait (Section 10.7); it is there in case of trouble. And if `KOO_LEAKS` is set, a program that ends normally with memory still allocated says so and ends with status 102. This too is a check on the compiler, since a Koo program has no way to leak memory by its own doing.
 
 ## C.2 Tests
 

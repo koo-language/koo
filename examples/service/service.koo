@@ -1,0 +1,101 @@
+// An orders service, written the way a twelve-factor app is: its settings come from
+// the environment, its state is in a database it is given the address of, it listens
+// where it is told, it logs to its standard error output, and it stops when it is asked.
+//
+//     export DATABASE_URL=postgres://postgres:secret@localhost:5432/postgres
+//     koo run examples/service/service.koo
+//     curl -d '{"customer": "ada", "sku": "hammer", "qty": 2}' localhost:8080/orders
+//     curl localhost:8080/orders/1
+//
+// `examples/service/README.md` says how to run it in a container.
+
+import std/http
+import std/log
+import std/sql
+import std/sql/postgres
+
+// Everything that differs between one place the service runs and another.
+type Settings = {
+    database_url: string,
+    pool: int = 10,
+    log_requests: bool = true,
+}
+
+type NewOrder = { customer: string, sku: string, qty: int = 1 }
+type Order = { id: int, customer: string, sku: string, qty: int }
+type Health = { database: string }
+
+error NoSuchOrder { id: int }
+
+// The tables the service needs, made if they are not there: a new database is ready
+// for the service by the service's own doing.
+fn prepare(db: sql.Pool) ! sql.Error {
+    db.exec("""
+        create table if not exists orders (
+            id serial primary key,
+            customer text not null,
+            sku text not null,
+            qty int not null check (qty > 0)
+        )
+        """)?
+}
+
+fn place(db: sql.Pool, new: NewOrder) -> Order ! sql.Error {
+    row := db.query_row("""
+        insert into orders (customer, sku, qty)
+        values ({new.customer}, {new.sku}, {new.qty})
+        returning *
+        """)?
+    return Order.from_row(row)?
+}
+
+fn find(db: sql.Pool, id: int) -> Order ! NoSuchOrder | sql.Error {
+    row := db.query_one("select * from orders where id = {id}")? else fail NoSuchOrder { id }
+    return Order.from_row(row)?
+}
+
+fn main() ! EnvError | sql.Error | http.Error {
+    settings := Settings.from_env()?
+    db := postgres.connect(settings.database_url, pool: settings.pool)?
+    prepare(db)?
+
+    var app := http.App.new()
+
+    // For whatever watches over the service: is it up, and can it reach its database?
+    app.get("/healthz", req -> {
+        match db.exec("select 1") {
+            n => return http.json(Health { database: "ok" })
+            ! e => {
+                log.error("the database does not answer: {e}")
+                return http.json(Health { database: "unreachable" }).with_status(503)
+            }
+        }
+    })
+
+    app.post("/orders", req -> {
+        new: NewOrder = req.json()?
+        if new.qty < 1 {
+            return http.status(422, "an order is for at least one piece\n")
+        }
+        order := place(db, new)?
+        log.info("order {order.id} placed by {order.customer}")
+        return http.json(order).with_status(201)
+    })
+
+    app.get("/orders/:id", req -> {
+        id := int.parse(req.param("id")) else {
+            return http.status(400, "an order has a number\n")
+        }
+        match find(db, id) {
+            order => return http.json(order)
+            ! NoSuchOrder { id } => return http.status(404, "there is no order {id}\n")
+            ! e: sql.Error => fail e
+        }
+    })
+
+    log.info("the orders service is starting")
+    // It listens where PORT says, with as many workers as WEB_CONCURRENCY says, and
+    // returns when the service is told to stop, with the requests in hand answered.
+    app.serve(log: settings.log_requests)?
+    log.info("the orders service has stopped")
+}

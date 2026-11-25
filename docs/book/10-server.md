@@ -371,6 +371,10 @@ The actors of the program live in the process that watches, where `main` started
 
 `workers: 1` keeps everything in one process, with no process watching over it. That is the simplest arrangement to debug.
 
+A worker answers many requests at one time, though it is one thread. Most of what a handler does is wait: for a database to answer, for another server, for a time to pass. A handler that waits is left where it is, and the worker goes on with other requests; when what the handler waited for has come, the worker comes back to it and the handler goes on, never knowing that it stood still. So a slow query holds up the request that made it and no other, and there is nothing to write differently for it: `db.query`, `http.get` and `time.sleep` are the same calls as in any program. What a worker cannot do meanwhile is compute. A handler that spends a second on arithmetic keeps its worker for that second, and it is for such handlers, and for the processors a machine has, that there are several workers. A worker has room for 128 handlers that wait.
+
+A server that is told to stop, by the signal that systems send for the purpose, takes no new connection, answers the requests it has in hand, waiting handlers and all, and ends; `serve` then returns, and `main` goes on to whatever it has left to do. A request that was already on its way is still answered, with a header that says the connection ends with it.
+
 A server can also hand out the files of a directory:
 
 ```koo
@@ -505,9 +509,9 @@ A URL that begins `https` is asked over TLS, and the server's certificate must b
 
 ## 10.9 What Is Not There
 
-The server speaks HTTP/1.1. It does not speak HTTPS or HTTP/2; where those are needed, it runs behind a proxy that does, which is how most services are deployed in any case. A body, of a request or a response, is handled whole, and cannot yet be read or written a piece at a time. And while a handler waits for something slow, the other requests that its worker has accepted wait with it.
+The server speaks HTTP/1.1. It does not speak HTTPS or HTTP/2; where those are needed, it runs behind a proxy that does, which is how most services are deployed in any case. A body, of a request or a response, is handled whole, and cannot yet be read or written a piece at a time.
 
-The client makes a connection for each request and closes it after the answer. It does not follow a redirection: an answer with a status of 301 or 302 is returned like any other, with the new place in its `location` header. The specification describes more; this book will describe it when it can be run.
+The client keeps a connection that has carried a request, for a minute, and uses it for the next request to the same server, so that a service which asks another all day does not make a connection each time. It does not follow a redirection: an answer with a status of 301 or 302 is returned like any other, with the new place in its `location` header. The specification describes more; this book will describe it when it can be run.
 
 What a server keeps for longer than it runs, it keeps in a database, and that is the subject of the next chapter.
 

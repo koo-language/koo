@@ -31,6 +31,8 @@ unsafe extern "C" {
     fn recv(fd: i32, data: *mut u8, len: usize, flags: i32) -> isize;
     fn poll(fds: *mut PollFd, count: usize, milliseconds: i32) -> i32;
     fn getentropy(data: *mut u8, len: usize) -> i32;
+    fn fcntl(fd: i32, command: i32, ...) -> i32;
+    fn getsockopt(fd: i32, level: i32, name: i32, value: *mut i32, len: *mut u32) -> i32;
 }
 
 #[repr(C)]
@@ -353,13 +355,20 @@ unsafe fn ask_name_server(server: [u8; 4], name: &[u8]) -> Option<Option<[u8; 4]
             if sendto(fd, query.as_ptr(), length, 0, address.as_ptr(), address_len) < 0 {
                 break;
             }
-            let mut fds = PollFd {
-                fd,
-                events: 1,
-                revents: 0,
-            };
-            if poll(&mut fds, 1, 2000) <= 0 {
-                continue;
+            // A handler of a server lets the server go on while the name server thinks.
+            match fiber::wait(fd, false, koo_now_nanos() + 2_000_000_000) {
+                fiber::Waited::Came => {}
+                fiber::Waited::TimeUp => continue,
+                fiber::Waited::NotHere => {
+                    let mut fds = PollFd {
+                        fd,
+                        events: 1,
+                        revents: 0,
+                    };
+                    if poll(&mut fds, 1, 2000) <= 0 {
+                        continue;
+                    }
+                }
             }
             let mut answer = [0u8; 1500];
             let got = recv(fd, answer.as_mut_ptr(), answer.len(), 0);
@@ -574,6 +583,11 @@ unsafe fn fill(conn: &mut Conn, need: usize) -> bool {
             conn.input.room(need.max(8192));
             let room =
                 core::slice::from_raw_parts_mut(conn.input.ptr.add(conn.input.len), conn.input.cap - conn.input.len);
+            // The answer of a database is what a handler of a server waits for most:
+            // the server does other work until there is something of it to read.
+            if conn.tls.is_null() || tls::pending(conn.tls) == 0 {
+                fiber::wait_readable(conn.fd, 0);
+            }
             let n = if conn.tls.is_null() {
                 read(conn.fd, room.as_mut_ptr(), room.len())
             } else {
@@ -785,6 +799,52 @@ unsafe fn authenticate(conn: &mut Conn, db: &Db) -> bool {
     }
 }
 
+/// What `connect_in_place` leaves in place of an error when it did nothing.
+const NOT_HERE: i32 = -1;
+
+/// Connects as a handler of a server does: the connection is begun, and the server does
+/// other work until it is made, or refused, or the seconds are up. Returns whether it
+/// was made; if not, the error is where the system leaves errors, and is `NOT_HERE` if
+/// this is not a handler that can be left, and nothing was done.
+unsafe fn connect_in_place(fd: i32, target: &[u8; 16], target_len: u32, seconds: i32) -> bool {
+    unsafe {
+        const F_GETFL: i32 = 3;
+        const F_SETFL: i32 = 4;
+        let non_blocking = if cfg!(target_os = "macos") { 0x4 } else { 0x800 };
+        let in_progress = if cfg!(target_os = "macos") { 36 } else { 115 };
+        let timed_out = if cfg!(target_os = "macos") { 60 } else { 115 };
+        let (level, error_of) = if cfg!(target_os = "macos") {
+            (0xffff, 0x1007)
+        } else {
+            (1, 4)
+        };
+        // Asked first whether there is any waiting here, with a wait that is over at once.
+        if fiber::wait(-1, false, 1) == fiber::Waited::NotHere {
+            *errno_location() = NOT_HERE;
+            return false;
+        }
+        let flags = fcntl(fd, F_GETFL);
+        fcntl(fd, F_SETFL, flags | non_blocking);
+        let mut made = connect(fd, target.as_ptr(), target_len) == 0;
+        if !made && *errno_location() == in_progress {
+            let until = koo_now_nanos() + seconds as i64 * 1_000_000_000;
+            match fiber::wait(fd, true, until) {
+                fiber::Waited::Came => {
+                    let (mut error, mut len) = (0i32, 4u32);
+                    getsockopt(fd, level, error_of, &mut error, &mut len);
+                    made = error == 0;
+                    *errno_location() = error;
+                }
+                _ => *errno_location() = timed_out,
+            }
+        }
+        let failed_with = *errno_location();
+        fcntl(fd, F_SETFL, flags);
+        *errno_location() = failed_with;
+        made
+    }
+}
+
 /// Connects to a host, giving it so many seconds to answer and not the minutes the
 /// system would wait. Returns the socket, or -1 with the reason written into `why`.
 pub(crate) unsafe fn dial(host: &[u8], port: u16, seconds: i32, why: &mut Buffer) -> i32 {
@@ -806,7 +866,10 @@ pub(crate) unsafe fn dial(host: &[u8], port: u16, seconds: i32, why: &mut Buffer
                 setsockopt(fd, 1, 21, patience.as_ptr() as *const i32, 16);
             }
         }
-        let connected = fd >= 0 && connect(fd, target.as_ptr(), target_len) == 0;
+        let mut connected = fd >= 0 && connect_in_place(fd, &target, target_len, seconds);
+        if !connected && fd >= 0 && *errno_location() == NOT_HERE {
+            connected = connect(fd, target.as_ptr(), target_len) == 0;
+        }
         if connected && !cfg!(target_os = "macos") {
             let forever: [i64; 2] = [0, 0];
             setsockopt(fd, 1, 21, forever.as_ptr() as *const i32, 16);
@@ -1040,7 +1103,14 @@ unsafe fn check_out(db: &mut Db) -> Option<&mut Conn> {
                 failed(TIMEOUT, &[&text.data[..text.len]]);
                 return None;
             }
-            POOL.wait_for(left);
+            // A handler of a server that waits for a connection lets the others go on,
+            // one of which has it; anything else sleeps until one is given back.
+            POOL.unlock();
+            let paused = fiber::pause(1_000_000);
+            POOL.lock();
+            if !paused {
+                POOL.wait_for(left);
+            }
         };
         POOL.unlock();
         let ready = {
@@ -1405,7 +1475,7 @@ unsafe fn run_on_any(db: &mut Db, request: &[u8], keep: bool) -> Option<usize> {
 }
 
 /// Whether a socket has something to read, or has been closed, without waiting.
-unsafe fn has_something(fd: i32) -> bool {
+pub(crate) unsafe fn has_something(fd: i32) -> bool {
     unsafe {
         let mut fds = PollFd {
             fd,

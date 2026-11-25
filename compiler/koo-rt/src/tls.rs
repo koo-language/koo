@@ -64,9 +64,10 @@ struct Api {
     x509_verify_cert_error_string: unsafe extern "C" fn(i64) -> *const u8,
     err_get_error: unsafe extern "C" fn() -> u64,
     err_error_string_n: unsafe extern "C" fn(u64, *mut u8, usize),
+    ssl_pending: unsafe extern "C" fn(Ptr) -> i32,
 }
 
-const NAMES: [&CStr; 21] = [
+const NAMES: [&CStr; 22] = [
     c"TLS_client_method",
     c"SSL_CTX_new",
     c"SSL_CTX_free",
@@ -88,6 +89,7 @@ const NAMES: [&CStr; 21] = [
     c"X509_verify_cert_error_string",
     c"ERR_get_error",
     c"ERR_error_string_n",
+    c"SSL_pending",
 ];
 
 /// Where the library may be.
@@ -102,7 +104,7 @@ const PLACES: [&CStr; 5] = [
 #[cfg(not(target_os = "macos"))]
 const PLACES: [&CStr; 2] = [c"libssl.so.3", c"libssl.so.1.1"];
 
-static mut API: [Ptr; 21] = [core::ptr::null_mut(); 21];
+static mut API: [Ptr; 22] = [core::ptr::null_mut(); 22];
 /// 0: not looked for yet. 1: found. 2: not there.
 static FOUND: AtomicU8 = AtomicU8::new(0);
 static FINDING: Lock = Lock::new();
@@ -307,6 +309,17 @@ pub unsafe fn connect(
         }
         (*tls).ssl = ssl;
         Ok(tls)
+    }
+}
+
+/// How much has been taken from the socket and decrypted and not yet read: when there is
+/// any, a read does not wait, whatever the socket says.
+pub unsafe fn pending(tls: *mut Tls) -> i32 {
+    unsafe {
+        match api() {
+            Some(api) => (api.ssl_pending)((*tls).ssl),
+            None => 0,
+        }
     }
 }
 

@@ -1315,6 +1315,174 @@ fn stop(mut server: Server, port: u16) {
     );
 }
 
+/// The service in `examples/service`, which the README holds up as the pattern of a
+/// service, is started as a twelve-factor app is, with nothing but its environment, and
+/// answers what its README says it answers. It needs a database.
+#[test]
+fn the_example_service_serves() {
+    let Some(url) = book_database() else {
+        eprintln!("KOO_TEST_POSTGRES is not set: the example service is only built");
+        let checked = Command::new(env!("CARGO_BIN_EXE_koo"))
+            .arg("check")
+            .arg(Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples/service/service.koo"))
+            .output()
+            .expect("koo runs");
+        assert!(checked.status.success(), "{}", String::from_utf8_lossy(&checked.stderr));
+        return;
+    };
+    let _alone = DATABASE.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let dir = std::env::temp_dir().join(format!("koo-service-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    empty_book_database(&dir, &url).unwrap_or_else(|wrong| panic!("{wrong}"));
+    let executable = dir.join("service");
+    let built = Command::new(env!("CARGO_BIN_EXE_koo"))
+        .arg("build")
+        .arg(root.join("examples/service/service.koo"))
+        .arg("-o")
+        .arg(&executable)
+        .output()
+        .expect("koo runs");
+    assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
+
+    // Without its settings it says which are missing, and does not start.
+    let unset = Command::new(&executable).env_remove("DATABASE_URL").output().unwrap();
+    assert_eq!(unset.status.code(), Some(1));
+    assert!(
+        String::from_utf8_lossy(&unset.stderr).contains("the environment variable `DATABASE_URL` is not set"),
+        "{}",
+        String::from_utf8_lossy(&unset.stderr)
+    );
+
+    let port = std::net::TcpListener::bind("127.0.0.1:0")
+        .unwrap()
+        .local_addr()
+        .unwrap()
+        .port();
+    let log = dir.join("log.txt");
+    let child = Command::new(&executable)
+        .env("DATABASE_URL", &url)
+        .env("PORT", port.to_string())
+        .env("WEB_CONCURRENCY", "2")
+        .env("KOO_LOG", "json")
+        .stdout(std::process::Stdio::null())
+        .stderr(std::fs::File::create(&log).unwrap())
+        .spawn()
+        .expect("the service starts");
+    let server = Server(child);
+    for _ in 0..200 {
+        if std::net::TcpStream::connect(("127.0.0.1", port)).is_ok() {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(25));
+    }
+    let has = |answer: &str, parts: &[&str]| {
+        for part in parts {
+            assert!(answer.contains(part), "no {part:?} in:\n{answer}");
+        }
+    };
+    has(&get(port, "/healthz"), &["200 OK", r#"{"database":"ok"}"#]);
+    has(
+        &post(port, "/orders", r#"{"customer": "ada", "sku": "hammer", "qty": 2}"#),
+        &["201 Created", r#"{"id":1,"customer":"ada","sku":"hammer","qty":2}"#],
+    );
+    has(
+        &post(port, "/orders", r#"{"customer": "bob", "sku": "nails"}"#),
+        &["201 Created", r#""id":2"#, r#""qty":1"#],
+    );
+    has(
+        &post(port, "/orders", r#"{"customer": "bob", "sku": "nails", "qty": 0}"#),
+        &["422 "],
+    );
+    has(&post(port, "/orders", r#"{"customer": "bob"}"#), &["400 ", "/sku"]);
+    has(&get(port, "/orders/2"), &["200 OK", r#""customer":"bob""#]);
+    has(&get(port, "/orders/9"), &["404 ", "there is no order 9"]);
+    has(&get(port, "/orders/nine"), &["400 "]);
+    // Told to stop, it stops, with status 0, and its log is a log a program can read.
+    stop(server, port);
+    let written = std::fs::read_to_string(&log).unwrap();
+    for line in written.lines() {
+        assert!(
+            line.starts_with('{') && line.ends_with('}'),
+            "not a line of JSON: {line}"
+        );
+    }
+    has(
+        &written,
+        &[
+            r#""message":"the orders service is starting""#,
+            r#""message":"order 1 placed by ada","order.id":1,"order.customer":"ada""#,
+            r#""message":"POST /orders 201","method":"POST","path":"/orders","status":201"#,
+            r#""message":"the orders service has stopped""#,
+        ],
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// A handler that waits does not make the rest of its worker wait: forty requests that
+/// each sleep 300 ms are answered by one worker in well under the twelve seconds they
+/// would take one after another. And a connection goes on after a request for a route
+/// that is not there.
+#[test]
+fn handlers_wait_side_by_side() {
+    use std::io::{Read, Write};
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let dir = std::env::temp_dir().join(format!("koo-places-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let executable = dir.join("server");
+    let built = Command::new(env!("CARGO_BIN_EXE_koo"))
+        .arg("build")
+        .arg(root.join("tests/client/server.koo"))
+        .arg("-o")
+        .arg(&executable)
+        .output()
+        .expect("koo runs");
+    assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
+    let (server, port) = serve(&executable, 1, &dir);
+    let started = std::time::Instant::now();
+    let answers: Vec<String> = std::thread::scope(|scope| {
+        let asked: Vec<_> = (0..40).map(|_| scope.spawn(move || get(port, "/nap"))).collect();
+        asked.into_iter().map(|answer| answer.join().unwrap()).collect()
+    });
+    let took = started.elapsed();
+    for answer in &answers {
+        assert!(
+            answer.starts_with("HTTP/1.1 200 ") && answer.ends_with("rested\n"),
+            "{answer}"
+        );
+    }
+    assert!(
+        took < std::time::Duration::from_secs(4),
+        "forty naps of 300 ms took {took:?}: the handlers waited one after another"
+    );
+    // One connection, three requests: the second is for no route, and the third must
+    // still be answered.
+    let mut stream = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
+    stream
+        .set_read_timeout(Some(std::time::Duration::from_secs(5)))
+        .unwrap();
+    let mut heard = String::new();
+    for path in ["/none", "/nowhere", "/none"] {
+        write!(stream, "GET {path} HTTP/1.1\r\nHost: test\r\n\r\n").unwrap();
+        let mut chunk = [0u8; 4096];
+        let until = if path == "/nowhere" { "Not Found\n" } else { "\r\n\r\n" };
+        let mut answer = String::new();
+        while !answer.contains(until) {
+            let n = stream.read(&mut chunk).expect("an answer on the same connection");
+            assert!(n > 0, "the connection was closed after {heard}");
+            answer.push_str(&String::from_utf8_lossy(&chunk[..n]));
+        }
+        heard.push_str(answer.split("\r\n").next().unwrap_or(""));
+        heard.push(';');
+    }
+    assert_eq!(
+        heard,
+        "HTTP/1.1 204 No Content;HTTP/1.1 404 Not Found;HTTP/1.1 204 No Content;"
+    );
+    stop(server, port);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 /// `http.get` and the rest ask a real server, which is `tests/client/server.koo`, and
 /// `tests/client/client.koo` prints what it says it prints.
 #[test]

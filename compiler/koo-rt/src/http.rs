@@ -303,6 +303,25 @@ mod imp {
             unsafe { change(queue, fd as usize, EVFILT_READ, EV_DELETE, 0, 0) };
         }
 
+        pub unsafe fn start_reading(queue: i32, fd: i32, tag: usize, _writing: bool) {
+            unsafe { change(queue, fd as usize, EVFILT_READ, EV_ADD, 0, tag) };
+        }
+
+        /// Waits, once, for a socket that is not a connection of the server's to have
+        /// something to read, or room to write.
+        pub unsafe fn watch_once(queue: i32, fd: i32, write: bool, tag: usize) {
+            let filter = if write { EVFILT_WRITE } else { EVFILT_READ };
+            unsafe { change(queue, fd as usize, filter, EV_ADD | EV_ONESHOT, 0, tag) };
+        }
+
+        /// Ends such a wait. One that was told of has ended by itself.
+        pub unsafe fn unwatch(queue: i32, fd: i32, write: bool, told: bool) {
+            let filter = if write { EVFILT_WRITE } else { EVFILT_READ };
+            if !told {
+                unsafe { change(queue, fd as usize, filter, EV_DELETE, 0, 0) };
+            }
+        }
+
         /// A worker ends when the process that started it does. Returns whether that
         /// process is still there.
         pub unsafe fn watch_parent(queue: i32, parent: i32) -> bool {
@@ -351,6 +370,7 @@ mod imp {
         const EPOLLERR: u32 = 0x8;
         const EPOLLHUP: u32 = 0x10;
         const EPOLLRDHUP: u32 = 0x2000;
+        const EPOLLONESHOT: u32 = 1 << 30;
         /// Wakes one of the processes that wait on a socket, not all of them.
         const EPOLLEXCLUSIVE: u32 = 1 << 28;
         const ADD: i32 = 1;
@@ -441,6 +461,22 @@ mod imp {
 
         pub unsafe fn stop_reading(queue: i32, fd: i32, tag: usize, writing: bool) {
             unsafe { control(queue, MOD, fd, interest(false, writing), tag) };
+        }
+
+        pub unsafe fn start_reading(queue: i32, fd: i32, tag: usize, writing: bool) {
+            unsafe { control(queue, MOD, fd, interest(true, writing), tag) };
+        }
+
+        /// Waits, once, for a socket that is not a connection of the server's to have
+        /// something to read, or room to write.
+        pub unsafe fn watch_once(queue: i32, fd: i32, write: bool, tag: usize) {
+            let wanted = if write { EPOLLOUT } else { EPOLLIN | EPOLLRDHUP };
+            unsafe { control(queue, ADD, fd, wanted | EPOLLONESHOT, tag) };
+        }
+
+        /// Ends such a wait, whether or not it was told of.
+        pub unsafe fn unwatch(queue: i32, fd: i32, _write: bool, _told: bool) {
+            unsafe { control(queue, DEL, fd, 0, 0) };
         }
 
         /// A worker is sent the signal to stop when the process that started it ends.
@@ -595,6 +631,11 @@ mod imp {
         /// Whether it waits in `READY`.
         queued: bool,
         told_continue: bool,
+        /// Whether a request of it is with a handler, which may be waiting: nothing
+        /// more of the connection is looked at until the request is answered.
+        handling: bool,
+        /// Whether reading was stopped meanwhile, to be started again after the answer.
+        paused: bool,
         /// When it last read or wrote, and when the request being read began, in seconds.
         active: i64,
         began: i64,
@@ -606,10 +647,13 @@ mod imp {
     }
 
     /// The request the program is answering.
+    #[derive(Clone, Copy)]
     struct Current {
         id: i64,
         answered: bool,
         conn: usize,
+        /// Which of the connections that have had that slot it is.
+        generation: u32,
         method: Range,
         path: Range,
         query: Range,
@@ -657,10 +701,13 @@ mod imp {
     static mut CHILD_COUNT: usize = 0;
     static mut SWEPT: i64 = 0;
     static mut NEXT_ID: i64 = 0;
-    static mut CURRENT: Current = Current {
+    static mut CURRENT: Current = NO_CURRENT;
+
+    const NO_CURRENT: Current = Current {
         id: 0,
         answered: true,
         conn: 0,
+        generation: 0,
         method: EMPTY,
         path: EMPTY,
         query: EMPTY,
@@ -892,6 +939,8 @@ mod imp {
                 closing: false,
                 queued: false,
                 told_continue: false,
+                handling: false,
+                paused: false,
                 active: now(),
                 began: 0,
             };
@@ -1473,6 +1522,8 @@ mod imp {
         unsafe {
             NEXT_ID += 1;
             current.id = NEXT_ID;
+            current.generation = c.generation;
+            c.handling = true;
         }
         Parsed::Request(unsafe { route(method, &target[..path_len], target_at) })
     }
@@ -1590,6 +1641,8 @@ mod imp {
             }
             log(status, body.len(), true);
             CURRENT.answered = true;
+            // No handler has this request: the connection goes on to its next.
+            conn(index).handling = false;
             pass(index, CURRENT.length);
             send(
                 index,
@@ -1618,7 +1671,7 @@ mod imp {
             SWEPT = seconds;
             for index in 0..CONNS.len {
                 let c = conn(index);
-                let busy = !CURRENT.answered && CURRENT.conn == index;
+                let busy = c.handling || (!CURRENT.answered && CURRENT.conn == index);
                 if c.fd >= 0 && !busy && (seconds - c.active > TIMEOUT || (c.began != 0 && seconds - c.began > TIMEOUT))
                 {
                     shut(index);
@@ -1677,6 +1730,12 @@ mod imp {
             CHILD = true;
             SUPERVISOR = false;
             CHILD_COUNT = 0;
+            PANICS = 0;
+            STOPPED_AT = 0;
+            // The stack that a signal is taken on, when the thread's own is exhausted, is
+            // not the child's by inheritance everywhere: without one of its own a
+            // handler that calls itself without end would end the worker without a word.
+            thread::watch_stack();
             // The actors are the parent's too, and are reached through its socket.
             super::super::actor::after_fork();
             // The connections are the parent's, which still holds them.
@@ -1702,6 +1761,9 @@ mod imp {
             if !sys::watch_parent(QUEUE, PARENT_ID) {
                 STOP = true;
             }
+            // A worker that takes the place of one that died has the program's loop
+            // from the process that made it.
+            begin_places();
         }
     }
 
@@ -1722,6 +1784,14 @@ mod imp {
             }
             if e.tag == LISTENER {
                 take_connections();
+                return;
+            }
+            if e.tag & !0xffff_ffff == PLACE {
+                // What a handler waited for has come.
+                let place = e.tag & 0xffff_ffff;
+                if place < PLACE_COUNT && PLACES[place].doing == Doing::Waiting {
+                    PLACES[place].doing = Doing::Ready;
+                }
                 return;
             }
             let index = e.tag & 0xffff_ffff;
@@ -1745,7 +1815,14 @@ mod imp {
                     return;
                 }
             }
-            if e.readable && conn(index).reading {
+            if e.readable && conn(index).reading && conn(index).handling {
+                // Its request is with a handler that waits: what it sends meanwhile
+                // stays where it is until the answer has gone.
+                let c = conn(index);
+                c.reading = false;
+                c.paused = true;
+                sys::stop_reading(QUEUE, c.fd, tag(index, c.generation), c.writing);
+            } else if e.readable && conn(index).reading {
                 read_from(index);
             } else if e.hangup {
                 shut(index);
@@ -1756,6 +1833,7 @@ mod imp {
     #[allow(static_mut_refs)]
     unsafe fn finish() {
         unsafe {
+            end_places();
             if !CHILD {
                 for &child in &CHILDREN[..CHILD_COUNT] {
                     kill(child, SIGTERM);
@@ -1888,6 +1966,7 @@ mod imp {
                 }
             }
             STOP = false;
+            STOPPED_AT = 0;
             CHILD = false;
             CHILD_COUNT = 0;
             PARENT_ID = getpid();
@@ -1929,6 +2008,292 @@ mod imp {
         }
     }
 
+    // ---- handlers side by side ---------------------------------------------------------
+    //
+    // A place is a stack with a handler on it, or waiting for one (`fiber.rs`). The
+    // thread is in one place at a time. The place it is in runs the loop below until
+    // a request is ready, and then the request's handler. If the handler has to wait,
+    // the thread leaves it there and goes to a place that is free, or makes one, which
+    // runs the loop in its turn; when the loop finds that what a handler waited for has
+    // come, the thread goes back to that handler. The first place is the thread's own
+    // stack.
+
+    /// The most places a worker has: the most requests it answers at one time.
+    const MOST_PLACES: usize = 128;
+    /// What the wait of a place is registered with: this, and the place's number.
+    const PLACE: usize = 0x7fff_fffe_0000_0000;
+
+    #[derive(Clone, Copy, PartialEq)]
+    enum Doing {
+        /// Running the loop, looking for a request.
+        Driving,
+        /// Left in the loop, for a time when there is more to do than one place can.
+        Parked,
+        /// Running a handler.
+        Handling,
+        /// In a handler that waits, for a socket or for a time.
+        Waiting,
+        /// In a handler whose wait is over.
+        Ready,
+        /// Its loop has ended, because the server is stopping.
+        Done,
+    }
+
+    struct Place {
+        /// Where its stack was left, and where the stack's memory begins.
+        sp: usize,
+        stack: *mut u8,
+        /// What a thread has of its own, which a place has of its own.
+        thread: *mut thread::Thread,
+        doing: Doing,
+        /// What it waits for: a socket, and a time (0 for none) after which it waits no
+        /// longer; and whether it was the time that ended the wait.
+        fd: i32,
+        until: i64,
+        late: bool,
+        /// Its request, while the thread is elsewhere.
+        current: Current,
+    }
+
+    const NO_PLACE: Place = Place {
+        sp: 0,
+        stack: core::ptr::null_mut(),
+        thread: core::ptr::null_mut(),
+        doing: Doing::Driving,
+        fd: -1,
+        until: 0,
+        late: false,
+        current: NO_CURRENT,
+    };
+
+    static mut PLACES: [Place; MOST_PLACES] = [NO_PLACE; MOST_PLACES];
+    static mut PLACE_COUNT: usize = 1;
+    /// The place the thread is in.
+    static mut HERE: usize = 0;
+    /// Whether handlers have places: not in the process that only watches over workers,
+    /// and not when the program was built to be checked by a sanitizer.
+    static mut SIDE_BY_SIDE: bool = false;
+    static mut PLAIN: bool = false;
+    /// The server is stopping, and every place's loop is to end.
+    static mut ENDING: bool = false;
+    /// The program's loop, for a new place to run.
+    static mut JOB: *mut Header = core::ptr::null_mut();
+
+    /// Leaves the place the thread is in for another.
+    #[allow(static_mut_refs)]
+    unsafe fn go_to(next: usize) {
+        unsafe {
+            let from = HERE;
+            if from == next {
+                return;
+            }
+            PLACES[from].current = CURRENT;
+            CURRENT = PLACES[next].current;
+            HERE = next;
+            thread::become_block(PLACES[next].thread);
+            fiber::switch(&mut PLACES[from].sp, PLACES[next].sp);
+        }
+    }
+
+    /// A place to run the loop while this one waits: one that was left in it, or a new one.
+    #[allow(static_mut_refs)]
+    unsafe fn another_place() -> Option<usize> {
+        unsafe {
+            if let Some(parked) = (0..PLACE_COUNT).find(|place| PLACES[*place].doing == Doing::Parked) {
+                return Some(parked);
+            }
+            if PLACE_COUNT == MOST_PLACES || ENDING {
+                return None;
+            }
+            let block = thread::spare_block();
+            if block.is_null() {
+                return None;
+            }
+            let (stack, sp) = fiber::new_stack(place_begins)?;
+            (*block).stack_low = stack as usize + fiber::GUARD;
+            PLACES[PLACE_COUNT] = Place {
+                sp,
+                stack,
+                thread: block,
+                ..NO_PLACE
+            };
+            PLACE_COUNT += 1;
+            Some(PLACE_COUNT - 1)
+        }
+    }
+
+    /// What a new place does: it runs the program's loop, which asks for requests and
+    /// answers them, until the server stops.
+    #[allow(static_mut_refs)]
+    extern "C" fn place_begins() -> ! {
+        unsafe {
+            let run: extern "C" fn(*mut Header) = core::mem::transmute(actor::runner());
+            // The function that is run lets go of the loop it is given.
+            retain(JOB);
+            run(JOB);
+            PLACES[HERE].doing = Doing::Done;
+            loop {
+                let next = (1..PLACE_COUNT)
+                    .find(|place| PLACES[*place].doing != Doing::Done)
+                    .unwrap_or(0);
+                go_to(next);
+            }
+        }
+    }
+
+    /// Whether the thread is in a handler that may be left where it is: on the server's
+    /// thread, and holding no actor, which another handler might then wait for on the
+    /// same thread, for ever.
+    #[allow(static_mut_refs)]
+    unsafe fn may_leave() -> bool {
+        unsafe {
+            SIDE_BY_SIDE && PLACES[HERE].doing == Doing::Handling && {
+                let mine = thread::me();
+                core::ptr::eq(mine, PLACES[HERE].thread) && mine.held_len == 0
+            }
+        }
+    }
+
+    /// The thread does other work until `fd` has something to read, or room to write, or
+    /// the time has come. See `fiber::wait`.
+    #[allow(static_mut_refs)]
+    unsafe fn wait_in_place(fd: i32, write: bool, until: i64) -> fiber::Waited {
+        unsafe {
+            if !may_leave() {
+                return fiber::Waited::NotHere;
+            }
+            let Some(next) = another_place() else {
+                return fiber::Waited::NotHere;
+            };
+            let here = HERE;
+            if fd >= 0 {
+                sys::watch_once(QUEUE, fd, write, PLACE | here);
+            }
+            PLACES[here].fd = fd;
+            PLACES[here].until = until;
+            PLACES[here].late = false;
+            PLACES[here].doing = Doing::Waiting;
+            go_to(next);
+            // The loop came back here: what was waited for has come, or the time has.
+            PLACES[here].doing = Doing::Handling;
+            let late = PLACES[here].late;
+            if fd >= 0 {
+                sys::unwatch(QUEUE, fd, write, !late);
+            }
+            if late {
+                fiber::Waited::TimeUp
+            } else {
+                fiber::Waited::Came
+            }
+        }
+    }
+
+    /// The thread does other work for so long. See `fiber::pause`.
+    unsafe fn pause_in_place(length: i64) -> bool {
+        unsafe {
+            let until = nanos() + length.max(0);
+            // The time is what is waited for, so its coming is no lateness.
+            wait_in_place(-1, false, until) == fiber::Waited::TimeUp
+        }
+    }
+
+    /// When the server was told to stop, and how long after that it still answers what
+    /// arrives on the connections it has, in nanoseconds.
+    static mut STOPPED_AT: i64 = 0;
+    const LINGER: i64 = 300_000_000;
+
+    /// How many handlers have panicked in this process.
+    static mut PANICS: usize = 0;
+    /// After so many, a worker is done: what a panic leaves behind it is not given
+    /// back, and a worker that is replaced gives everything back.
+    const MOST_PANICS: usize = 1000;
+
+    /// Says that a handler panicked. A worker that has seen too many answers the
+    /// requests it has in hand and ends, and the process that watches starts another.
+    #[unsafe(no_mangle)]
+    pub unsafe extern "C" fn koo_http_panicked() {
+        unsafe {
+            PANICS += 1;
+            if CHILD && PANICS >= MOST_PANICS {
+                STOP = true;
+            }
+        }
+    }
+
+    /// Called as the program starts, if it was built to be checked by a sanitizer, which
+    /// does not know of stacks that are switched.
+    #[unsafe(no_mangle)]
+    pub unsafe extern "C" fn koo_plain_stacks() {
+        unsafe { PLAIN = true };
+    }
+
+    /// Whether handlers may have places at all.
+    unsafe fn places_allowed() -> bool {
+        unsafe {
+            unsafe extern "C" {
+                fn getenv(name: *const u8) -> *const u8;
+            }
+            let said = getenv(c"KOO_SIDE_BY_SIDE".as_ptr() as *const u8);
+            let off = !said.is_null() && c_text(said).eq_ignore_ascii_case(b"off");
+            !PLAIN && !off && actor::runner() != 0
+        }
+    }
+
+    /// From here on a handler that waits is left in its place: in a process that
+    /// answers requests, once the program has said what its loop is.
+    #[allow(static_mut_refs)]
+    unsafe fn begin_places() {
+        unsafe {
+            if SUPERVISOR || JOB.is_null() || !places_allowed() {
+                return;
+            }
+            PLACES[0] = Place {
+                thread: thread::me(),
+                ..NO_PLACE
+            };
+            PLACE_COUNT = 1;
+            HERE = 0;
+            ENDING = false;
+            SIDE_BY_SIDE = true;
+            fiber::WAIT = Some(wait_in_place);
+            fiber::PAUSE = Some(pause_in_place);
+        }
+    }
+
+    /// The server has stopped: the places are given back, and the loop let go of.
+    #[allow(static_mut_refs)]
+    unsafe fn end_places() {
+        unsafe {
+            fiber::WAIT = None;
+            fiber::PAUSE = None;
+            SIDE_BY_SIDE = false;
+            for place in PLACES[1..PLACE_COUNT].iter() {
+                fiber::free_stack(place.stack);
+            }
+            PLACE_COUNT = 1;
+            HERE = 0;
+            if !JOB.is_null() {
+                actor::drop_function(JOB);
+                JOB = core::ptr::null_mut();
+            }
+        }
+    }
+
+    /// Says what the program's loop is, which takes requests and answers them: `job`
+    /// runs it, and each place that is made runs it too. The program then runs the loop
+    /// itself, on the thread's own stack, which is the first place.
+    #[unsafe(no_mangle)]
+    #[allow(static_mut_refs)]
+    pub unsafe extern "C" fn koo_http_places(job: *mut Header) {
+        unsafe {
+            if !JOB.is_null() {
+                actor::drop_function(JOB);
+            }
+            JOB = job;
+            begin_places();
+        }
+    }
+
     /// Runs the server until a request is ready, and returns the number of its route, or
     /// -2 when the server has been told to stop. A request for no route is answered here.
     #[unsafe(no_mangle)]
@@ -1949,13 +2314,35 @@ mod imp {
                 // The program asked for another request without answering the last.
                 koo_http_respond(CURRENT.id, 500, core::ptr::null(), core::ptr::null(), core::ptr::null());
             }
+            PLACES[HERE].doing = Doing::Driving;
             loop {
+                if ENDING {
+                    // Every place's loop ends, the first place's last: it is the one
+                    // that returns to `main`.
+                    if HERE != 0 {
+                        return -2;
+                    }
+                    if let Some(other) = (1..PLACE_COUNT).find(|place| PLACES[*place].doing != Doing::Done) {
+                        PLACES[0].doing = Doing::Parked;
+                        go_to(other);
+                        continue;
+                    }
+                    finish();
+                    return -2;
+                }
+                // A handler whose wait is over goes on, and this place waits its turn.
+                if let Some(ready) = (0..PLACE_COUNT).find(|place| PLACES[*place].doing == Doing::Ready) {
+                    PLACES[HERE].doing = Doing::Parked;
+                    go_to(ready);
+                    PLACES[HERE].doing = Doing::Driving;
+                    continue;
+                }
                 while READY.len > 0 {
                     READY.len -= 1;
                     let index = *READY.ptr.add(READY.len) as usize;
                     let c = conn(index);
                     c.queued = false;
-                    if c.fd < 0 {
+                    if c.fd < 0 || c.handling {
                         continue;
                     }
                     // A client that does not read its answers is not read from.
@@ -1964,7 +2351,10 @@ mod imp {
                     }
                     match parse(index) {
                         Parsed::Request(-1) => no_route(index),
-                        Parsed::Request(number) => return number,
+                        Parsed::Request(number) => {
+                            PLACES[HERE].doing = Doing::Handling;
+                            return number;
+                        }
                         Parsed::Partial => {
                             let c = conn(index);
                             if c.fd >= 0 && c.closing && c.output.len == c.sent {
@@ -1980,11 +2370,51 @@ mod imp {
                     continue;
                 }
                 if STOP {
-                    finish();
-                    return -2;
+                    // No new connection is taken. The handlers that are waiting finish
+                    // first; and for a moment longer a request that was already on its
+                    // way on a connection that is open is still answered, and told that
+                    // the connection ends with the answer, so that a client that had
+                    // just sent one is not left with nothing.
+                    if STOPPED_AT == 0 {
+                        STOPPED_AT = nanos();
+                    }
+                    let waiting = PLACES[..PLACE_COUNT]
+                        .iter()
+                        .any(|place| matches!(place.doing, Doing::Waiting | Doing::Ready));
+                    if !waiting && nanos() - STOPPED_AT > LINGER {
+                        if PLACE_COUNT > 1 {
+                            ENDING = true;
+                            continue;
+                        }
+                        finish();
+                        return -2;
+                    }
+                    if ACCEPTING {
+                        ACCEPTING = false;
+                        sys::listener_on(QUEUE, LISTEN, false);
+                    }
                 }
                 sweep();
-                EVENT_COUNT = sys::wait(QUEUE, &mut EVENTS, 1000);
+                // A handler that waits until a time is woken when the time has come.
+                let (time, mut soonest, mut late) = (nanos(), 1000, false);
+                for place in PLACES[..PLACE_COUNT].iter_mut() {
+                    if place.doing == Doing::Waiting && place.until != 0 {
+                        if place.until <= time {
+                            place.late = true;
+                            place.doing = Doing::Ready;
+                            late = true;
+                        } else {
+                            soonest = soonest.min((place.until - time) / 1_000_000 + 1);
+                        }
+                    }
+                }
+                if late {
+                    continue;
+                }
+                if STOP {
+                    soonest = soonest.min(50);
+                }
+                EVENT_COUNT = sys::wait(QUEUE, &mut EVENTS, soonest);
                 EVENT_AT = 0;
             }
         }
@@ -2260,6 +2690,12 @@ mod imp {
                 return None;
             }
             let index = CURRENT.conn;
+            // The connection may have ended while its handler waited, and another may
+            // have its slot: the answer is for nobody then.
+            if conn(index).fd < 0 || conn(index).generation != CURRENT.generation {
+                CURRENT.answered = true;
+                return None;
+            }
             let keep = CURRENT.keep && !conn(index).closing && !STOP;
             Some((index, keep))
         }
@@ -2271,6 +2707,13 @@ mod imp {
         unsafe {
             CURRENT.answered = true;
             pass(index, CURRENT.length);
+            let c = conn(index);
+            c.handling = false;
+            if c.paused {
+                c.paused = false;
+                c.reading = true;
+                sys::start_reading(QUEUE, c.fd, tag(index, c.generation), c.writing);
+            }
             flush(index);
             let c = conn(index);
             if c.fd >= 0 && c.input.len > c.start {

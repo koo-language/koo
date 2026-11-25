@@ -372,6 +372,15 @@ fn build(args: &[String], mode: Mode, program_args: &[std::ffi::OsString]) -> Ex
                 _ => format!("{line}\n"),
             })
             .collect();
+        // A sanitizer does not know of stacks that are switched, which a server's
+        // handlers have when they wait (`koo-rt/src/fiber.rs`): such a program does
+        // without them.
+        ir = ir.replacen(
+            "  call void @koo_init(i32 %argc, ptr %argv)\n",
+            "  call void @koo_init(i32 %argc, ptr %argv)\n  call void @koo_plain_stacks()\n",
+            1,
+        );
+        ir.push_str("declare void @koo_plain_stacks()\n");
         if sanitizer == "thread" {
             // The support library is not instrumented, so it tells the sanitizer where
             // it hands something from one thread to another (`koo-rt/src/actor.rs`).

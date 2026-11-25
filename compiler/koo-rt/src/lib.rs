@@ -38,6 +38,7 @@ pub mod actor;
 pub mod client;
 pub mod codec;
 pub mod digest;
+pub mod fiber;
 pub mod http;
 pub mod log;
 pub mod pg;
@@ -1126,6 +1127,10 @@ pub unsafe extern "C" fn koo_sleep(nanos: i64) {
         return;
     }
     unsafe { koo_flush() };
+    // A handler of a server sleeps without the server's sleeping with it.
+    if unsafe { fiber::pause(nanos) } {
+        return;
+    }
     let mut wanted = [nanos / 1_000_000_000, nanos % 1_000_000_000];
     let mut left = [0i64; 2];
     // A signal ends a wait early, with what is left of it.

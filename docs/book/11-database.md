@@ -579,7 +579,7 @@ an order has a number
 
 A statement in a text block (Section 2.3) may run over as many lines as it likes, and its values are parameters all the same.
 
-Two things about a server and its database follow from how the server runs (Section 10.7). Each worker is a process, and a connection belongs to the process that made it, so each worker has a pool of its own, which it fills as it needs: the limit given to `connect` is a limit for each worker, and the database sees as many connections as all of them together have made. And a worker that waits for the database answers no other request meanwhile, so the number of statements a server has in hand at one time is, for now, the number of its workers. A server whose handlers spend most of their time waiting for the database is therefore given more workers than the machine has processors, as `app.serve(port: 8080, workers: 32)`: a worker that is waiting costs the machine little.
+Two things about a server and its database follow from how the server runs (Section 10.7). Each worker is a process, and a connection belongs to the process that made it, so each worker has a pool of its own, which it fills as it needs: the limit given to `connect` is a limit for each worker, and the database sees as many connections as all of them together have made. And a handler that waits for the database does not hold up its worker, which answers other requests meanwhile, so one worker has as many statements in hand at one time as its pool has connections. The pool is the measure of what a service asks of its database, and it is worth choosing: workers times `pool:` is the most connections the service will ever hold.
 
 ## 11.7 Encryption
 

@@ -21,6 +21,10 @@ fn main() ! http.Error {
         time.sleep(2s)
         return http.text("late\n")
     })
+    app.get("/nap", req -> {
+        time.sleep(300ms)
+        return http.text("rested\n")
+    })
     app.get("/big", req -> http.text("0123456789".repeat(300000)))
     app.get("/none", req -> http.status(204))
     app.get("/missing", req -> http.status(404, "nothing here\n"))

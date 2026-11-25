@@ -1,0 +1,28 @@
+# The orders service and a database for it:
+#
+#     docker compose -f examples/service/compose.yaml up --build
+#     curl -d '{"customer": "ada", "sku": "hammer", "qty": 2}' localhost:8080/orders
+
+services:
+  db:
+    image: postgres:16
+    environment:
+      POSTGRES_PASSWORD: orders
+    healthcheck:
+      test: ["CMD", "pg_isready", "-h", "127.0.0.1", "-U", "postgres"]
+      interval: 2s
+      timeout: 2s
+      retries: 30
+
+  orders:
+    build:
+      context: ../..
+      dockerfile: examples/service/Dockerfile
+    environment:
+      DATABASE_URL: postgres://postgres:orders@db:5432/postgres
+      WEB_CONCURRENCY: "2"
+    ports:
+      - "8080:8080"
+    depends_on:
+      db:
+        condition: service_healthy

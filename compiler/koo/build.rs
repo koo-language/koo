@@ -13,6 +13,7 @@ fn main() {
         "http.rs",
         "actor.rs",
         "digest.rs",
+        "fiber.rs",
         "codec.rs",
         "client.rs",
         "log.rs",

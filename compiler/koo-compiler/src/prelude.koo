@@ -1551,6 +1551,16 @@ fn (self: HttpApp) serve(port: int = -1, workers: int = 0, max_body: int = 10485
     if __http_listen(at, processes, max_body, logged) < 0 {
         fail HttpError { kind: HttpErrorKind.Listen, message: __last_error() }
     }
+    // A handler may wait without the server's waiting with it: the support library
+    // then runs the loop again, in another place, while the handler waits in its own
+    // (`koo-rt/src/http.rs`). So it is told what the loop is.
+    __http_places(() -> h__loop(self))
+    h__loop(self)
+}
+
+/// Takes requests, one after another, and answers each with its handler, until the
+/// server is told to stop.
+fn h__loop(app: HttpApp) {
     while true {
         route := __http_next()
         if route == -3 {
@@ -1564,11 +1574,12 @@ fn (self: HttpApp) serve(port: int = -1, workers: int = 0, max_body: int = 10485
         // A panic in a handler is a bug in it. It ends the request, which is answered
         // with 500, and not the worker, which has other requests to answer.
         if __guard() {
-            h__answer(self.handlers[route], request)
+            h__answer(app.handlers[route], request)
             __guard_done()
         } else {
             __actor_recover()
             __http_respond(id, 500, "text/plain; charset=utf-8", "", "Internal Server Error\n")
+            __http_panicked()
         }
     }
 }

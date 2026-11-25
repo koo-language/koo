@@ -8,12 +8,16 @@
 //! The whole of a request has a time it may take. Each wait, for the connection, for
 //! the handshake, for the next piece of the answer, is given what is left of it.
 
-use super::pg::{Buf, dial, send_all};
+use super::pg::{Buf, dial, has_something, send_all};
+use super::thread::Lock;
 use super::thread::me;
 use super::tls::{self, AGAIN};
 use super::*;
+use core::sync::atomic::AtomicI32;
+use core::sync::atomic::Ordering::Relaxed;
 
 unsafe extern "C" {
+    fn getpid() -> i32;
     fn close(fd: i32) -> i32;
     fn setsockopt(fd: i32, level: i32, name: i32, value: *const i32, len: u32) -> i32;
 }
@@ -67,10 +71,141 @@ unsafe fn failed(kind: i64, parts: &[&[u8]]) -> bool {
     }
 }
 
+// ---- connections that are kept ----------------------------------------------------------
+//
+// A connection that has carried a request and its answer can carry another, and making
+// one is the dearest part of a request, most of all over TLS. So a connection is kept
+// when its answer is whole, for the next request to the same server, for a minute.
+
+/// The most connections that are kept, for all servers together.
+const MOST_KEPT: usize = 32;
+/// How long one is kept without being used, in nanoseconds.
+const KEPT_FOR: i64 = 60_000_000_000;
+
+#[derive(Clone, Copy)]
+struct Kept {
+    fd: i32,
+    tls: *mut tls::Tls,
+    /// Whose it is: `https` or not, the host, the port.
+    key: [u8; 96],
+    key_len: usize,
+    /// When it was put by.
+    since: i64,
+}
+
+const NO_KEPT: Kept = Kept {
+    fd: -1,
+    tls: core::ptr::null_mut(),
+    key: [0; 96],
+    key_len: 0,
+    since: 0,
+};
+
+static mut KEPT: [Kept; MOST_KEPT] = [NO_KEPT; MOST_KEPT];
+static KEEPING: Lock = Lock::new();
+/// The process the kept connections belong to: one that was forked has none.
+static KEEPER: AtomicI32 = AtomicI32::new(0);
+
+/// What names a server's connections. Nothing for a host too long to be worth it.
+fn key_of(secure: bool, host: &[u8], port: u16) -> Option<([u8; 96], usize)> {
+    let mut key = [0u8; 96];
+    if host.len() > 80 {
+        return None;
+    }
+    key[0] = secure as u8;
+    key[1..3].copy_from_slice(&port.to_be_bytes());
+    key[3..3 + host.len()].copy_from_slice(host);
+    key[3..3 + host.len()].make_ascii_lowercase();
+    Some((key, 3 + host.len()))
+}
+
+/// In a process that was forked, the connections its parent kept are the parent's.
+#[allow(static_mut_refs)]
+unsafe fn kept_here() {
+    unsafe {
+        let pid = getpid();
+        if KEEPER.load(Relaxed) != pid {
+            if KEEPER.load(Relaxed) != 0 {
+                KEEPING.unlock();
+                for kept in KEPT.iter_mut() {
+                    if kept.fd >= 0 {
+                        tls::close(kept.tls, false);
+                        close(kept.fd);
+                    }
+                    *kept = NO_KEPT;
+                }
+            }
+            KEEPER.store(pid, Relaxed);
+        }
+    }
+}
+
+/// A connection to a server that was kept, if there is one that is still good: the one
+/// put by last. One that the server has closed meanwhile, or that has waited too long,
+/// is closed and passed over.
+#[allow(static_mut_refs)]
+unsafe fn take_kept(key: &[u8]) -> Option<(i32, *mut tls::Tls)> {
+    unsafe {
+        kept_here();
+        let now = koo_now_nanos();
+        KEEPING.lock();
+        let mut found = None;
+        loop {
+            let newest = KEPT
+                .iter_mut()
+                .filter(|kept| kept.fd >= 0 && &kept.key[..kept.key_len] == key)
+                .max_by_key(|kept| kept.since);
+            let Some(kept) = newest else { break };
+            let (fd, tls) = (kept.fd, kept.tls);
+            let stale = now - kept.since > KEPT_FOR;
+            *kept = NO_KEPT;
+            if stale || has_something(fd) {
+                tls::close(tls, false);
+                close(fd);
+                continue;
+            }
+            found = Some((fd, tls));
+            break;
+        }
+        KEEPING.unlock();
+        found
+    }
+}
+
+/// Puts a connection by for the next request to its server. If there is no room, the
+/// one that has waited longest makes it.
+#[allow(static_mut_refs)]
+unsafe fn keep(key: &[u8], fd: i32, tls: *mut tls::Tls) {
+    unsafe {
+        kept_here();
+        KEEPING.lock();
+        let slot = match KEPT.iter_mut().find(|kept| kept.fd < 0) {
+            Some(free) => free,
+            None => {
+                let oldest = KEPT.iter_mut().min_by_key(|kept| kept.since).unwrap_unchecked();
+                tls::close(oldest.tls, false);
+                close(oldest.fd);
+                oldest
+            }
+        };
+        *slot = Kept {
+            fd,
+            tls,
+            since: koo_now_nanos(),
+            ..NO_KEPT
+        };
+        slot.key[..key.len()].copy_from_slice(key);
+        slot.key_len = key.len();
+        KEEPING.unlock();
+    }
+}
+
 /// A connection to a server, encrypted or not, and when the request must be over.
 struct Line {
     fd: i32,
     tls: *mut tls::Tls,
+    /// Whether anything of an answer has been read.
+    heard: bool,
     /// On the clock that only goes forward, in nanoseconds.
     deadline: i64,
     /// What has been read and not yet looked at.
@@ -130,6 +265,11 @@ impl Line {
                     self.input.ptr.add(self.input.len),
                     self.input.cap - self.input.len,
                 );
+                // A handler of a server lets the server do other work meanwhile.
+                if (self.tls.is_null() || tls::pending(self.tls) == 0) && !fiber::wait_readable(self.fd, self.deadline)
+                {
+                    return Err(Ended::TimeUp);
+                }
                 let got = if self.tls.is_null() {
                     match read(self.fd, room.as_mut_ptr(), room.len()) {
                         n if n < 0 && *errno_location() == AGAIN => -2,
@@ -145,6 +285,7 @@ impl Line {
                     -2 => Err(Ended::TimeUp),
                     n if n < 0 => Err(Ended::Broken),
                     n => {
+                        self.heard = true;
                         self.input.len += n as usize;
                         Ok(n as usize)
                     }
@@ -289,7 +430,7 @@ pub unsafe extern "C" fn koo_http_fetch(
             let _ = write!(number, ":{port}");
             request.push(&number.data[..number.len]);
         }
-        request.push(b"\r\nConnection: close\r\nAccept-Encoding: identity\r\n");
+        request.push(b"\r\nAccept-Encoding: identity\r\n");
         let mut names_agent = false;
         let mut names_accept = false;
         for pair in 0..count / 2 {
@@ -336,56 +477,91 @@ pub unsafe extern "C" fn koo_http_fetch(
         let started = koo_now_nanos();
         let deadline = started.saturating_add(nanos.max(1_000_000));
         let seconds = ((nanos.max(0) / 1_000_000_000) + 1).min(i32::MAX as i64) as i32;
-        let mut why = Buffer::new();
-        let fd = dial(host, port, seconds, &mut why);
-        if fd < 0 {
-            request.release();
-            let slow = why.data[..why.len].ends_with(b"seconds");
-            return failed(if slow { TIMEOUT } else { CONNECTION }, &[&why.data[..why.len]]);
-        }
-        let mut line = Line {
-            fd,
-            tls: core::ptr::null_mut(),
-            deadline,
-            input: Buf::new(),
-            at: 0,
-        };
-        if secure {
-            line.wait_at_most();
-            let mut why = [0u8; 300];
-            match tls::connect(fd, host, tls::Trust::Host, b"", &mut why) {
-                Ok(made) => line.tls = made,
-                Err(len) => {
-                    request.release();
-                    line.hang_up();
-                    let slow = why[..len].ends_with(b"in time");
-                    return failed(if slow { TIMEOUT } else { CONNECTION }, &[&why[..len]]);
+        let key = key_of(secure, host, port);
+        // A request that may be made twice without harm is made again, once, if the
+        // connection it went out on was one that had been kept and turned out to have
+        // been closed: nothing of an answer came back on it.
+        let again = matches!(method, b"GET" | b"HEAD" | b"PUT" | b"DELETE" | b"OPTIONS");
+        let mut attempt = 0;
+        let outcome = loop {
+            attempt += 1;
+            let kept_one = match &key {
+                Some((key, len)) if attempt == 1 => take_kept(&key[..*len]),
+                _ => None,
+            };
+            let mut line = Line {
+                fd: -1,
+                tls: core::ptr::null_mut(),
+                heard: false,
+                deadline,
+                input: Buf::new(),
+                at: 0,
+            };
+            match kept_one {
+                Some((fd, tls)) => (line.fd, line.tls) = (fd, tls),
+                None => {
+                    let mut why = Buffer::new();
+                    line.fd = dial(host, port, seconds, &mut why);
+                    if line.fd < 0 {
+                        request.release();
+                        let slow = why.data[..why.len].ends_with(b"seconds");
+                        return failed(if slow { TIMEOUT } else { CONNECTION }, &[&why.data[..why.len]]);
+                    }
+                    if secure {
+                        line.wait_at_most();
+                        let mut why = [0u8; 300];
+                        match tls::connect(line.fd, host, tls::Trust::Host, b"", &mut why) {
+                            Ok(made) => line.tls = made,
+                            Err(len) => {
+                                request.release();
+                                line.hang_up();
+                                let slow = why[..len].ends_with(b"in time");
+                                return failed(if slow { TIMEOUT } else { CONNECTION }, &[&why[..len]]);
+                            }
+                        }
+                    }
                 }
             }
-        }
-        let sent = line.send(request.bytes());
-        request.release();
-        let answered = if sent {
-            answer(&mut line, method == b"HEAD", kept)
-        } else {
-            Err(Ended::Broken)
+            let sent = line.send(request.bytes());
+            let answered = if sent {
+                answer(&mut line, method == b"HEAD", kept)
+            } else {
+                Err(Ended::Broken)
+            };
+            // An answer that is whole, on a connection the server will go on with,
+            // leaves the connection good for another request.
+            match (&answered, &key) {
+                (Ok(true), Some((key, len))) if line.unread().is_empty() => {
+                    keep(&key[..*len], line.fd, line.tls);
+                    line.input.release();
+                }
+                _ => line.hang_up(),
+            }
+            let lost_unheard = !line.heard && matches!(answered, Err(Ended::Closed) | Err(Ended::Broken));
+            if lost_unheard && kept_one.is_some() && (again || !sent) && koo_now_nanos() < deadline {
+                continue;
+            }
+            break (answered, sent);
         };
-        line.hang_up();
-        match answered {
-            Ok(()) => true,
-            Err(Ended::TimeUp) => failed(TIMEOUT, &[host, b" did not answer in the time it was given"]),
-            Err(_) if koo_now_nanos() >= deadline => {
+        request.release();
+        match outcome {
+            (Ok(_), _) => true,
+            (Err(Ended::TimeUp), _) => failed(TIMEOUT, &[host, b" did not answer in the time it was given"]),
+            (Err(_), _) if koo_now_nanos() >= deadline => {
                 failed(TIMEOUT, &[host, b" did not answer in the time it was given"])
             }
-            Err(Ended::Closed) => failed(CONNECTION, &[host, b" closed the connection before it had answered"]),
-            Err(Ended::Broken) if !sent => failed(CONNECTION, &[b"the connection to ", host, b" was lost"]),
-            Err(Ended::Broken) => failed(PROTOCOL, &[b"what ", host, b" answered is not HTTP"]),
+            (Err(Ended::Closed), _) => failed(CONNECTION, &[host, b" closed the connection before it had answered"]),
+            (Err(Ended::Broken), false) => failed(CONNECTION, &[b"the connection to ", host, b" was lost"]),
+            (Err(Ended::Broken), true) => failed(PROTOCOL, &[b"what ", host, b" answered is not HTTP"]),
         }
     }
 }
 
 /// Reads an answer: its first line, its headers, and its body.
-unsafe fn answer(line: &mut Line, headless: bool, kept: &mut Reply) -> Result<(), Ended> {
+///
+/// Returns whether the connection is good for another request after it: the answer said
+/// where it ends, and did not say that the connection ends with it.
+unsafe fn answer(line: &mut Line, headless: bool, kept: &mut Reply) -> Result<bool, Ended> {
     unsafe {
         loop {
             // `HTTP/1.1 200 OK`
@@ -399,6 +575,7 @@ unsafe fn answer(line: &mut Line, headless: bool, kept: &mut Reply) -> Result<()
             kept.status = status.iter().fold(0, |sum, digit| sum * 10 + (digit - b'0') as i64);
             kept.headers.len = 0;
             let (mut length, mut chunked) = (None, false);
+            let mut goes_on = version != b"HTTP/1.0";
             let mut total = 0;
             loop {
                 let header = line.line()?;
@@ -422,6 +599,9 @@ unsafe fn answer(line: &mut Line, headless: bool, kept: &mut Reply) -> Result<()
                             .fold(0usize, |sum, digit| sum * 10 + (digit - b'0') as usize),
                     );
                 }
+                if name.eq_ignore_ascii_case(b"connection") && value.eq_ignore_ascii_case(b"close") {
+                    goes_on = false;
+                }
                 if name.eq_ignore_ascii_case(b"transfer-encoding") {
                     chunked = value.to_ascii_lowercase_ends_with(b"chunked");
                 }
@@ -439,7 +619,7 @@ unsafe fn answer(line: &mut Line, headless: bool, kept: &mut Reply) -> Result<()
             }
             kept.body.len = 0;
             if headless || kept.status == 204 || kept.status == 304 {
-                return Ok(());
+                return Ok(goes_on);
             }
             if chunked {
                 loop {
@@ -456,8 +636,10 @@ unsafe fn answer(line: &mut Line, headless: bool, kept: &mut Reply) -> Result<()
                         return Err(Ended::Broken);
                     }
                     if count == 0 {
-                        // What follows the last chunk is of no use here.
-                        return Ok(());
+                        // After the last chunk there may be more headers, which are of
+                        // no use here, up to an empty line.
+                        while !line.line()?.is_empty() {}
+                        return Ok(goes_on);
                     }
                     line.take(count, &mut kept.body)?;
                     if !line.line()?.is_empty() {
@@ -467,7 +649,7 @@ unsafe fn answer(line: &mut Line, headless: bool, kept: &mut Reply) -> Result<()
             }
             return match length {
                 Some(length) if length > MOST_BODY => Err(Ended::Broken),
-                Some(length) => line.take(length, &mut kept.body),
+                Some(length) => line.take(length, &mut kept.body).map(|()| goes_on),
                 // Neither a length nor chunks: the body is all there is until the end.
                 None => loop {
                     let waiting = line.unread().len();
@@ -477,7 +659,7 @@ unsafe fn answer(line: &mut Line, headless: bool, kept: &mut Reply) -> Result<()
                     }
                     match line.more() {
                         Ok(_) => {}
-                        Err(Ended::Closed) => break Ok(()),
+                        Err(Ended::Closed) => break Ok(false),
                         Err(other) => break Err(other),
                     }
                 },
@@ -526,8 +708,18 @@ pub unsafe extern "C" fn koo_http_reply_body() -> *mut Header {
 }
 
 /// When `main` returns: what each thread kept of its last answer is given back.
+#[allow(static_mut_refs)]
 pub unsafe fn at_exit() {
     unsafe {
+        if KEEPER.load(Relaxed) == getpid() {
+            for kept in KEPT.iter_mut() {
+                if kept.fd >= 0 {
+                    tls::close(kept.tls, true);
+                    close(kept.fd);
+                }
+                *kept = NO_KEPT;
+            }
+        }
         thread::every(|thread| {
             if !thread.reply.is_null() {
                 let kept = &mut *(thread.reply as *mut Reply);
