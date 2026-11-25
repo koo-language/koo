@@ -455,6 +455,7 @@ A `sql.Query` is written as a string literal where one is expected: the values i
 | `db.query(query: sql.Query) -> [sql.Row] ! sql.Error` | runs a statement, and returns its rows |
 | `db.query_one(query: sql.Query) -> sql.Row? ! sql.Error` | the first row, if there is one |
 | `db.query_row(query: sql.Query) -> sql.Row ! sql.Error` | the first row; fails with the kind `NoRows` if there is none |
+| `db.each(query: sql.Query, body: fn(sql.Row) -> () ! E, batch: int = 1000) -> int ! E \| sql.Error` | gives `body` the rows of a query one at a time, fetching `batch` at a time, and returns how many there were; of a pool, in a transaction of its own, and of a `sql.Tx` |
 | `db.transaction(body: fn(sql.Tx) -> T ! E, isolation: sql.Isolation = sql.Isolation.ReadCommitted) -> T ! E \| sql.Error` | of a pool only: runs `body` in a transaction, which is kept if `body` returns and undone if it fails |
 
 `sql.Isolation` is an enumeration: `ReadCommitted`, `RepeatableRead`, `Serializable`.

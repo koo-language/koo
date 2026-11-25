@@ -2703,6 +2703,43 @@ fn (self: SqlTx) exec(query: SqlQuery) -> int ! SqlError {
 /// Runs `body` in a transaction. If `body` returns, what it did is kept, and its value
 /// is the value of the call; if it fails, what it did is undone, and the call fails
 /// with the same error.
+/// The rows of a query given to `body` one at a time, for an answer too large to hold
+/// whole: they are fetched from the database `batch` at a time, through a cursor, so
+/// that no more than a batch is in memory at once. Returns how many rows there were.
+/// If `body` fails, no more are read and the failure is the answer.
+fn (self: SqlTx) each<E>(query: SqlQuery, body: fn(SqlRow) -> () ! E, batch: int = 1000) -> int ! E | SqlError {
+    // A name no other cursor of the transaction has, should `body` read rows too.
+    name := "koo_rows_{__uptime()}"
+    var declared := SqlQuery.raw("declare {name} no scroll cursor for ")
+    declared.append(query)
+    self.exec(declared)?
+    size := if batch < 1 { 1 } else { batch }
+    var seen := 0
+    while true {
+        rows := self.query(SqlQuery.raw("fetch {size} from {name}"))?
+        for row in rows {
+            match body(row) {
+                _ => {}
+                ! e => {
+                    // The cursor is closed if the transaction goes on; if it does not,
+                    // the cursor ends with it.
+                    self.exec(SqlQuery.raw("close {name}")) else 0
+                    fail e
+                }
+            }
+            seen += 1
+        }
+        if rows.len < size { break }
+    }
+    self.exec(SqlQuery.raw("close {name}"))?
+    return seen
+}
+
+/// The same, in a transaction of its own.
+fn (self: SqlPool) each<E>(query: SqlQuery, body: fn(SqlRow) -> () ! E, batch: int = 1000) -> int ! E | SqlError {
+    return self.transaction(tx -> tx.each(query, body, batch)?)?
+}
+
 fn (self: SqlPool) transaction<T, E>(body: fn(SqlTx) -> T ! E, isolation: SqlIsolation = SqlIsolation.ReadCommitted) -> T ! E | SqlError {
     level := match isolation {
         SqlIsolation.ReadCommitted => 0

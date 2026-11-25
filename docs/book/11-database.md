@@ -605,7 +605,13 @@ The package speaks to PostgreSQL and to nothing else yet.
 
 Of the parameters an address may have, the package acts on `sslmode`, `sslrootcert` and `options`. The others that PostgreSQL's own client knows, `connect_timeout` or `application_name` or `channel_binding`, are let pass without effect, since the addresses that hosting services hand out carry them. A parameter that client does not know is refused, with the nearest one that it does: `sslmod=verify-full`, which would otherwise ask for nothing, is an error that says `sslmode`.
 
-The rows of a query arrive all at once, as a list, and cannot yet be read one at a time as the server sends them; a statement that would return a million rows should be given a `limit`. A value in a row is read as one of the five types of Section 11.2, or as a list of one from an array of one dimension: a column of another type, such as an array of arrays or a `numeric` of more digits than a `float` holds, is read as a `string` in the form PostgreSQL writes it, or cast in the statement to something that fits. Settings for a session, such as a limit on how long a statement may run, go in the address, as `?options=-c%20statement_timeout%3D5s`, where `%20` is a space and `%3D` an equals sign.
+The rows of `query` arrive all at once, as a list. For an answer too large to hold whole there is `each`, which is given the query and a function, and gives the function the rows one at a time, fetching them from the database a thousand at a time, or as many as `batch:` says, so that no more than that many are in memory at once:
+
+    seen := db.each("select * from orders order by id", row -> {
+        total += row.float("total")?
+    })?
+
+`each` returns the number of rows. If the function fails, no more are read and the failure is what `each` fails with. On a pool it runs in a transaction of its own; a `sql.Tx` has it too, for reading within one. A value in a row is read as one of the five types of Section 11.2, or as a list of one from an array of one dimension: a column of another type, such as an array of arrays or a `numeric` of more digits than a `float` holds, is read as a `string` in the form PostgreSQL writes it, or cast in the statement to something that fits. Settings for a session, such as a limit on how long a statement may run, go in the address, as `?options=-c%20statement_timeout%3D5s`, where `%20` is a space and `%3D` an equals sign.
 
 There is nothing here that writes SQL for the program, makes tables from structures, or changes a database from one version of its design to the next. Statements are SQL, written by the programmer and checked by the database.
 
