@@ -292,6 +292,17 @@ impl<'a> Checker<'a> {
             }
             Pattern::Wildcard
         };
+        // Inside another pattern, a pattern that says what a value is, a literal or a
+        // variant, matches an optional that has such a value. A name takes the optional
+        // as it is, with or without a value, and `none` and `_` mean what they say.
+        if let Ty::Optional(inner) = ty
+            && !matches!(
+                pattern.kind,
+                ast::PatternKind::None | ast::PatternKind::Wildcard | ast::PatternKind::Bind { .. }
+            )
+        {
+            return Pattern::Some(Box::new(self.pattern(pattern, inner)));
+        }
         match &pattern.kind {
             ast::PatternKind::Wildcard => Pattern::Wildcard,
             ast::PatternKind::None => match ty {

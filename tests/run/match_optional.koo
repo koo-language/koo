@@ -1,0 +1,49 @@
+// Inside another pattern, a literal or a variant matches an optional that holds such
+// a value; a name takes the optional as it is.
+
+enum Light { Red, Green }
+type Lamp = { light: Light?, on: bool? }
+
+fn say(a: int?, b: bool?) -> string {
+    match (a, b) {
+        (none, none) => return "neither"
+        (1, true) => return "one, yes"
+        (1, _) => return "one"
+        (x, false) => return "{x} and no"
+        (x, y) => return "{x} {y}"
+    }
+}
+
+fn lamp(l: Lamp) -> string {
+    match l {
+        Lamp { light: Light.Green, on: true } => return "green and lit"
+        Lamp { light: none, on } => return "no light, {on}"
+        Lamp { light, on: none } => return "{light}, unknown"
+        Lamp { light: Light.Red, on: _ } => return "red"
+        Lamp { light: Light.Green, on: false } => return "green, off"
+    }
+}
+
+fn main() {
+    print(say(none, none))
+    print(say(1, true))
+    print(say(1, none))
+    print(say(2, false))
+    print(say(none, true))
+    print(lamp(Lamp { light: Light.Green, on: true }))
+    print(lamp(Lamp { light: none, on: false }))
+    print(lamp(Lamp { light: Light.Red, on: none }))
+    print(lamp(Lamp { light: Light.Red, on: true }))
+    print(lamp(Lamp { light: Light.Green, on: false }))
+}
+
+//= neither
+//= one, yes
+//= one
+//= 2 and no
+//= none true
+//= green and lit
+//= no light, false
+//= Red, unknown
+//= red
+//= green, off
