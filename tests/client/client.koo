@@ -26,6 +26,10 @@ fn main() ! http.Error | JsonError {
     patched: Echo = http.patch(base + "/echo", "")?.json()?
     print("{deleted.method} {patched.method}")
     print(http.fetch("OPTIONS", base + "/echo")?.status)
+    // An answer that is a list, and one that is a map.
+    numbers: [int] = http.get(base + "/list")?.json()?
+    prices: [string: float] = http.get(base + "/table")?.json()?
+    print("{numbers} {prices}")
     show("big", http.get(base + "/big"))
     show("none", http.get(base + "/none"))
     show("missing", http.get(base + "/missing"))
@@ -45,6 +49,7 @@ fn main() ! http.Error | JsonError {
 //= PUT text/plain plain
 //= DELETE PATCH
 //= 200
+//= [3, 1, 2] ["nails": 1.5, "glue": 4.0]
 //= big: 200 true 3000000 bytes, text/plain; charset=utf-8
 //= none: 204 true 0 bytes, no type
 //= missing: 404 false 14 bytes, text/plain; charset=utf-8

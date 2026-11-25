@@ -1786,6 +1786,31 @@ fn a_server_answers_requests() {
         &post(port, "/orders", "not json"),
         &["400 Bad Request", "expected an object"],
     );
+    // A list for a body, and a map; the path to a mistake begins at its place in them.
+    has(
+        &post(port, "/batch", r#"[{"sku": "x"}, {"sku": "y", "qty": 3}]"#),
+        &["200 OK", "Content-Type: application/json", "\r\n\r\n[1,3]"],
+    );
+    has(
+        &post(port, "/batch", r#"[{"sku": "x"}, {"sku": "y", "qty": "many"}]"#),
+        &[
+            "400 Bad Request",
+            r#""path":"/1/qty""#,
+            "expected a whole number, found a string",
+        ],
+    );
+    has(
+        &post(port, "/batch", r#"{"sku": "x"}"#),
+        &["400 Bad Request", "expected an array"],
+    );
+    has(
+        &post(port, "/stock", r#"{"nails": 40, "screws": null, "glue": 2}"#),
+        &["200 OK", "\r\n\r\n3 named, 2 counted"],
+    );
+    has(
+        &post(port, "/stock", r#"{"nails": "some"}"#),
+        &["400 Bad Request", r#""path":"/nails""#],
+    );
     // A response to HEAD has the headers of the response to GET, and no body.
     let head = http(port, "HEAD / HTTP/1.1\r\nConnection: close\r\n\r\n");
     has(&head, &["200 OK", "Content-Length: 13"]);

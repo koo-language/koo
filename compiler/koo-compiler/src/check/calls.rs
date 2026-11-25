@@ -532,6 +532,21 @@ impl<'a> Checker<'a> {
         {
             return self.generic_type_level_call(template, Some(on.clone()), args, span, expected);
         }
+        // The prelude reads an optional from JSON by a method, on a `none` of the type.
+        if matches!(on, Ty::Optional(_)) && name.name == "_json_read" && self.body_in_prelude {
+            let nothing = self.mk(ExprKind::NoneLit, on.clone(), span);
+            let method = ast::Ident {
+                name: "_json_read_optional".to_string(),
+                span: name.span,
+            };
+            return self.method_call(nothing, &method, args, span, expected);
+        }
+        // A list has the functions of `List<T>`: `T.from_json` where `T` is `[Order]`.
+        if matches!(on, Ty::List(_))
+            && let Some(template) = self.generic_type_fn("List", &name.name)
+        {
+            return self.generic_type_level_call(template, Some(on.clone()), args, span, expected);
+        }
         let found = self.ty_name(on);
         self.error(name.span, format!("`{found}` has no function `{}`", name.name));
         for arg in args {

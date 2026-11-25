@@ -168,7 +168,7 @@ I am a teapot
 
 ## 10.4 JSON In and Out
 
-Most services speak JSON, and Section 8.7 has already said nearly all there is to say. A value is sent by `http.json(value)`. A body is read by `req.json()`, which returns a value of whatever type the handler expects, the type being stated where the result is declared.
+Most services speak JSON, and Section 8.7 has already said nearly all there is to say. A value is sent by `http.json(value)`. A body is read by `req.json()`, which returns a value of whatever type the handler expects, the type being stated where the result is declared: a structure or an enumeration, or a list or a map with string keys of them, as `orders: [NewOrder] = req.json()?` for a body that is an array.
 
 ```koo
 import std/http

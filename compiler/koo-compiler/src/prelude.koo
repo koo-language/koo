@@ -1008,6 +1008,63 @@ fn (self: [T]) to_json() -> string {
     return out
 }
 
+/// A list read from JSON, whatever it is a list of: the body of a request may be a
+/// list as well as an object (`orders: [Order] = req.json()?`).
+fn List<T>._json_read(text: string, at: var int) -> [T] ! JsonError {
+    var items: [T] = []
+    var first := true
+    j__open(text, var at, 91)?
+    while j__more(text, var at, 93, var first)? {
+        item := T._json_read(text, var at) else e => fail j__in(e, "/{items.len}")
+        items.push(item)
+    }
+    return items
+}
+
+fn List<T>.from_json(text: string) -> [T] ! JsonError {
+    __json_begin()
+    var at := 0
+    value := List<T>._json_read(text, var at)?
+    j__end(text, at)?
+    return value
+}
+
+/// An optional read from JSON: `null` is `none`. An optional has no functions of its
+/// own, so this is a method, which the compiler calls on a `none` of the type where
+/// the prelude asks for `T._json_read` and `T` is an optional.
+fn (self: T?) _json_read_optional(text: string, at: var int) -> T? ! JsonError {
+    if j__null(text, var at) { return none }
+    value := T._json_read(text, var at)?
+    return value
+}
+
+/// A map read from a JSON object. The keys of an object are strings, so those of the
+/// map are.
+fn Map<K, V>._json_read(text: string, at: var int) -> Map<string, V> ! JsonError {
+    var entries: [string: V] = [:]
+    var first := true
+    j__open(text, var at, 123)?
+    while j__more(text, var at, 125, var first)? {
+        key := j__key(text, var at)?
+        value := V._json_read(text, var at) else e => fail j__in(e, "/{key}")
+        entries[key] = value
+    }
+    return entries
+}
+
+fn Map<K, V>.from_json(text: string) -> Map<string, V> ! JsonError {
+    __json_begin()
+    var at := 0
+    value := Map<string, V>._json_read(text, var at)?
+    j__end(text, at)?
+    return value
+}
+
+fn int._json_read(text: string, at: var int) -> int ! JsonError { return j__int(text, var at)? }
+fn float._json_read(text: string, at: var int) -> float ! JsonError { return j__float(text, var at)? }
+fn bool._json_read(text: string, at: var int) -> bool ! JsonError { return j__bool(text, var at)? }
+fn string._json_read(text: string, at: var int) -> string ! JsonError { return j__str(text, var at)? }
+
 fn (self: T?) _json_write(out: var string) {
     if value := self { value._json_write(var out) } else { out += "null" }
 }

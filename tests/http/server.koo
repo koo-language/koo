@@ -53,6 +53,19 @@ fn main() ! http.Error {
         input: NewOrder = req.json()?
         return http.json(Order { id: 8, customer: input.customer, items: input.items }, status: 201)
     })
+    // A body that is a list, and one that is a map: not only an object reads as JSON.
+    app.post("/batch", req -> {
+        items: [Item] = req.json()?
+        return http.json(items.map(item -> item.qty))
+    })
+    app.post("/stock", req -> {
+        counts: [string: int?] = req.json()?
+        var known := 0
+        for (sku, count) in counts {
+            if count != none { known += 1 }
+        }
+        return http.text("{counts.len} named, {known} counted")
+    })
     app.get("/files/*", req -> http.text("file {req.path}"))
     app.any("/any", req -> http.text(req.method))
     app.files("/static", os.env("STATIC") else "public")
