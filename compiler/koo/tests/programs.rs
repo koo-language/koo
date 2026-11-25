@@ -1354,6 +1354,28 @@ fn the_example_service_serves() {
         String::from_utf8_lossy(&unset.stderr)
     );
 
+    // A port or a number of workers that is none is said at once, and nothing is served.
+    for (name, value) in [
+        ("PORT", "99999"),
+        ("PORT", "-5"),
+        ("PORT", "http"),
+        ("WEB_CONCURRENCY", "0"),
+        ("WEB_CONCURRENCY", "many"),
+    ] {
+        let refused = Command::new(&executable)
+            .env("DATABASE_URL", &url)
+            .env("PORT", "1")
+            .env(name, value)
+            .output()
+            .expect("the service runs");
+        let said = String::from_utf8_lossy(&refused.stderr);
+        assert_eq!(refused.status.code(), Some(1), "{name}={value}: {said}");
+        assert!(
+            said.contains(&format!("the environment variable `{name}` is `{value}`")),
+            "{name}={value}: {said}"
+        );
+    }
+
     let port = std::net::TcpListener::bind("127.0.0.1:0")
         .unwrap()
         .local_addr()
@@ -1707,6 +1729,8 @@ fn a_server_answers_requests() {
     std::fs::create_dir_all(files.join("css")).unwrap();
     std::fs::write(files.join("index.html"), "<h1>index</h1>").unwrap();
     std::fs::write(files.join("css/site.css"), "body { margin: 0 }").unwrap();
+    std::fs::create_dir_all(files.join("docs")).unwrap();
+    std::fs::write(files.join("docs/index.html"), "<h1>docs</h1>").unwrap();
     std::fs::write(files.join("blob.bin"), [0u8, 159, 146, 150]).unwrap();
     std::fs::write(dir.join("secret.txt"), "not to be served").unwrap();
 
@@ -1889,6 +1913,10 @@ fn a_server_answers_requests() {
     // Files: the type by the name, the index of a directory, and nothing outside it.
     has(&get(port, "/static"), &["200 OK", "text/html", "<h1>index</h1>"]);
     has(&get(port, "/static/css/site.css"), &["text/css", "body { margin: 0 }"]);
+    // A directory inside is answered with its own `index.html`, if it has one.
+    has(&get(port, "/static/docs/"), &["200 OK", "text/html", "<h1>docs</h1>"]);
+    has(&get(port, "/static/docs"), &["200 OK", "text/html", "<h1>docs</h1>"]);
+    has(&get(port, "/static/css/"), &["404 Not Found"]);
     has(
         &get(port, "/static/blob.bin"),
         &["application/octet-stream", "Content-Length: 4\r\n"],

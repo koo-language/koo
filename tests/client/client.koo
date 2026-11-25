@@ -37,6 +37,9 @@ fn main() ! http.Error | JsonError {
     print(http.get(base + "/cookie")?.header("set-cookie"))
     show("slow", http.get(base + "/slow", timeout: 500ms))
     show("slow enough", http.get(base + "/slow", timeout: 5s))
+    // What is left of a budget may be nothing, or less.
+    show("no time", http.get(base + "/echo", timeout: 0s))
+    show("less than none", http.get(base + "/echo", timeout: -3s))
     show("refused", http.get("http://localhost:1/"))
     show("bad", http.get("ftp://example.com/"))
     show("bad port", http.get("http://example.com:99999/"))
@@ -57,6 +60,8 @@ fn main() ! http.Error | JsonError {
 //= a=1; Path=/; HttpOnly; SameSite=Lax, b=2; Path=/; HttpOnly; SameSite=Lax
 //= slow: Timeout: localhost did not answer in the time it was given
 //= slow enough: 200 true 5 bytes, text/plain; charset=utf-8
+//= no time: Timeout: localhost was given no time to answer
+//= less than none: Timeout: localhost was given no time to answer
 //= refused: Connection: cannot connect to localhost:1: Connection refused
 //= bad: Address: `ftp://example.com/` is not an address that can be asked: one is `http://host/path` or `https://host:port/path?query`
 //= bad port: Address: `http://example.com:99999/` is not an address that can be asked: one is `http://host/path` or `https://host:port/path?query`

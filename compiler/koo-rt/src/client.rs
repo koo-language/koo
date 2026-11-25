@@ -474,6 +474,12 @@ pub unsafe extern "C" fn koo_http_fetch(
         request.push(b"\r\n");
         request.push(body);
 
+        // A time that is used up before the request is made, as what is left of a
+        // budget may be, is no time: the request is not made, and it is a timeout.
+        if nanos <= 0 {
+            request.release();
+            return failed(TIMEOUT, &[host, b" was given no time to answer"]);
+        }
         let started = koo_now_nanos();
         let deadline = started.saturating_add(nanos.max(1_000_000));
         let key = key_of(secure, host, port);

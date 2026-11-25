@@ -1669,6 +1669,12 @@ fn (self: HttpApp) serve(port: int = -1, workers: int = 0, max_body: int = 10485
                 kind: HttpErrorKind.Listen,
                 message: "the environment variable `PORT` is `{text}`, which is not a port",
             }
+            if at < 0 or at > 65535 {
+                fail HttpError {
+                    kind: HttpErrorKind.Listen,
+                    message: "the environment variable `PORT` is `{text}`, which is not a port",
+                }
+            }
         }
     }
     var processes := workers
@@ -1677,6 +1683,14 @@ fn (self: HttpApp) serve(port: int = -1, workers: int = 0, max_body: int = 10485
             processes = int.parse(text.trim()) else fail HttpError {
                 kind: HttpErrorKind.Listen,
                 message: "the environment variable `WEB_CONCURRENCY` is `{text}`, which is not a number of workers",
+            }
+            // None, or fewer, is a mistake in the setting, and not a way to ask for
+            // one a core, which is asked for by not setting it.
+            if processes < 1 {
+                fail HttpError {
+                    kind: HttpErrorKind.Listen,
+                    message: "the environment variable `WEB_CONCURRENCY` is `{text}`, which is not a number of workers",
+                }
             }
         }
     }

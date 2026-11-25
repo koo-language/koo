@@ -2834,7 +2834,26 @@ mod imp {
     ) {
         unsafe {
             let Some((index, keep)) = answering(id) else { return };
-            // A directory is not a file, though it opens like one.
+            // A directory is not a file, though it opens like one: what is sent for a
+            // directory is the `index.html` in it, if it has one.
+            let name = c_string(path);
+            let directory = opendir(name);
+            free(name);
+            let mut inside: *mut Header = core::ptr::null_mut();
+            let path = if directory.is_null() {
+                path
+            } else {
+                closedir(directory);
+                let named = bytes(path);
+                inside = crate::koo_str_from_bytes(named.as_ptr(), named.len() as i64);
+                let index: &[u8] = if named.ends_with(b"/") {
+                    b"index.html"
+                } else {
+                    b"/index.html"
+                };
+                crate::koo_str_append_bytes(&mut inside, index.as_ptr(), index.len() as i64);
+                inside as *const Header
+            };
             let name = c_string(path);
             let directory = opendir(name);
             free(name);
@@ -2866,6 +2885,9 @@ mod imp {
                     conn(index).output.extend(b"Not Found\n");
                 }
                 answered(index);
+                if !inside.is_null() {
+                    koo_free(inside as *mut u8);
+                }
                 return;
             }
             let size = size as usize;
@@ -2890,6 +2912,9 @@ mod imp {
             }
             fclose(file);
             answered(index);
+            if !inside.is_null() {
+                koo_free(inside as *mut u8);
+            }
         }
     }
 }

@@ -359,7 +359,7 @@ Consider `add`. It computes the number of the new order from the length of the l
 | | | |
 | --- | --- | --- |
 | `port:` | the port to listen on | what the environment variable `PORT` says, and 8080 if it is not set |
-| `workers:` | how many processes answer requests | what `WEB_CONCURRENCY` says, and one for each processor if it is not set |
+| `workers:` | how many processes answer requests | what `WEB_CONCURRENCY` says, which is one or more, and one for each processor if it is not set |
 | `max_body:` | the largest body of a request that is accepted, in bytes | 1048576 |
 | `log:` | whether to write a line on standard error for each request | `false` |
 
@@ -415,7 +415,7 @@ Not Found
 Not Found
 ```
 
-`app.files(prefix, directory)` serves the files under a directory at the paths under a prefix, with `index.html` for a directory itself, and tells the client the type of each file from its name. A path cannot climb out of the directory with `..`, as the last request tried to.
+`app.files(prefix, directory)` serves the files under a directory at the paths under a prefix, with `index.html` for a directory itself, the one at the prefix or any inside it, and tells the client the type of each file from its name. A path cannot climb out of the directory with `..`, as the last request tried to.
 
 On Linux, a server can be built so that the executable needs nothing else to be installed where it runs:
 
@@ -497,7 +497,7 @@ we do not sell that
 
 An answer with a status of failure is still an answer. `http.get` fails, with a `http.Error`, only when there is no answer to return, and the error's `kind` says why: `Address`, for a URL that is not one; `Connection`, for a server that could not be found or reached, or whose certificate is not to be trusted; `Timeout`, for one that did not answer in time; and `Protocol`, for an answer that is not HTTP. What to make of a 404 or a 500 is left to the program, which here turns a 404 of the price service into `none`.
 
-A request is given a time to finish in, with `timeout:`, which is thirty seconds unless it is said. The time covers everything, from finding the server to the last byte of its answer. A service that waits without limit on another is a service that hangs when the other does, so the time should be chosen, and should be short.
+A request is given a time to finish in, with `timeout:`, which is thirty seconds unless it is said. The time covers everything, from finding the server to the last byte of its answer. A time of zero or less, which what is left of a budget may be, is a timeout at once, and the request is not made. A service that waits without limit on another is a service that hangs when the other does, so the time should be chosen, and should be short.
 
 There is a function for each of the usual methods: `http.get` and `http.delete`, which send no body, and `http.post`, `http.put` and `http.patch`, which take one after the URL, as a string. The body is taken to be JSON unless `content_type:` says otherwise, so that a value is sent with
 
