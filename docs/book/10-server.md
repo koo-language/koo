@@ -550,7 +550,7 @@ A URL that begins `https` is asked over TLS, and the server's certificate must b
 
 The server speaks HTTP/1.1. It does not speak HTTPS or HTTP/2; where those are needed, it runs behind a proxy that does, which is how most services are deployed in any case. A body, of a request or a response, is handled whole, and cannot yet be read or written a piece at a time.
 
-The client keeps a connection that has carried a request, for a minute, and uses it for the next request to the same server, so that a service which asks another all day does not make a connection each time. It does not follow a redirection: an answer with a status of 301 or 302 is returned like any other, with the new place in its `location` header. The specification describes more; this book will describe it when it can be run.
+The client keeps a connection that has carried a request, for a minute, and uses it for the next request to the same server, so that a service which asks another all day does not make a connection each time. It does not follow a redirection: an answer with a status of 301 or 302 is returned like any other, with the new place in its `location` header. The body it sends and the body of an answer are text: where a server has `req.bytes()` and `http.bytes` for a body that is not text, the client has nothing yet, and what is not text in an answer is replaced as in `req.body()`. The specification describes more; this book will describe it when it can be run.
 
 What a server keeps for longer than it runs, it keeps in a database, and that is the subject of the next chapter.
 
