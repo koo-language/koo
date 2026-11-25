@@ -2090,6 +2090,25 @@ mod imp {
             // it has not, or will not listen so, the socket is of the older kind, as it
             // always was.
             let on = 1i32;
+            // Some systems let a socket of the newer kind take a port that another
+            // program holds at the addresses of the older kind, and the server would
+            // then start without a word and never hear the clients that reach the
+            // other. So the port is first asked for in the older way, as it always
+            // was, which says whether it is taken.
+            if port != 0 {
+                let probe = socket(AF_INET, SOCK_STREAM, 0);
+                if probe >= 0 {
+                    setsockopt(probe, sys::SOL_SOCKET, sys::SO_REUSEADDR, &on, 4);
+                    let address = sys::address(port as u16);
+                    let taken = bind(probe, &address as *const sys::SockAddr as *const u8, 16) != 0;
+                    let why = *errno_location();
+                    close(probe);
+                    if taken {
+                        *errno_location() = why;
+                        return failed(b"listen on", port);
+                    }
+                }
+            }
             let both = {
                 let fd = socket(sys::AF_INET6, SOCK_STREAM, 0);
                 let off = 0i32;

@@ -507,6 +507,16 @@ pub const INTRINSICS: &[Intrinsic] = &[
         ret: I::Str,
     },
     Intrinsic {
+        name: "json_depth",
+        params: &[],
+        ret: I::Int,
+    },
+    Intrinsic {
+        name: "json_resume",
+        params: &[I::Int, I::Bool],
+        ret: I::Unit,
+    },
+    Intrinsic {
         name: "json_begin",
         params: &[],
         ret: I::Unit,

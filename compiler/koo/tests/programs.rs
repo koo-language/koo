@@ -1628,8 +1628,13 @@ fn a_stopping_server_answers_what_it_has_in_hand() {
         let got = get(port, "/gone");
         assert!(got.ends_with("\r\n\r\nfalse\n"), "with {workers} workers: {got}");
         // With several workers, one that runs out of stack answers 500 and is
-        // replaced, and the server goes on.
+        // replaced, and the server goes on: also when it ran out while it was
+        // printing, and so cannot go on to answer what else it had in hand.
         if workers > 1 {
+            let failed = get(port, "/noisy/100000000");
+            assert!(failed.starts_with("HTTP/1.1 500 "), "with {workers} workers: {failed}");
+            let got = get(port, "/depth/7");
+            assert!(got.ends_with("\r\n\r\n7\n"), "with {workers} workers: {got}");
             let failed = get(port, "/depth/100000000");
             assert!(failed.starts_with("HTTP/1.1 500 "), "with {workers} workers: {failed}");
             let got = get(port, "/depth/7");

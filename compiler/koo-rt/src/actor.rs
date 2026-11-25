@@ -1473,6 +1473,9 @@ mod alone {
         unsafe { new_str(b"here") }
     }
     pub unsafe fn before_fork() {}
+    pub fn quiet() -> bool {
+        true
+    }
     #[unsafe(no_mangle)]
     pub unsafe extern "C" fn koo_actor_parent() -> *mut Header {
         unsafe { new_str(b"") }
@@ -1629,6 +1632,23 @@ mod remote {
     // What this process knows of others: its connection to each it has talked to. One
     // thread talks at a time, and holds `TALKING` from its message to the answer.
     static TALKING: Gate = Gate::new();
+    /// The thread that is talking to another process, if one is.
+    static TALKER: AtomicUsize = AtomicUsize::new(0);
+
+    /// Whether the thread that asks holds nothing of the support library's that others
+    /// wait for: it is not in the middle of talking to another process, and not in the
+    /// middle of making an actor's home. Asked where a signal is handled, of the thread
+    /// the signal interrupted, to know whether the thread may be sent elsewhere.
+    pub fn quiet() -> bool {
+        if TALKER.load(Acquire) == crate::thread::this_thread() {
+            return false;
+        }
+        let free = MAKING.try_lock();
+        if free {
+            MAKING.unlock();
+        }
+        free
+    }
     static mut HOMES: [(Name, i32); MOST_HOMES] = [(NO_NAME, -1); MOST_HOMES];
     static mut HOME_COUNT: usize = 0;
     static mut HOMES_OF: i32 = 0;
@@ -2026,6 +2046,7 @@ mod remote {
             koo_flush();
             gates();
             TALKING.lock();
+            TALKER.store(crate::thread::this_thread(), Release);
             for attempt in 0..3 {
                 let fd = deliver(name, ASK, method, body, attempt > 0);
                 let mut taken = [0u8; 1];
@@ -2043,6 +2064,7 @@ mod remote {
                 let size = u32::from_le_bytes(size) as usize;
                 let answer = room(&raw mut ANSWER, &raw mut ANSWER_CAP, size);
                 if !size_read || size < 2 || !read_full(fd, answer) {
+                    TALKER.store(0, Release);
                     TALKING.unlock();
                     die(&[b"an actor panicked while it answered `", asked, b"`"]);
                 }
@@ -2052,9 +2074,11 @@ mod remote {
                 me.answer_kind_len = kind.len().min(me.answer_kind.len());
                 me.answer_kind[..me.answer_kind_len].copy_from_slice(&kind[..me.answer_kind_len]);
                 let text = new_str(&answer[(2 + kind_len).min(size)..]);
+                TALKER.store(0, Release);
                 TALKING.unlock();
                 return text;
             }
+            TALKER.store(0, Release);
             TALKING.unlock();
             die(&[
                 b"`",
@@ -2083,7 +2107,9 @@ mod remote {
             koo_flush();
             gates();
             TALKING.lock();
+            TALKER.store(crate::thread::this_thread(), Release);
             let gone = deliver(name, SEND, method, body, false) < 0 && deliver(name, SEND, method, body, true) < 0;
+            TALKER.store(0, Release);
             TALKING.unlock();
             if gone {
                 let mut out = Buffer::new();

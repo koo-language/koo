@@ -2057,19 +2057,55 @@ fn h__origin(url: string) -> string {
 }
 
 /// Where a redirection leads from an address: another address, a path on the same
-/// server, or a path beside the one that was asked for.
+/// server, a path beside the one that was asked for, or the same path with another
+/// query. What follows a `#` is the reader's and not the server's, and is left off.
 fn h__toward(from: string, to: string) -> string {
-    if to.find("://") != none { return to }
+    var target := to
+    if mark := target.find("#") { target = target.slice(0, mark) }
+    // An address in full begins with what it is spoken in: `://` further on, in a
+    // query, is part of a path.
+    if at := target.find("://") {
+        head := target.slice(0, at)
+        if head != "" and head.find("/") == none and head.find("?") == none { return target }
+    }
     origin := h__origin(from)
-    if to.starts_with("//") { return origin.slice(0, (origin.find("://") else 0) + 1) + to }
-    if to.starts_with("/") { return origin + to }
+    if target.starts_with("//") { return origin.slice(0, (origin.find("://") else 0) + 1) + target }
     var path := from.slice(origin.len, from.len)
     if end := path.find("?") { path = path.slice(0, end) }
-    var last := 0
-    for i in 0..path.len {
-        if path.slice(i, i + 1) == "/" { last = i + 1 }
+    if mark := path.find("#") { path = path.slice(0, mark) }
+    if path == "" { path = "/" }
+    if target == "" { return origin + path }
+    if target.starts_with("?") { return origin + path + target }
+    var query := ""
+    if end := target.find("?") {
+        query = target.slice(end, target.len)
+        target = target.slice(0, end)
     }
-    return origin + path.slice(0, last) + (if last == 0 { "/" } else { "" }) + to
+    if not target.starts_with("/") {
+        var last := 0
+        for i in 0..path.len {
+            if path.slice(i, i + 1) == "/" { last = i + 1 }
+        }
+        target = path.slice(0, last) + target
+    }
+    return origin + h__plain(target) + query
+}
+
+/// A path without its `.` and `..`: `/a/b/../c` is `/a/c`. Nothing is above the top.
+fn h__plain(path: string) -> string {
+    parts := path.split("/")
+    var kept: [string] = []
+    for i in 1..parts.len {
+        part := parts[i]
+        if part == ".." {
+            if kept.len > 0 { kept = kept.slice(0, kept.len - 1) }
+        } else if part != "." {
+            kept.push(part)
+        }
+    }
+    last := parts[parts.len - 1]
+    if (last == "." or last == "..") and (kept.len == 0 or kept[kept.len - 1] != "") { kept.push("") }
+    return "/" + kept.join("/")
 }
 
 /// One request and its answer.

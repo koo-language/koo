@@ -52,6 +52,10 @@ fn main() ! http.Error | JsonError {
     kept: Echo = http.fetch("POST", base + "/kept", body: "x", redirects: 1)?.json()?
     print("{other.method} `{other.body}`, {kept.method} `{kept.body}`")
     print(http.get(base + "/dir/page", redirects: 1)?.body)
+    // Up a level, a query alone, and an address inside a query, which is no address.
+    print(http.get(base + "/a/b/up", redirects: 1)?.body)
+    print(http.get(base + "/a/query?old=1", redirects: 1)?.body)
+    print(http.get(base + "/a/next", redirects: 1)?.body)
     // What says who is asking goes to the server it was meant for, and no other.
     who := ["Authorization": "Bearer s3cret", "X-Token": "t"]
     print(http.get(base + "/same", headers: who, redirects: 1)?.body)
@@ -87,6 +91,9 @@ fn main() ! http.Error | JsonError {
 //= 302
 //= GET ``, POST `x`
 //= beside, with 1
+//= seen by way of up
+//= page 2
+//= seen by way of http://example.invalid/back
 //= Bearer s3cret, t
 //= nobody, t
 //= no time: Timeout: localhost was given no time to answer

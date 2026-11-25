@@ -519,11 +519,15 @@ extern "C" fn stack_signal(signal: i32, info: *const u8, context: *const u8) {
         let address = *(info.add(ADDRESS_AT) as *const usize);
         let low = me().stack_low;
         if low != 0 && address < low + 4096 && address + BELOW >= low {
-            overflowed();
+            let free = overflowed();
             // A handler of a server comes back to where it was called, as from any
             // panic, by way of a stack that has room: the signal is done with first,
-            // and the thread goes on from there.
-            if let Some((function, top)) = crate::http::landing()
+            // and the thread goes on from there. Not if it holds something that the
+            // rest of the process would wait for without end: it was printing, or
+            // talking to another process, when its stack ran out.
+            if free
+                && crate::actor::quiet()
+                && let Some((function, top)) = crate::http::landing()
                 && resume_at(context, function, top)
             {
                 return;

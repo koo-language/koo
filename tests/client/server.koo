@@ -92,6 +92,15 @@ fn depth(n: int) -> int {
     return depth(n - 1) + 1
 }
 
+// The same, printing as it goes: it runs out of stack with the printing in its hands.
+fn noisy(n: int) -> int {
+    if n == 0 {
+        return 0
+    }
+    print("level")
+    return noisy(n - 1) + 1
+}
+
 fn main() ! http.Error {
     visits := Visits.start()
     port := int.parse(os.env("PORT") else "") else 8080
@@ -135,6 +144,7 @@ fn main() ! http.Error {
         }
         return http.text("{after - before}\n")
     })
+    app.get("/noisy/:n", req -> http.text("{noisy(int.parse(req.param("n")) else 0)}\n"))
     app.get("/depth/:n", req -> http.text("{depth(int.parse(req.param("n")) else 0)}\n"))
     rooms := Rooms.start()
     app.get("/room/:name", req -> {
@@ -188,6 +198,13 @@ fn main() ! http.Error {
     app.post("/kept", req -> http.redirect("/echo", status: 307))
     app.get("/dir/page", req -> http.redirect("other?x=1"))
     app.get("/dir/other", req -> http.text("beside, with {req.query("x") else "nothing"}"))
+    app.get("/a/b/up", req -> http.redirect("../seen?via=up#top"))
+    app.get("/a/seen", req -> http.text("seen by way of {req.query("via") else "nothing"}"))
+    app.get("/a/next", req -> http.redirect("/a/seen?via=http://example.invalid/back"))
+    app.get("/a/query", req -> {
+        if page := req.query("page") { return http.text("page {page}") }
+        return http.redirect("?page=2")
+    })
     app.get("/whoami", req -> http.text("{req.header("Authorization") else "nobody"}, {req.header("X-Token") else "no token"}"))
     app.get("/same", req -> http.redirect("/whoami"))
     app.get("/away", req -> http.redirect("http://127.0.0.1:{port}/whoami"))

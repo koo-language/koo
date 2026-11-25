@@ -1395,7 +1395,9 @@ pub fn derive(package: &File, json: bool, rows: bool, envs: bool) -> Derived {
                     deriver.out,
                     "fn {name}._json_read(text: string, at: var int) -> {name} ! JsonError {{\n    \
                      start := __json_ws(text, at)\n    at = start\n    j__skip(text, var at)?\n    \
-                     value := {name}.from_json(text.slice(start, at))?\n    return value\n}}\n\n"
+                     depth := __json_depth()\n    wire := __json_is_wire()\n    \
+                     read := {name}.from_json(text.slice(start, at))\n    \
+                     __json_resume(depth, wire)\n    value := read?\n    return value\n}}\n\n"
                 );
             }
         }

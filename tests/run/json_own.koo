@@ -23,6 +23,19 @@ fn (self: Tag) to_json() -> string {
 
 type Line = { sku: string, price: Money, was: Money?, tags: [Tag] }
 
+// A type whose own `from_json` reads with another type's does not start the count of
+// how deep a text is nested over again: a text nested too deeply is still refused.
+type Inner = { n: int }
+
+type Amount = { cents: int }
+
+fn Amount.from_json(text: string) -> Amount ! JsonError {
+    inner := Inner.from_json(text)?
+    return Amount { cents: inner.n }
+}
+
+type Nest = { m: Amount?, kids: [Nest] }
+
 enum Tree<T> {
     Leaf
     Node { value: T }
@@ -38,6 +51,15 @@ fn main() ! JsonError {
         l => print(l)
         ! e => print("{e.path}: {e.message}")
     }
+    open := "\{\"m\":\{\"n\":1},\"kids\":[" + "\{\"kids\":[".repeat(49)
+    match Nest.from_json(open.repeat(60) + "\{\"kids\":[]}" + "]}".repeat(3000)) {
+        nest => print("read, though it is 3000 deep")
+        ! e => print(e.message)
+    }
+    match Nest.from_json("\{\"m\":\{\"n\":7},\"kids\":[\{\"kids\":[]}]}") {
+        nest => print(nest)
+        ! e => print(e.message)
+    }
     // A variant of a generic enum, written with its type in full.
     print("{Tree<int>.Leaf} {Tree<int>.Node { value: 3 }}")
 }
@@ -46,4 +68,6 @@ fn main() ! JsonError {
 //= Line { sku: "x", price: Money { cents: 500 }, was: Money { cents: 750 }, tags: [Tag { name: "old" }] }
 //= [Money { cents: 100 }, Money { cents: 225 }]
 //= /price: expected an amount, found true
+//= the text is nested too deeply
+//= Nest { m: Amount { cents: 7 }, kids: [Nest { m: none, kids: [] }] }
 //= Leaf Node { value: 3 }

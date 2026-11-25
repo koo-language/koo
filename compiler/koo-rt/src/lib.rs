@@ -884,12 +884,16 @@ pub unsafe extern "C" fn koo_init(argc: i32, argv: *const *const u8) {
 /// Reports that a thread's stack ran out, from the handler of the signal that says so.
 /// What the program had printed is written first, unless the thread was in the middle
 /// of printing, when it cannot be.
-fn overflowed() {
-    if PRINTING.try_lock() {
+///
+/// Returns whether the thread may go on afterwards, where it has somewhere to go on:
+/// it may not if it was printing, since what it was printing with is still locked, and
+/// would stay so.
+fn overflowed() -> bool {
+    let free = PRINTING.try_lock();
+    if free {
         let out = unsafe { &mut *core::ptr::addr_of_mut!(STDOUT) };
         write_all(1, &out.data[..out.len]);
         out.len = 0;
-        // The thread may go on, where a handler of a server comes back from this.
         PRINTING.unlock();
     }
     // This runs where a signal is handled, on a small stack and with whatever the
@@ -900,7 +904,7 @@ fn overflowed() {
             2,
             b"panic: the call stack is exhausted: a function calls itself too deeply or without end, or a value is nested too deeply\n",
         );
-        return;
+        return free;
     }
     // One line, put together here and written in one piece, with its time like every
     // other line of the log.
@@ -913,6 +917,7 @@ fn overflowed() {
     }
     line.push(b"\"level\":\"error\",\"message\":\"panic: the call stack is exhausted: a function calls itself too deeply or without end, or a value is nested too deeply\"}\n");
     write_all(2, &line.data[..line.len]);
+    free
 }
 
 unsafe fn c_text<'a>(s: *const u8) -> &'a [u8] {
@@ -1749,6 +1754,25 @@ pub unsafe extern "C" fn koo_json_begin() {
         me.json_nest = 0;
         // What is read is anyone's, until the reader says it is another process's.
         me.json_wire = false;
+    }
+}
+
+/// How deep in arrays and objects the thread's reading is, for a reader that is about
+/// to let a function of the program read a part of the text in its own way.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn koo_json_depth() -> i64 {
+    unsafe { thread::me().json_nest }
+}
+
+/// Puts the thread's reading back where it was when such a function has returned:
+/// whatever the function read, and however it began, the reading around it goes on as
+/// deep as it was and for whom it was.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn koo_json_resume(depth: i64, wire: bool) {
+    unsafe {
+        let me = thread::me();
+        me.json_nest = depth;
+        me.json_wire = wire;
     }
 }
 
