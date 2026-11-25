@@ -568,7 +568,7 @@ panic: `greet` was asked of an actor that is stopped (ActorStopped)
 
 Actors are the newest part of Koo, and the part that will grow the most. It is as well to know the limits of what is built.
 
-A method that never returns keeps the thread it is running on. There is no mechanism yet that takes a thread away from a method that has had it for too long. If every thread is kept by such a method, nothing else that was told can run.
+A method that runs for a long time keeps the thread it is running on, and one that never returns keeps it for ever. The other actors do not suffer for it: when every thread is busy and actors have been waiting for a hundredth of a second, another thread is started for them, up to a few hundred threads. But nothing takes the thread away from the method, and nothing can make its own actor answer anyone else until it is done. An ask of that actor waits as long as the method runs.
 
 When a told message panics, the storage that the message was using at that moment is not freed.
 

@@ -141,6 +141,10 @@ static SLEEPERS: AtomicUsize = AtomicUsize::new(0);
 static LOOKING: AtomicUsize = AtomicUsize::new(0);
 /// Whether one of the sleeping workers wakes now and then to see that nothing is stuck.
 static WATCHED: AtomicBool = AtomicBool::new(false);
+/// Whether actors wait while every worker is busy, and the monitor is awake to see how
+/// long: where it sleeps otherwise.
+static PRESSED: AtomicBool = AtomicBool::new(false);
+static MONITOR: Gate = Gate::new();
 
 // Waiting for a busy actor.
 static GATES: AtomicU32 = AtomicU32::new(0);
@@ -336,6 +340,7 @@ unsafe fn gates() {
             match GATES.compare_exchange(0, 1, AcqRel, Acquire) {
                 Ok(_) => {
                     QUEUE.open();
+                    MONITOR.open();
                     for bench in &BENCHES {
                         bench.open();
                     }
@@ -786,6 +791,9 @@ unsafe fn start_workers() {
             fatal(b"koo: the threads that run actors could not be started\n");
         }
         WORKERS.store(started, SeqCst);
+        // Without a monitor a method that runs for ever keeps a worker, and with enough
+        // of them nothing else runs; that is all that is lost if it cannot be started.
+        thread::start(monitor);
         POOL.store(2, Release);
     }
 }
@@ -796,6 +804,17 @@ unsafe fn wake() {
         QUEUE.lock();
         QUEUE.wake_one();
         QUEUE.unlock();
+    }
+}
+
+/// Wakes the monitor, if it sleeps: actors wait, and no worker is free to take them.
+unsafe fn press() {
+    unsafe {
+        if !PRESSED.swap(true, SeqCst) {
+            MONITOR.lock();
+            MONITOR.wake_one();
+            MONITOR.unlock();
+        }
     }
 }
 
@@ -810,8 +829,14 @@ unsafe fn enqueue(index: u32) {
         let len = RUN.len;
         QUEUE_LEN.store(len, SeqCst);
         RUNNING.unlock();
-        if SLEEPERS.load(SeqCst) == 0 || LOOKING.load(SeqCst) > 0 {
-            // Nobody sleeps, or a worker that is looking will find it.
+        if LOOKING.load(SeqCst) > 0 {
+            // A worker that is looking will find it.
+            return;
+        }
+        if SLEEPERS.load(SeqCst) == 0 {
+            // Every worker is busy. The monitor sees to it that the actor does not
+            // wait for long on one that is busy for long.
+            press();
             return;
         }
         // Waking a worker costs more than most letters do. One letter left by a worker
@@ -847,6 +872,9 @@ unsafe fn dequeue() -> u32 {
                     let looking = LOOKING.fetch_sub(1, SeqCst) - 1;
                     if SLEEPERS.load(SeqCst) > 0 && ((more > 0 && looking == 0) || watched) {
                         wake();
+                    } else if more > 0 && looking == 0 {
+                        // This worker was the last that was free, and actors still wait.
+                        press();
                     }
                     return index;
                 }
@@ -895,6 +923,39 @@ unsafe fn dequeue() -> u32 {
             QUEUE.unlock();
             LOOKING.fetch_add(1, SeqCst);
             looks = 0;
+        }
+    }
+}
+
+/// The monitor: while actors wait with every worker busy, it looks every ten
+/// milliseconds, and if in that time no worker has come free to take one, it starts
+/// another worker. So a method that computes for long, or for ever, costs the program a
+/// thread and not its other actors (Section 13.5).
+extern "C" fn monitor(_: *mut u8) -> *mut u8 {
+    unsafe {
+        loop {
+            MONITOR.lock();
+            while !PRESSED.load(SeqCst) {
+                MONITOR.wait();
+            }
+            MONITOR.unlock();
+            let mut seen = TAKEN.load(Relaxed);
+            loop {
+                let (wanted, mut left) = ([0i64, 10_000_000], [0i64; 2]);
+                nanosleep(&wanted, &mut left);
+                if QUEUE_LEN.load(SeqCst) == 0 {
+                    PRESSED.store(false, SeqCst);
+                    // An actor may have come to wait just as the monitor decided to sleep.
+                    if QUEUE_LEN.load(SeqCst) == 0 || PRESSED.swap(true, SeqCst) {
+                        break;
+                    }
+                }
+                let taken = TAKEN.load(Relaxed);
+                if taken == seen && SLEEPERS.load(SeqCst) == 0 && LOOKING.load(SeqCst) == 0 {
+                    stand_in();
+                }
+                seen = taken;
+            }
         }
     }
 }
@@ -1342,6 +1403,7 @@ unsafe fn alone_after_fork() {
         LOOKING.store(0, SeqCst);
         SLEEPERS.store(0, SeqCst);
         WATCHED.store(false, SeqCst);
+        PRESSED.store(false, SeqCst);
         RUN.len = 0;
         RUN.head = 0;
         QUEUE_LEN.store(0, Release);

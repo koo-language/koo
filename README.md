@@ -217,7 +217,8 @@ What has been checked, and how:
 - What is told runs on a pool of threads, one for each processor. A message is a small function value put on the actor's list, with nothing copied: what it carries is frozen, and shared. In Erlang a message is copied to the heap of the process it goes to.
 - The last row is mostly the difference between compiled code and Erlang's virtual machine, with both using every core.
 - An actor's mail has a limit, 1,024 messages unless it says otherwise with `@mailbox(n)`, and a sender that reaches it waits. That is why the fourth program holds 44 MB: before there was a limit it held 590 MB, with the same time.
-- Where Erlang is ahead: it can stop a process that runs too long and let another have the core, keeps each process's memory apart so that one can be collected or killed alone, has supervision trees, and runs across machines. Koo does none of that yet.
+- A method that computes for long keeps its thread, and when every thread is busy and actors wait, another is started within a hundredth of a second, so one slow actor does not hold up the rest.
+- Where Erlang is ahead: it can interrupt a process that runs too long, where Koo can only work around one; it keeps each process's memory apart so that one can be collected or killed alone, has supervision trees, and runs across machines. Koo does none of that yet.
 - A worker of a server is a process, and asks an actor through the process that owns it, over a socket, which costs a few microseconds: the server in [`examples/http/counter.koo`](examples/http/counter.koo) answers about 125,000 requests a second with an ask in each.
 
 Compile times are not comparable yet: every program here is small enough that both compilers finish in about a tenth of a second.

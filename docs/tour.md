@@ -816,7 +816,9 @@ The workers of a server are processes, not threads, and reach an actor through t
 
 An actor's mail has a limit, 1,024 messages unless the actor says otherwise with `@mailbox(n)` before its declaration. `send` to an actor whose mail is full waits for room, so a sender cannot get ahead of an actor without end, and `handle.try_send.method(...)` does not wait: it returns whether there was room.
 
-What is not there yet: a method that loops for ever keeps its thread, and when every thread is kept nothing else that was told runs; a panic in a message that was told leaks what the message was holding; and generic actors, `spawn` inside an actor, and functions or tuples in messages are not built.
+A method that runs for long keeps its thread, but not the other actors waiting: when every thread is busy, another is started for them.
+
+What is not there yet: nothing interrupts a method that runs for ever, so its own actor answers nobody else; a panic in a message that was told leaks what the message was holding; and generic actors, `spawn` inside an actor, and functions or tuples in messages are not built.
 
 ## Tests
 

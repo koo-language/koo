@@ -1,0 +1,35 @@
+// A method that runs for ever keeps a thread, and no more than that: when every worker
+// is kept by one, another worker is started, so that what the other actors were told is
+// still done (Section 13.5).
+import std/os
+
+actor Spinner {
+    var turns: int = 0
+
+    fn spin() {
+        while true {
+            turns = (turns + 1) % 1000003
+        }
+    }
+}
+
+actor Quick {
+    fn finish() {
+        print("the quick one ran")
+        os.exit(0)
+    }
+}
+
+fn main() {
+    var spinners: [Spinner] = []
+    for i in 0..40 {
+        spinners.push(Spinner.start())
+    }
+    for spinner in spinners {
+        spinner.send.spin()
+    }
+    quick := Quick.start()
+    quick.send.finish()
+}
+
+//= the quick one ran
