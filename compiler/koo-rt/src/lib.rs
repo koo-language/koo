@@ -887,12 +887,24 @@ fn overflowed() {
     // This runs where a signal is handled, on a small stack and with whatever the
     // program was in the middle of left as it was: nothing is allocated, and the line
     // for a log that is JSON is written out whole.
-    let text: &[u8] = if log::koo_log_json() {
-        b"{\"level\":\"error\",\"message\":\"panic: the call stack is exhausted: a function calls itself too deeply or without end, or a value is nested too deeply\"}\n"
-    } else {
-        b"panic: the call stack is exhausted: a function calls itself too deeply or without end, or a value is nested too deeply\n"
-    };
-    write_all(2, text);
+    if !log::koo_log_json() {
+        write_all(
+            2,
+            b"panic: the call stack is exhausted: a function calls itself too deeply or without end, or a value is nested too deeply\n",
+        );
+        return;
+    }
+    // One line, put together here and written in one piece, with its time like every
+    // other line of the log.
+    let mut line = Buffer::new();
+    line.push(b"{");
+    if log::koo_log_timed() {
+        line.push(b"\"time\":\"");
+        unsafe { log::stamp(&mut line) };
+        line.push(b"\",");
+    }
+    line.push(b"\"level\":\"error\",\"message\":\"panic: the call stack is exhausted: a function calls itself too deeply or without end, or a value is nested too deeply\"}\n");
+    write_all(2, &line.data[..line.len]);
 }
 
 unsafe fn c_text<'a>(s: *const u8) -> &'a [u8] {

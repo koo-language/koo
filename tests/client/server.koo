@@ -74,6 +74,14 @@ fn json<T>(value: T) -> string {
     return "<{value}>"
 }
 
+// As deep as it is asked to go: deep enough, and no stack holds it.
+fn depth(n: int) -> int {
+    if n == 0 {
+        return 0
+    }
+    return depth(n - 1) + 1
+}
+
 fn main() ! http.Error {
     visits := Visits.start()
     port := int.parse(os.env("PORT") else "") else 8080
@@ -117,6 +125,7 @@ fn main() ! http.Error {
         }
         return http.text("{after - before}\n")
     })
+    app.get("/depth/:n", req -> http.text("{depth(int.parse(req.param("n")) else 0)}\n"))
     rooms := Rooms.start()
     app.get("/room/:name", req -> {
         name := req.param("name")

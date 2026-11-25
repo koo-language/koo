@@ -1523,7 +1523,28 @@ fn handlers_wait_side_by_side() {
         heard,
         "HTTP/1.1 204 No Content;HTTP/1.1 404 Not Found;HTTP/1.1 204 No Content;"
     );
-    stop(server, port);
+    // A handler that runs out of stack cannot go on, and its process ends with it;
+    // but the request is answered first, as one that met any other panic is.
+    assert!(get(port, "/depth/1000").ends_with("\r\n\r\n1000\n"));
+    let failed = get(port, "/depth/100000000");
+    assert!(
+        failed.starts_with("HTTP/1.1 500 ") && failed.ends_with("Internal Server Error\n"),
+        "{failed}"
+    );
+    let mut server = server;
+    let mut ended = None;
+    for _ in 0..200 {
+        if let Ok(Some(status)) = server.0.try_wait() {
+            ended = status.code();
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(25));
+    }
+    assert_eq!(
+        ended,
+        Some(101),
+        "a server of one worker ends when its handler runs out of stack"
+    );
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -1589,6 +1610,14 @@ fn a_stopping_server_answers_what_it_has_in_hand() {
         );
         let got = get(port, "/gone");
         assert!(got.ends_with("\r\n\r\nfalse\n"), "with {workers} workers: {got}");
+        // With several workers, one that runs out of stack answers 500 and is
+        // replaced, and the server goes on.
+        if workers > 1 {
+            let failed = get(port, "/depth/100000000");
+            assert!(failed.starts_with("HTTP/1.1 500 "), "with {workers} workers: {failed}");
+            let got = get(port, "/depth/7");
+            assert!(got.ends_with("\r\n\r\n7\n"), "with {workers} workers: {got}");
+        }
         // A float that is not a number is itself when it comes back from an actor,
         // though the actor is in another process.
         for (asked, answer) in [

@@ -126,7 +126,7 @@ unsafe fn escaped(out: &mut pg::Buf, text: &[u8]) {
 }
 
 /// The time now, as `2026-01-31T12:00:00.123456Z`.
-unsafe fn stamp(out: &mut Buffer) {
+pub(crate) unsafe fn stamp(out: &mut Buffer) {
     unsafe {
         let mut time = [0i64; 2];
         clock_gettime(0, &mut time);

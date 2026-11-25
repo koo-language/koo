@@ -37,6 +37,7 @@ mod stub {
     unsafe fn none() -> *mut Header {
         unsafe { new_str(b"") }
     }
+    pub unsafe fn answer_before_ending() {}
     #[unsafe(no_mangle)]
     pub unsafe extern "C" fn koo_http_reset() {}
     #[unsafe(no_mangle)]
@@ -1812,8 +1813,35 @@ mod imp {
         }
     }
 
+    /// The thread that answers requests in this process.
+    static mut SERVING: usize = 0;
+
+    /// In a process that is about to end because the stack of a handler ran out: the
+    /// request the handler was answering is told, in a word, that the server failed.
+    /// This is called where a signal is handled, so it allocates nothing and writes
+    /// straight to the connection.
+    #[allow(static_mut_refs)]
+    pub unsafe fn answer_before_ending() {
+        unsafe {
+            if SERVING == 0 || SERVING != thread::this_thread() || CONNS.len == 0 || CURRENT.answered {
+                return;
+            }
+            let index = CURRENT.conn;
+            if index >= CONNS.len {
+                return;
+            }
+            let c = conn(index);
+            if c.fd >= 0 && c.handling && c.generation == CURRENT.generation {
+                let said: &[u8] = b"HTTP/1.1 500 Internal Server Error\r\nContent-Type: text/plain; charset=utf-8\r\n\
+                                    Content-Length: 22\r\nConnection: close\r\n\r\nInternal Server Error\n";
+                crate::write_all(c.fd, said);
+            }
+        }
+    }
+
     unsafe fn start_queue() {
         unsafe {
+            SERVING = thread::this_thread();
             QUEUE = sys::queue();
             ACCEPTING = true;
             sys::watch_listener(QUEUE, LISTEN);

@@ -464,12 +464,20 @@ pub unsafe fn watch_stack() {
 /// thread's stack, the stack ran out, and that is a panic. Anything else is not the
 /// program's doing: the signal is given back to the system, which ends the process as
 /// it would have.
+/// The thread that is running, as a number that no other thread has.
+pub fn this_thread() -> usize {
+    unsafe { pthread_self() }
+}
+
 extern "C" fn stack_signal(signal: i32, info: *const u8, _context: *const u8) {
     unsafe {
         let address = *(info.add(ADDRESS_AT) as *const usize);
         let low = me().stack_low;
         if low != 0 && address < low + 4096 && address + BELOW >= low {
             overflowed();
+            // A handler of a server that ran out of stack takes its process with it,
+            // but not without an answer to the request it was answering.
+            crate::http::answer_before_ending();
             crate::actor::remove_socket();
             _exit(101);
         }
