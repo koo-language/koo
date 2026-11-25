@@ -1,6 +1,6 @@
 //! Checking `match`: patterns, arms and exhaustiveness (Section 6.6).
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use koo_syntax::Span;
 use koo_syntax::ast;
@@ -459,12 +459,23 @@ impl<'a> Checker<'a> {
                 written => format!("`{written}`"),
             })
             .collect();
+        // Said once, though it is missing in more ways than one.
+        let mut said = HashSet::new();
+        let missing: Vec<String> = missing.into_iter().filter(|case| said.insert(case.clone())).collect();
         if !missing.is_empty() {
             let found = self.ty_name(ty);
             self.error(span, format!("this `match` does not cover {}", missing.join(", ")));
             self.label(format!("this is {}", super::a(&found)));
             self.note("a `match` covers every case (Section 6.6)");
-            if !missing.iter().any(|case| case.contains("`_`")) {
+            if missing.iter().all(|case| case.starts_with("`! ")) {
+                // Only errors are missing, and an error is matched by an arm that
+                // begins with `!`.
+                let first = missing[0].trim_matches('`').trim_end_matches(" { .. }");
+                let first = first.strip_prefix("! ").unwrap_or(first);
+                self.help(format!(
+                    "add an arm for each, as `! e: {first} => ...`, or a last arm `! e => ...` for every error not named"
+                ));
+            } else if !missing.iter().any(|case| case.contains("`_`")) {
                 self.help("add an arm for each, or a last arm `_ => ...` for every case not named");
             }
         }
@@ -494,7 +505,8 @@ impl<'a> Checker<'a> {
                     ErrSet::Of(ids) => {
                         for id in ids {
                             let error = &self.program.errors[*id];
-                            makers.push((format!("! {}", error.name), of(&error.fields)));
+                            let name = self.ty_name(&Ty::Error(*id));
+                            makers.push((format!("! {name}"), of(&error.fields)));
                         }
                     }
                 }
@@ -615,12 +627,24 @@ impl<'a> Checker<'a> {
                     _ => None,
                 })
                 .collect();
+            // A way of making the value that no arm names at all is missing whole: it
+            // is the case, and not each of the values its parts may have.
+            let named = matches!(first, Ty::Bool | Ty::Enum(_) | Ty::Optional(_) | Ty::Result(..));
+            if named && rows.is_empty() {
+                found.push([vec![name.clone()], vec!["_".to_string(); rest.len()]].concat());
+                if found.len() == limit {
+                    return found;
+                }
+                continue;
+            }
             let tys: Vec<Ty> = parts.iter().chain(rest).cloned().collect();
             for case in self.uncovered(&tys, &rows, limit - found.len(), steps) {
                 let (inner, tail) = case.split_at(parts.len());
                 let plain = inner.iter().all(|part| part == "_");
                 let shown = match first {
                     Ty::Tuple(_) => format!("({})", inner.join(", ")),
+                    // An error some of whose values are matched, and not the rest.
+                    Ty::Result(..) if !plain && maker > 0 => format!("{name} {{ .. }}"),
                     Ty::Optional(_) | Ty::Result(..) if !plain => inner[0].clone(),
                     Ty::Struct(_) if plain => "_".to_string(),
                     Ty::Enum(_) | Ty::Struct(_) if !plain => format!("{name} {{ .. }}"),

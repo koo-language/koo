@@ -29,8 +29,39 @@ fn main() {
     }
 }
 
+enum Why { Slow, Gone, Other }
+
+error Missing
+error Failed { why: Why, message: string }
+
+fn find(id: int) -> int ! Missing | Failed {
+    if id == 0 { fail Missing }
+    if id < 0 { fail Failed { why: Why.Gone, message: "below zero" } }
+    return id
+}
+
+// An error that no arm names is missing as the error it is, and not as the values of
+// its fields; one that is named for some of its values is missing for the rest.
+fn errors() {
+    match find(1) {
+        id => print(id)
+        ! Missing => print("missing")
+    }
+    match find(1) {
+        id => print(id)
+        ! Missing => print("missing")
+        ! Failed { why: Why.Slow, .. } => print("slow")
+    }
+    match find(1) {
+        ! e => print("failed")
+    }
+}
+
 //! error this `match` does not cover `(Red, true)`, `(Green, false)`
 //! error this `match` does not cover `(Circle, _)`, `(Rect, _)`
 //! error this `match` does not cover `((true, true), Red)`, `((true, true), Amber)`, `((true, false), Amber)`, `((false, false), Amber)`, `((false, false), Green)`
 //! error this `match` does not cover the remaining values: add a `_` arm
-//! error this `match` does not cover `(none, false)`, `(a value, true)`, `(a value, false)`
+//! error this `match` does not cover `(none, false)`, `(a value, _)`
+//! error this `match` does not cover `! Failed`
+//! error this `match` does not cover `! Failed { .. }`
+//! error this `match` does not cover the success value
