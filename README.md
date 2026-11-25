@@ -6,7 +6,7 @@ Koo is a compiled programming language for backend services. It aims for the per
 
 ## Try it
 
-Koo runs on macOS (arm64) and on Linux (x86-64 and arm64). It needs clang 15 or newer on your `PATH` to turn a program into an executable (`xcode-select --install` on macOS, `apt install clang` on Debian and Ubuntu). If your clang has another name, say so: `KOO_CLANG=clang-19`.
+Koo runs on macOS (arm64) and on Linux (x86-64 and arm64). It needs clang 15 or newer on your `PATH` to turn a program into an executable (`xcode-select --install` on macOS, `apt install clang` on Debian and Ubuntu). If your clang has another name, say so: `KOO_CLANG=clang-19`. A program for Linux is built on any of them, a Mac included: `koo build --target linux-x86-64` (or `linux-arm64`), which also needs LLVM's linker (`brew install lld`, `apt install lld`).
 
 **From a release.** There is no release yet. When there is one,
 
@@ -152,7 +152,7 @@ fn main() ! sql.Error | http.Error {
 | `wasm32-none` | Core WebAssembly module for plugins and embedding | 1 |
 | `x86_64-macos`, `x86_64-windows`, `arm64-windows` | Native binary | 2 |
 
-The table is where the language is going. Today the compiler builds for the machine it runs on, and that machine is macOS on arm64, or Linux on x86-64 or arm64. The whole test suite passes on macOS, on arm64 Linux, and on x86-64 Linux under emulation, database and TLS included; it has not been run on x86-64 hardware yet. On Linux, `koo build --static` links everything in, so the program runs in an empty container ([`examples/http/Dockerfile`](examples/http/Dockerfile) makes one of 2.4 MB). Not yet: building for another machine than the one at hand, Windows, and WebAssembly.
+The table is where the language is going. Today the compiler runs on macOS on arm64 and on Linux on x86-64 and arm64. It builds for the machine it runs on, and with `--target linux-arm64` or `--target linux-x86-64` it builds for Linux from any of them: a program with everything linked in, musl included, and so without TLS. The whole test suite passes on macOS, on arm64 Linux, and on x86-64 Linux under emulation, database and TLS included; it has not been run on x86-64 hardware yet. On Linux, `koo build --static` links everything in, so the program runs in an empty container ([`examples/http/Dockerfile`](examples/http/Dockerfile) makes one of 2.4 MB). Not yet: building for macOS from Linux, Windows, and WebAssembly.
 
 ## What works today
 

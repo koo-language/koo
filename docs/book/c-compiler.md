@@ -21,9 +21,23 @@ Where a command takes a file it also takes a directory, which is a *package*: al
 | `--release` | optimize the program. Without it the program is built quickly and runs slowly; with it, the reverse. Use it for anything whose speed matters |
 | `-o path` | with `build`, the name of the executable |
 | `--static` | on Linux, make an executable that depends on nothing installed on the machine it runs on |
+| `--target name` | make an executable for Linux on whatever machine the compiler is run on: `linux-arm64` or `linux-x86-64` |
 | `--sanitize` | build with AddressSanitizer, and `--sanitize=thread` with ThreadSanitizer: tools that check the program, as it runs, for misuse of memory and for races between threads. A correct compiler makes both impossible in a Koo program, and these options exist to check the compiler |
 
 The compiler translates a program into the intermediate language of LLVM, and uses `clang` to turn that into an executable, so `clang`, version 15 or later, must be installed. If it is installed under another name, the environment variable `KOO_CLANG` gives the name.
+
+Without `--target` a program is built for the machine at hand. With it, `koo build` makes a program for Linux on either of the architectures Koo runs on, from any machine the compiler runs on, a Mac included: a server is written on one machine and built there for the container it will run in.
+
+```sh
+koo build --release --target linux-x86-64 server.koo
+```
+
+The two targets are `linux-arm64` and `linux-x86-64`, and the names Docker gives them, `linux/arm64` and `linux/amd64`, are read as the same. If `--target` is not given and the environment variable `KOO_TARGET` is set, it names the target. Four things are to be known about a program built this way.
+
+- Everything is linked into it, as with `--static`, so it runs on any Linux of its architecture, an empty container included. The C library in it is musl, which the compiler carries with it, and not the one of the machine it is built on.
+- Like any program built with `--static`, it cannot load a library, and so has no TLS: it cannot ask another server at an `https` address, and its connection to a database is not encrypted (Section 11.7 says what each `sslmode` does then).
+- `clang` makes the code, as always, but it links a program only for the machine it is on. Linking for another takes LLVM's linker, `ld.lld`: `brew install lld` on macOS, `apt install lld` on Debian and Ubuntu. The one a Rust toolchain carries is found as well, and `KOO_LLD` names one that is somewhere else.
+- `koo run` and `koo test` take the option only when it names the kind of machine they are run on, since no other can run the program. `--sanitize` does not go with it.
 
 Some environment variables affect a program as it runs. `KOO_LOG_LEVEL`, `KOO_LOG` and `KOO_LOG_TIME` say what the program logs and in what form (Section 8.10). `KOO_THREADS` is the number of threads that run what actors are told; without it there is one for each processor. `KOO_SIDE_BY_SIDE=off` makes a worker of a server answer one request at a time, as it did before a handler that waits could be left to wait (Section 10.7); it is there in case of trouble. And if `KOO_LEAKS` is set, a program that ends normally with memory still allocated says so and ends with status 102. This too is a check on the compiler, since a Koo program has no way to leak memory by its own doing.
 
@@ -149,7 +163,7 @@ The [specification](../../SPEC.md) describes more than the compiler builds. For 
 
 *The library.* There are no sockets for a program's own use, only the clients for HTTP and PostgreSQL; no digest but SHA-256; no encryption except of those clients' connections; and no way to read a file except whole. Section 11.8 lists what `std/sql` leaves out.
 
-*Targets.* The compiler builds for the machine it runs on: macOS on arm64, and Linux on x86-64 and arm64. It does not build for another machine than its own, or for WebAssembly.
+*Targets.* The compiler runs on macOS on arm64, and on Linux on x86-64 and arm64, and builds for the machine it runs on; with `--target` it builds for either Linux from any of the three (Section C.1). It does not build for macOS from Linux, for Windows, or for WebAssembly.
 
 ## C.5 Reliability
 

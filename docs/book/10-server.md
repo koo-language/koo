@@ -464,6 +464,12 @@ On Linux, a server can be built so that the executable needs nothing else to be 
 koo build --release --static server.koo
 ```
 
+And it can be built for Linux on another machine, a Mac included, with everything linked in the same way; Section C.1 says what that takes.
+
+```sh
+koo build --release --target linux-x86-64 server.koo
+```
+
 ## 10.8 Asking Other Servers
 
 A service is seldom alone. To answer its own requests it asks other services, over the same protocol, and `std/http` is a client as well as a server. `http.get(url)` makes a request and returns the answer, a `http.Reply`, which has the fields `status`, `headers` and `body`, and three methods: `reply.header(name)` is a header, if the answer has it, however its name is written; `reply.ok()` says whether the status is one of success, 200 to 299; and `reply.json()` reads the body into the type that is expected, like `req.json()`.

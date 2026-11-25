@@ -114,6 +114,106 @@ fn programs_run_as_expected() {
     assert!(failures.is_empty(), "\n{}", failures.join("\n\n"));
 }
 
+/// `koo build --target` builds a program for Linux on any machine: the file it leaves is
+/// a Linux program for the architecture that was named, with everything linked in. On a
+/// machine of that kind the program is run as well. A compiler built without a target,
+/// or a machine without the linker, says which is missing, and then the test says so
+/// and checks nothing for that target.
+#[test]
+fn a_program_is_built_for_another_machine() {
+    let koo = env!("CARGO_BIN_EXE_koo");
+    let hello = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples/hello.koo");
+    let dir = std::env::temp_dir().join(format!("koo-targets-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let here = if cfg!(target_os = "linux") {
+        std::env::consts::ARCH
+    } else {
+        ""
+    };
+    for (target, spelled, machine, architecture) in [
+        ("linux-arm64", "linux/arm64", 0xb7, "aarch64"),
+        ("linux-x86-64", "linux/amd64", 0x3e, "x86_64"),
+    ] {
+        for (name, release) in [(target, false), (spelled, true)] {
+            let executable = dir.join(format!("{target}-{release}"));
+            let mut build = Command::new(koo);
+            build
+                .arg("build")
+                .arg("--target")
+                .arg(name)
+                .arg(&hello)
+                .arg("-o")
+                .arg(&executable);
+            if release {
+                build.arg("--release");
+            }
+            let built = build.env_remove("KOO_TARGET").output().expect("koo runs");
+            let said = String::from_utf8_lossy(&built.stderr);
+            if !built.status.success() && (said.contains("was built without") || said.contains("needs LLVM's linker")) {
+                eprintln!("{target} is not checked: {said}");
+                continue;
+            }
+            assert!(built.status.success(), "{target}: {said}");
+            let program = std::fs::read(&executable).unwrap();
+            assert_eq!(&program[..5], b"\x7fELF\x02", "{target}: a 64-bit Linux program");
+            assert_eq!(
+                u16::from_le_bytes([program[18], program[19]]),
+                machine,
+                "{target}: the architecture"
+            );
+            // A program that loads its C library when it starts names the loader.
+            assert!(
+                !program.windows(8).any(|bytes| bytes == b"/lib/ld-"),
+                "{target}: all linked in"
+            );
+            if here == architecture {
+                let output = Command::new(&executable).output().expect("the program runs");
+                assert_eq!(
+                    String::from_utf8_lossy(&output.stdout),
+                    "hello, world\nfib(30) from Koo is 832040\n",
+                    "{target}"
+                );
+                assert!(output.status.success(), "{target}");
+            }
+        }
+    }
+    let refused = |arguments: &[&str], said: &str| {
+        let output = Command::new(koo)
+            .args(arguments)
+            .arg(&hello)
+            .env_remove("KOO_TARGET")
+            .output()
+            .expect("koo runs");
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert_eq!(output.status.code(), Some(2), "{arguments:?}: {stderr}");
+        assert!(stderr.contains(said), "{arguments:?}: {stderr}");
+    };
+    refused(
+        &["build", "--target", "windows"],
+        "there is no target `windows`. The targets are",
+    );
+    refused(&["build", "--target=macos"], "A program for macOS is built on a Mac");
+    let output = Command::new(koo)
+        .args(["build", "--target"])
+        .output()
+        .expect("koo runs");
+    assert!(String::from_utf8_lossy(&output.stderr).contains("`--target` is followed by a target"));
+    refused(
+        &["build", "--sanitize", "--target", "linux-arm64"],
+        "`--sanitize` is for a program built without",
+    );
+    let other = if here == "aarch64" {
+        "linux-x86-64"
+    } else {
+        "linux-arm64"
+    };
+    refused(
+        &["run", "--target", other],
+        "this machine does not run a program built for",
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 /// A chain of list methods prints the same whether the compiler makes one pass of it or
 /// not (Section 4.5). `programs_run_as_expected` ran the fused form; this runs each
 /// program that has a chain with the fusing turned off.
@@ -164,6 +264,7 @@ fn actors_share_only_what_is_frozen() {
         let built = Command::new(env!("CARGO_BIN_EXE_koo"))
             .arg("build")
             .arg("--sanitize=thread")
+            .env_remove("KOO_TARGET")
             .arg(&path)
             .arg("-o")
             .arg(&executable)

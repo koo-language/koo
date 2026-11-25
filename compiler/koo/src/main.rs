@@ -11,6 +11,108 @@ use koo_syntax::{Diagnostic, SourceMap, dump, parse_file};
 /// The support library, built by `build.rs` and linked into every program.
 static RUNTIME: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/libkoo_rt.a"));
 
+/// A kind of machine that `koo build --target` builds a program for, on this machine or
+/// on one of another kind.
+struct Target {
+    name: &'static str,
+    /// What clang calls it.
+    triple: &'static str,
+    /// What `clang -print-targets` calls its architecture.
+    architecture: &'static str,
+    /// Whether this machine runs the programs built for it.
+    here: bool,
+    /// The support library and the C library for it, as `build.rs` left them: each a
+    /// file's name and what is in it, which is nothing in a compiler built without them.
+    parts: [(&'static str, &'static [u8]); 7],
+}
+
+macro_rules! parts {
+    ($target:literal: $($file:literal),*) => {
+        [$(($file, include_bytes!(concat!(env!("OUT_DIR"), "/", $target, "/", $file)) as &[u8])),*]
+    };
+}
+
+/// What comes before a program's own code where it is linked, and what comes after.
+const BEFORE: [&str; 3] = ["crt1.o", "crti.o", "crtbegin.o"];
+const LIBRARIES: [&str; 2] = ["libkoo_rt.a", "libc.a"];
+const AFTER: [&str; 2] = ["crtend.o", "crtn.o"];
+
+static TARGETS: [Target; 2] = [
+    Target {
+        name: "linux-arm64",
+        triple: "aarch64-unknown-linux-musl",
+        architecture: "aarch64",
+        here: cfg!(all(target_os = "linux", target_arch = "aarch64")),
+        parts: parts!("linux-arm64": "crt1.o", "crti.o", "crtbegin.o", "libkoo_rt.a", "libc.a", "crtend.o", "crtn.o"),
+    },
+    Target {
+        name: "linux-x86-64",
+        triple: "x86_64-unknown-linux-musl",
+        architecture: "x86-64",
+        here: cfg!(all(target_os = "linux", target_arch = "x86_64")),
+        parts: parts!("linux-x86-64": "crt1.o", "crti.o", "crtbegin.o", "libkoo_rt.a", "libc.a", "crtend.o", "crtn.o"),
+    },
+];
+
+/// The target a name stands for. Docker's spelling of one is read too (`linux/amd64`).
+fn target(name: &str) -> Option<&'static Target> {
+    let name = name.to_ascii_lowercase().replace(['/', '_'], "-");
+    let name = match name.as_str() {
+        "linux-aarch64" => "linux-arm64",
+        "linux-amd64" => "linux-x86-64",
+        other => other,
+    };
+    TARGETS.iter().find(|target| target.name == name)
+}
+
+/// The linker that links a program for Linux on any machine: LLVM's `ld.lld`. `KOO_LLD`
+/// names it; otherwise it is looked for on the path, where Homebrew puts LLVM, and in a
+/// Rust toolchain, which carries one.
+fn linker() -> Result<std::ffi::OsString, String> {
+    let works = |linker: &std::ffi::OsStr| {
+        Command::new(linker)
+            .arg("--version")
+            .output()
+            .is_ok_and(|output| output.status.success())
+    };
+    if let Some(named) = std::env::var_os("KOO_LLD").filter(|named| !named.is_empty()) {
+        return if works(&named) {
+            Ok(named)
+        } else {
+            Err(format!(
+                "cannot run `{}`, which KOO_LLD names as the linker",
+                named.to_string_lossy()
+            ))
+        };
+    }
+    let mut candidates: Vec<std::ffi::OsString> = vec!["ld.lld".into()];
+    candidates.extend((15..=22).rev().map(|version| format!("ld.lld-{version}").into()));
+    for prefix in ["/opt/homebrew/opt", "/usr/local/opt"] {
+        candidates.extend(["lld", "llvm"].map(|formula| format!("{prefix}/{formula}/bin/ld.lld").into()));
+    }
+    if let Some(found) = candidates.into_iter().find(|candidate| works(candidate)) {
+        return Ok(found);
+    }
+    let sysroot = Command::new("rustc").args(["--print", "sysroot"]).output().ok();
+    let sysroot = sysroot.map(|output| PathBuf::from(String::from_utf8_lossy(&output.stdout).trim()));
+    let toolchains = sysroot.and_then(|sysroot| std::fs::read_dir(sysroot.join("lib/rustlib")).ok());
+    for toolchain in toolchains.into_iter().flatten().flatten() {
+        let carried = toolchain.path().join("bin/gcc-ld/ld.lld");
+        if carried.exists() && works(carried.as_os_str()) {
+            return Ok(carried.into_os_string());
+        }
+    }
+    let install = if cfg!(target_os = "macos") {
+        "`brew install lld`"
+    } else {
+        "your package manager: `apt install lld`, `dnf install lld` or `apk add lld`"
+    };
+    Err(format!(
+        "building for another kind of machine needs LLVM's linker `ld.lld`, which is not here. Install it \
+         with {install}, and if it has another name or place, say so with KOO_LLD=<path>."
+    ))
+}
+
 const USAGE: &str = "\
 Usage: koo <command> [options] <file.koo | directory>
 
@@ -31,6 +133,9 @@ Options for run and build:
                  nothing is shared between threads that should not be
   --static       Link everything in, so that the program runs on any Linux of its
                  architecture, including an empty container
+  --target <t>   Build for Linux on any machine: `linux-arm64` or `linux-x86-64`.
+                 The program has everything linked in, as with --static.
+                 KOO_TARGET in the environment says the same
 
   -h, --help       Print this help
   -V, --version    Print the version
@@ -295,6 +400,8 @@ fn build(args: &[String], mode: Mode, program_args: &[std::ffi::OsString]) -> Ex
     // The sanitizer to build with: "address" or "thread".
     let mut sanitize: Option<&str> = None;
     let mut fixed = false;
+    // The machine to build for when it is named: `--target`, or `KOO_TARGET`.
+    let mut wanted: Option<String> = std::env::var("KOO_TARGET").ok().filter(|name| !name.is_empty());
     let mut output: Option<PathBuf> = None;
     let mut path: Option<&String> = None;
     let mut i = 0;
@@ -305,6 +412,15 @@ fn build(args: &[String], mode: Mode, program_args: &[std::ffi::OsString]) -> Ex
             "--sanitize" | "--sanitize=address" => sanitize = Some("address"),
             "--sanitize=thread" => sanitize = Some("thread"),
             "--static" => fixed = true,
+            "--target" if i + 1 < args.len() => {
+                i += 1;
+                wanted = Some(args[i].clone());
+            }
+            option if option.starts_with("--target=") => wanted = Some(option["--target=".len()..].to_string()),
+            "--target" => {
+                eprintln!("koo {command}: `--target` is followed by a target: `linux-arm64` or `linux-x86-64`");
+                return ExitCode::from(2);
+            }
             "-o" if !run && i + 1 < args.len() => {
                 i += 1;
                 output = Some(PathBuf::from(&args[i]));
@@ -325,6 +441,45 @@ fn build(args: &[String], mode: Mode, program_args: &[std::ffi::OsString]) -> Ex
         eprintln!("koo {command}: no file given\n\n{USAGE}");
         return ExitCode::from(2);
     };
+    let cross = match wanted.as_deref().map(|name| (name, target(name))) {
+        None => None,
+        Some((_, Some(target))) => Some(target),
+        Some((name, None)) => {
+            let apple = ["mac", "darwin", "apple"]
+                .iter()
+                .any(|word| name.to_ascii_lowercase().contains(word));
+            let apple = if apple {
+                " A program for macOS is built on a Mac, without `--target`."
+            } else {
+                ""
+            };
+            eprintln!(
+                "koo {command}: there is no target `{name}`. The targets are `linux-arm64` and `linux-x86-64`.{apple}"
+            );
+            return ExitCode::from(2);
+        }
+    };
+    if let Some(target) = cross {
+        if run && !target.here {
+            eprintln!(
+                "koo {command}: this machine does not run a program built for {}. `koo build --target {}` builds it.",
+                target.name, target.name
+            );
+            return ExitCode::from(2);
+        }
+        if sanitize.is_some() {
+            eprintln!("koo {command}: `--sanitize` is for a program built without `--target`");
+            return ExitCode::from(2);
+        }
+        if !emit_llvm && target.parts.iter().any(|(_, content)| content.is_empty()) {
+            eprintln!(
+                "koo {command}: this `koo` was built without what it takes to build for {}. It has it when the \
+                 compiler is built where Rust has that target: `rustup target add {}`.",
+                target.name, target.triple
+            );
+            return ExitCode::FAILURE;
+        }
+    }
     let Some(sources) = sources(path, mode == Mode::Test) else {
         return ExitCode::FAILURE;
     };
@@ -404,7 +559,7 @@ fn build(args: &[String], mode: Mode, program_args: &[std::ffi::OsString]) -> Ex
     // (`koo-rt/src/tls.rs`): by the system's loader, or, in a program that is linked
     // statically and has none, not at all.
     let mut ir = ir;
-    ir.push_str(if fixed {
+    ir.push_str(if fixed || cross.is_some() {
         "define ptr @koo_dlopen(ptr %name) {\n  ret ptr null\n}\n\
          define ptr @koo_dlsym(ptr %library, ptr %name) {\n  ret ptr null\n}\n"
     } else {
@@ -432,6 +587,8 @@ fn build(args: &[String], mode: Mode, program_args: &[std::ffi::OsString]) -> Ex
         (None, false) => PathBuf::from(stem),
     };
     // LLVM does the optimizing and the linking, through the system's clang (Section 13.2).
+    // A program for a named target is all linked in, whether or not `--static` says so.
+    let fixed = fixed && cross.is_none();
     if fixed && cfg!(target_os = "macos") {
         eprintln!("koo {command}: macOS does not link a program statically; `--static` is for Linux");
         return ExitCode::from(2);
@@ -450,15 +607,38 @@ fn build(args: &[String], mode: Mode, program_args: &[std::ffi::OsString]) -> Ex
         clang.arg("-pthread");
     }
     let loads = !fixed && !cfg!(target_os = "macos");
-    let status = clang
+    clang
         .arg(if release { "-O3" } else { "-O0" })
-        .arg("-Wno-override-module")
-        .arg(&ir_path)
-        .arg(&runtime)
-        .args(loads.then_some("-ldl"))
-        .arg("-o")
-        .arg(&executable)
-        .status();
+        .arg("-Wno-override-module");
+    let object = dir.path.join("program.o");
+    let status = match cross {
+        None => clang
+            .arg(&ir_path)
+            .arg(&runtime)
+            .args(loads.then_some("-ldl"))
+            .arg("-o")
+            .arg(&executable)
+            .status(),
+        // For a named target clang makes the code and no more: the linker of the machine
+        // it runs on may not know the other's programs, and its C library is not theirs.
+        Some(target) => {
+            let mut clang = Command::new(&compiler);
+            clang.arg(format!("--target={}", target.triple));
+            // What a program's atomic operations would otherwise call is in a library of
+            // the C compiler's, which is not linked in.
+            if target.architecture == "aarch64" {
+                clang.arg("-mno-outline-atomics");
+            }
+            clang
+                .arg(if release { "-O3" } else { "-O0" })
+                .arg("-Wno-override-module")
+                .arg("-c")
+                .arg(&ir_path)
+                .arg("-o")
+                .arg(&object)
+                .status()
+        }
+    };
     match status {
         Ok(status) if status.success() => {}
         Ok(_) => {
@@ -474,6 +654,22 @@ fn build(args: &[String], mode: Mode, program_args: &[std::ffi::OsString]) -> Ex
                     "koo: `{compiler}` is clang {major}, and Koo needs clang 15 or newer. Install a newer one, \
                      and if it has another name, such as `clang-19`, say so with KOO_CLANG=clang-19."
                 ),
+                _ if cross.is_some_and(|target| {
+                    let listed = Command::new(&compiler).arg("-print-targets").output().ok();
+                    listed.is_some_and(|listed| {
+                        let listed = String::from_utf8_lossy(&listed.stdout).to_string();
+                        !listed
+                            .lines()
+                            .any(|line| line.split_whitespace().next() == Some(target.architecture))
+                    })
+                }) =>
+                {
+                    eprintln!(
+                        "koo: `{compiler}` does not make code for {}: `{compiler} -print-targets` lists what it \
+                         does. Name a clang that does with KOO_CLANG=<name>.",
+                        cross.map_or("", |target| target.name)
+                    )
+                }
                 _ if fixed => eprintln!(
                     "koo: the program could not be linked statically. That needs the static C library: \
                      `libc6-dev` on Debian and Ubuntu, `glibc-static` on Fedora, `musl-dev` on Alpine."
@@ -501,6 +697,54 @@ fn build(args: &[String], mode: Mode, program_args: &[std::ffi::OsString]) -> Ex
             eprintln!("koo: cannot run `{compiler}`, which builds the program: {err}");
             eprintln!("     Koo needs clang 15 or newer. Install it with {install}.");
             return ExitCode::FAILURE;
+        }
+    }
+    if let Some(target) = cross {
+        let linker = match linker() {
+            Ok(linker) => linker,
+            Err(why) => {
+                eprintln!("koo: {why}");
+                return ExitCode::FAILURE;
+            }
+        };
+        let written = target
+            .parts
+            .iter()
+            .try_for_each(|(name, content)| std::fs::write(dir.path.join(name), content));
+        if let Err(err) = written {
+            eprintln!("koo: cannot prepare the build directory: {err}");
+            return ExitCode::FAILURE;
+        }
+        let mut link = Command::new(&linker);
+        link.args(["-static", "--gc-sections", "--strip-debug", "--eh-frame-hdr"])
+            .args(["-z", "noexecstack", "-z", "relro", "-z", "now", "-o"])
+            .arg(&executable)
+            .args(BEFORE.map(|part| dir.path.join(part)))
+            .arg(&object)
+            .arg("--start-group")
+            .args(LIBRARIES.map(|part| dir.path.join(part)))
+            .arg("--end-group")
+            .args(AFTER.map(|part| dir.path.join(part)));
+        match link.status() {
+            Ok(status) if status.success() => {}
+            Ok(_) => {
+                dir.keep = true;
+                eprintln!(
+                    "koo: `{}` could not link the program for {}. This is a bug in the compiler; what it was \
+                     given is in {}",
+                    linker.to_string_lossy(),
+                    target.name,
+                    dir.path.display()
+                );
+                return ExitCode::FAILURE;
+            }
+            Err(err) => {
+                eprintln!(
+                    "koo: cannot run `{}`, which links the program: {err}",
+                    linker.to_string_lossy()
+                );
+                return ExitCode::FAILURE;
+            }
         }
     }
     if !run {
