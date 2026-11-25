@@ -329,7 +329,7 @@ pub const INTRINSICS: &[Intrinsic] = &[
     // Databases (`std/sql`, `koo-rt/src/pg.rs`).
     Intrinsic {
         name: "sql_open",
-        params: &[I::Str, I::Int],
+        params: &[I::Str, I::Int, I::Int],
         ret: I::Int,
     },
     Intrinsic {

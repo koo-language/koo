@@ -194,6 +194,8 @@ struct Db {
     /// A file of the authorities to trust, in place of the system's.
     authorities: Buf,
     limit: usize,
+    /// How long, in milliseconds, a statement waits for a connection when all are in use.
+    patience: i64,
     conns: [Conn; MOST_CONNS],
 }
 
@@ -219,6 +221,7 @@ const NO_DB: Db = Db {
     secure: 1,
     authorities: Buf::new(),
     limit: 0,
+    patience: 30_000,
     conns: [NO_CONN; MOST_CONNS],
 };
 
@@ -826,9 +829,27 @@ pub(crate) unsafe fn dial(host: &[u8], port: u16, seconds: i32, why: &mut Buffer
         }
         let on = 1i32;
         setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &on, 4);
+        // A server that has vanished without a word, as when a machine loses power or
+        // a firewall forgets a connection, is found out: the system asks after it when
+        // nothing has passed for thirty seconds, every ten seconds, and gives the
+        // connection up after three askings unanswered; and what was sent and is not
+        // acknowledged in thirty seconds ends it too.
+        let (idle, between, askings, unanswered) = (30i32, 10i32, 3i32, 30i32);
         if cfg!(target_os = "macos") {
             // No signal for a write to a server that has gone.
             setsockopt(fd, 0xffff, 0x1022, &on, 4);
+            setsockopt(fd, 0xffff, 0x0008, &on, 4);
+            setsockopt(fd, IPPROTO_TCP, 0x10, &idle, 4);
+            setsockopt(fd, IPPROTO_TCP, 0x101, &between, 4);
+            setsockopt(fd, IPPROTO_TCP, 0x102, &askings, 4);
+            setsockopt(fd, IPPROTO_TCP, 0x80, &unanswered, 4);
+        } else {
+            let milliseconds = unanswered * 1000;
+            setsockopt(fd, 1, 9, &on, 4);
+            setsockopt(fd, IPPROTO_TCP, 4, &idle, 4);
+            setsockopt(fd, IPPROTO_TCP, 5, &between, 4);
+            setsockopt(fd, IPPROTO_TCP, 6, &askings, 4);
+            setsockopt(fd, IPPROTO_TCP, 18, &milliseconds, 4);
         }
         fd
     }
@@ -976,6 +997,7 @@ unsafe fn check_out(db: &mut Db) -> Option<&mut Conn> {
     unsafe {
         adopt();
         POOL.lock();
+        let until = koo_now_nanos().saturating_add(db.patience.saturating_mul(1_000_000));
         let slot = loop {
             if let Some(index) = db.conns.iter().position(|conn| conn.fd >= 0 && !conn.busy) {
                 db.conns[index].busy = true;
@@ -989,7 +1011,36 @@ unsafe fn check_out(db: &mut Db) -> Option<&mut Conn> {
                 db.conns[index].busy = true;
                 break index;
             }
-            POOL.wait();
+            // Every connection is in use. If each is in a transaction that this very
+            // thread began, none will ever come back: the thread waits for itself.
+            let mine = me() as *mut thread::Thread as usize;
+            let all_mine = db.conns.iter().any(|conn| conn.busy)
+                && db
+                    .conns
+                    .iter()
+                    .filter(|conn| conn.busy)
+                    .all(|conn| conn.transaction != 0 && conn.began == mine);
+            if all_mine {
+                POOL.unlock();
+                failed(
+                    OTHER,
+                    &[b"every connection of the pool is in a transaction that this statement is inside of, so it would wait for ever: inside `db.transaction(tx -> ...)` a statement is sent with `tx`, not with `db`"],
+                );
+                return None;
+            }
+            let left = (until - koo_now_nanos()) / 1_000_000;
+            if left <= 0 {
+                POOL.unlock();
+                let mut text = Buffer::new();
+                let _ = write!(
+                    text,
+                    "every connection to the database was in use for {} ms, and the pool has {}",
+                    db.patience, db.limit
+                );
+                failed(TIMEOUT, &[&text.data[..text.len]]);
+                return None;
+            }
+            POOL.wait_for(left);
         };
         POOL.unlock();
         let ready = {
@@ -1045,7 +1096,7 @@ unsafe fn unescaped(part: &[u8], out: &mut Buf) {
 /// then finds why in `koo_sql_error`.
 #[unsafe(no_mangle)]
 #[allow(static_mut_refs)]
-pub unsafe extern "C" fn koo_sql_open(url: *const Header, limit: i64) -> i64 {
+pub unsafe extern "C" fn koo_sql_open(url: *const Header, limit: i64, patience: i64) -> i64 {
     unsafe {
         let url = bytes(url);
         let Some(rest) = url
@@ -1141,6 +1192,7 @@ pub unsafe extern "C" fn koo_sql_open(url: *const Header, limit: i64) -> i64 {
         unescaped(settings, &mut db.options);
         unescaped(authorities, &mut db.authorities);
         db.secure = secure;
+        db.patience = patience.max(1);
         db.port = port_number as u16;
         db.limit = (limit.max(1) as usize).min(MOST_CONNS);
         // One connection now, so that an address that leads nowhere is known at once.
@@ -1166,20 +1218,22 @@ unsafe fn exchange(conn: &mut Conn, request: &[u8], out: &mut Outcome) -> Result
             return Err(true);
         }
         let mut ok = true;
-        // An idle connection that the server closed while nobody was looking is found
-        // out before the server has said anything of the statement: at most it has said
-        // that it is shutting down. Then nothing was done, and the statement may be
-        // sent again on another connection.
-        let mut untouched = true;
+        // The statement is with the server. If the connection ends now, the server may
+        // have done the statement or not, and it is not sent again; unless all the
+        // server said was that it is shutting down, which it says in place of doing
+        // anything. (A statement that could not be sent whole, above, was not done: it
+        // is the last message of it that makes the server keep what it did.)
+        let (mut goodbye, mut more) = (false, false);
         loop {
             let Some((kind, body)) = message(conn) else {
-                return Err(untouched);
+                return Err(goodbye && !more);
             };
             let farewell = kind == b'E' && {
                 let code = error_fields(body).0;
                 code.starts_with(b"08") || code.starts_with(b"57P")
             };
-            untouched = untouched && farewell;
+            goodbye |= farewell;
+            more |= !farewell;
             match kind {
                 b'T' if body.len() >= 2 => {
                     out.cols = u16::from_be_bytes([body[0], body[1]]) as usize;
@@ -1306,8 +1360,16 @@ unsafe fn run_on_any(db: &mut Db, request: &[u8], keep: bool) -> Option<usize> {
     unsafe {
         let out = outcome();
         let first = db.conns.as_ptr();
-        for attempt in 0..2 {
+        let mut sent_again = false;
+        // At most every connection of the pool can turn out to be dead, and one more.
+        for _ in 0..MOST_CONNS + 2 {
             let conn = check_out(db)?;
+            // A connection that has been idle has nothing to say. If it has, the server
+            // has closed it, or is about to: it is not used, and another is taken.
+            if has_something(conn.fd) {
+                give_back(conn, true);
+                continue;
+            }
             let index = (conn as *const Conn).offset_from(first) as usize;
             match exchange(conn, request, out) {
                 Ok(ok) => {
@@ -1318,15 +1380,39 @@ unsafe fn run_on_any(db: &mut Db, request: &[u8], keep: bool) -> Option<usize> {
                 }
                 Err(untouched) => {
                     give_back(conn, true);
-                    if !(untouched && attempt == 0) {
-                        failed(CONNECTION, &[b"the connection to the database was lost"]);
-                        return None;
+                    if untouched && !sent_again {
+                        sent_again = true;
+                        fresh();
+                        continue;
                     }
-                    fresh();
+                    // The statement went out whole and no answer came back: it must
+                    // not be sent again, since the database may have done it.
+                    failed(
+                        CONNECTION,
+                        &[if untouched {
+                            b"the connection to the database was lost" as &[u8]
+                        } else {
+                            b"the connection to the database was lost before it answered: the statement may have been done"
+                        }],
+                    );
+                    return None;
                 }
             }
         }
+        failed(CONNECTION, &[b"the connection to the database was lost"]);
         None
+    }
+}
+
+/// Whether a socket has something to read, or has been closed, without waiting.
+unsafe fn has_something(fd: i32) -> bool {
+    unsafe {
+        let mut fds = PollFd {
+            fd,
+            events: 1,
+            revents: 0,
+        };
+        poll(&mut fds, 1, 0) > 0
     }
 }
 

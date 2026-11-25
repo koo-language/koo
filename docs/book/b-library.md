@@ -429,7 +429,7 @@ A request of another server returns a `http.Reply`:
 
 | | |
 | --- | --- |
-| `postgres.connect(url: string, pool: int = 10) -> sql.Pool ! sql.Error` | connects to the database at `postgres://user:password@host:port/database`, with at most `pool` connections |
+| `postgres.connect(url: string, pool: int = 10, wait: Duration = 30s) -> sql.Pool ! sql.Error` | connects to the database at `postgres://user:password@host:port/database`, with at most `pool` connections, for one of which a statement waits `wait` at the longest |
 
 A `sql.Query` is written as a string literal where one is expected: the values in braces become parameters of the statement, each an `int`, a `float`, a `bool`, a `string` or a `Time`, or an optional of one, which is NULL when it is `none`.
 

@@ -137,7 +137,11 @@ impl Gate {
         unsafe {
             let mut until = [0i64; 2];
             clock_gettime(0, &mut until);
-            until[1] += milliseconds * 1_000_000;
+            // Whole seconds apart from the rest: a time whose second part is a second
+            // or more is no time at all, and the wait would return at once.
+            let milliseconds = milliseconds.max(0);
+            until[0] += milliseconds / 1000;
+            until[1] += (milliseconds % 1000) * 1_000_000;
             if until[1] >= 1_000_000_000 {
                 until[0] += 1;
                 until[1] -= 1_000_000_000;

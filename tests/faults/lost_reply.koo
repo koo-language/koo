@@ -1,0 +1,62 @@
+// A database that fails in the middle (`a_failing_database_is_survived` in
+// compiler/koo/tests/programs.rs). The address in KOO_TEST_POSTGRES is that of a proxy
+// in front of the database, which does what a comment in a statement tells it:
+// `koo_cut_reply` lets the statement through and closes the connection in place of
+// passing on the answer, and `koo_close_idle` closes it after the answer.
+
+import std/os
+import std/sql
+import std/sql/postgres
+import std/time
+
+fn count(db: sql.Pool) -> int ! sql.Error {
+    return db.query_row("select count(*) as n from koo_once")?.int("n")?
+}
+
+fn main() ! sql.Error {
+    db := postgres.connect(os.env("KOO_TEST_POSTGRES") else "", pool: 1)?
+    db.exec("drop table if exists koo_once")?
+    db.exec("create table koo_once (n int primary key)")?
+
+    // The statement is done by the database, and the answer never arrives. It must
+    // not be sent a second time: the program is told that it does not know.
+    match db.exec("insert into koo_once values ({1}) /* koo_cut_reply */") {
+        n => print("{n} inserted")
+        ! e => print("{e.kind}: {e}")
+    }
+    print("{count(db)?} row")
+
+    // A connection that was closed while nobody used it is not an error at all.
+    db.exec("select 1 /* koo_close_idle */")?
+    time.sleep(400ms)
+    print("{db.exec("insert into koo_once values ({2})")?} inserted")
+    print("{count(db)?} rows")
+
+    // Nor in a transaction, when it is closed before the transaction begins.
+    db.exec("select 1 /* koo_close_idle */")?
+    time.sleep(400ms)
+    db.transaction(tx -> {
+        tx.exec("insert into koo_once values ({3})")?
+    })?
+    print("{count(db)?} rows")
+
+    // A transaction whose commit is lost is an error, and is not begun again.
+    done := db.transaction(tx -> {
+        tx.exec("insert into koo_once values ({4})")?
+        tx.exec("select 1 /* koo_cut_reply */")?
+    })
+    match done {
+        () => print("kept")
+        ! e => print("{e.kind}: {e}")
+    }
+    print("{count(db)?} rows")
+    db.exec("drop table koo_once")?
+}
+
+//= Connection: the connection to the database was lost before it answered: the statement may have been done
+//= 1 row
+//= 1 inserted
+//= 2 rows
+//= 3 rows
+//= Connection: the connection to the database was lost, and the transaction with it
+//= 3 rows

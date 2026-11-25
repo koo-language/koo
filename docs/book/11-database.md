@@ -366,6 +366,8 @@ A statement that fails ends it. After a failed statement PostgreSQL does nothing
 
 And a panic undoes it too. If the function panics, the connection is closed with the transaction open, and the database rolls it back.
 
+Inside the function, statements are sent with the `sql.Tx` and not with the pool. One sent with the pool is not part of the transaction: it goes out on another connection, and if the pool has none left it would wait for the transaction that is waiting for it. That case, at least, the package sees, and fails the statement with an error that says to use the `sql.Tx`.
+
 A `sql.Tx` is of use only inside the function it was given to, and only to the thread that is running that function: it cannot be sent to an actor, and one that was kept somewhere and used after the function returned gets an error.
 
 **Isolation.** While a transaction runs, others run beside it, and how much each sees of what the others are doing is its *isolation*. PostgreSQL has three levels, and `transaction` takes the one wanted as a second argument: `sql.Isolation.ReadCommitted`, which is the default, `sql.Isolation.RepeatableRead`, and `sql.Isolation.Serializable`. At the last, the database promises that the result is what it would have been had the transactions run one after another, in some order. It keeps the promise by refusing a transaction that would break it, with an error of the kind `Serialization`. Nothing is wrong with such a transaction except its timing, and the thing to do is to run it again:
@@ -429,7 +431,9 @@ A `sql.Pool` is not one connection but as many as are needed, up to a limit, whi
 
     db := postgres.connect(url, pool: 20)?
 
-Each statement takes a connection that is idle, or makes one if all are busy and the limit allows, and gives it back when it has its answer; a transaction keeps one from its beginning to its end. A statement that finds every connection busy, and the limit reached, waits for one. A connection that the server closed while it was idle is replaced without the program's noticing, so a database that is restarted costs a program the statements that were running at the time and no others.
+Each statement takes a connection that is idle, or makes one if all are busy and the limit allows, and gives it back when it has its answer; a transaction keeps one from its beginning to its end. A statement that finds every connection busy, and the limit reached, waits for one, for thirty seconds at the longest, or for what `connect` is told with `wait:`; then it fails, with an error of the kind `Timeout`, since a service that waits without end for its database has stopped without saying so. A connection that the server closed while it was idle is replaced without the program's noticing, so a database that is restarted costs a program the statements that were running at the time and no others.
+
+A statement is never sent twice. If the connection is lost after a statement has gone out and before its answer has come back, the program cannot know whether the database did it, and is told exactly that, by an error of the kind `Connection`: to send it again unasked might be to charge a customer twice. Whether it is safe to try again is for the program to say, which knows what the statement does.
 
 A pool is a *handle*, like the handle of an actor (Section 9.2). To copy it is to have another name for the same pool, not another pool, and it may be passed to a function, kept in a structure, given to an actor as part of its state, and used from all of them at once. It is not itself an actor, and should not be put behind one: an actor does one thing at a time, and the purpose of a pool is to do many. The one thing a pool cannot be is part of a message (Section 9.6): an actor that needs the database is given the pool when it is started, as here.
 

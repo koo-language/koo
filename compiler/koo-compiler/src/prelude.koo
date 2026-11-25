@@ -2002,9 +2002,10 @@ fn s__time(text: string) -> Time? {
 type SqlPool = { _id: int }
 
 /// Opens a PostgreSQL database: `postgres://user:password@host:5432/name`. At most
-/// `pool` statements run at once, each on a connection of its own.
-fn postgres__connect(url: string, pool: int = 10) -> SqlPool ! SqlError {
-    id := __sql_open(url, pool)
+/// `pool` statements run at once, each on a connection of its own; one that finds them
+/// all in use waits for one, for `wait` at the longest.
+fn postgres__connect(url: string, pool: int = 10, wait: Duration = 30s) -> SqlPool ! SqlError {
+    id := __sql_open(url, pool, wait.millis())
     if id < 0 { fail s__error() }
     return SqlPool { _id: id }
 }

@@ -330,6 +330,115 @@ fn a_database_answers_queries() {
     assert!(failures.is_empty(), "\n{}", failures.join("\n\n"));
 }
 
+/// A proxy in front of the test database that fails on purpose. A statement with the
+/// comment `koo_cut_reply` is passed to the database, and when the database has
+/// answered it, the connection is closed in place of passing the answer on; one with
+/// `koo_close_idle` is answered, and the connection closed just after. Returns the
+/// address of the proxy, as the address of the database with the proxy's in its place.
+fn failing_database(url: &str) -> String {
+    use std::io::{Read, Write};
+    use std::net::{Shutdown, TcpListener, TcpStream};
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicU8, Ordering};
+    let after = url.find('@').map_or(url.find("//").map_or(0, |at| at + 2), |at| at + 1);
+    let end = url[after..].find(['/', '?']).map_or(url.len(), |at| after + at);
+    let mut upstream = url[after..end].to_string();
+    if !upstream.contains(':') {
+        upstream.push_str(":5432");
+    }
+    let listener = TcpListener::bind("127.0.0.1:0").expect("a port for the proxy");
+    let port = listener.local_addr().unwrap().port();
+    std::thread::spawn(move || {
+        for client in listener.incoming().flatten() {
+            let Ok(server) = TcpStream::connect(&upstream) else {
+                continue;
+            };
+            let told = Arc::new(AtomicU8::new(0));
+            let (mut from_client, mut to_server) = (client.try_clone().unwrap(), server.try_clone().unwrap());
+            let heard = told.clone();
+            std::thread::spawn(move || {
+                let mut chunk = [0u8; 65536];
+                while let Ok(n) = from_client.read(&mut chunk) {
+                    if n == 0 {
+                        break;
+                    }
+                    let has = |word: &[u8]| chunk[..n].windows(word.len()).any(|at| at == word);
+                    if has(b"koo_cut_reply") {
+                        heard.store(1, Ordering::SeqCst);
+                    } else if has(b"koo_close_idle") {
+                        heard.store(2, Ordering::SeqCst);
+                    }
+                    if to_server.write_all(&chunk[..n]).is_err() {
+                        break;
+                    }
+                }
+                let _ = to_server.shutdown(Shutdown::Both);
+            });
+            let (mut from_server, mut to_client) = (server, client);
+            std::thread::spawn(move || {
+                let mut chunk = [0u8; 65536];
+                while let Ok(n) = from_server.read(&mut chunk) {
+                    if n == 0 {
+                        break;
+                    }
+                    match told.swap(0, Ordering::SeqCst) {
+                        // The database has answered, so the statement is done; the
+                        // answer goes nowhere.
+                        1 => break,
+                        2 => {
+                            let _ = to_client.write_all(&chunk[..n]);
+                            std::thread::sleep(std::time::Duration::from_millis(100));
+                            break;
+                        }
+                        _ => {
+                            if to_client.write_all(&chunk[..n]).is_err() {
+                                break;
+                            }
+                        }
+                    }
+                }
+                let _ = to_client.shutdown(Shutdown::Both);
+                let _ = from_server.shutdown(Shutdown::Both);
+            });
+        }
+    });
+    format!("{}127.0.0.1:{port}{}", &url[..after], &url[end..])
+}
+
+/// A database that is cut off in the middle of a statement, or closes a connection
+/// that was idle, is survived: nothing is done twice, and what can be done again is.
+#[test]
+fn a_failing_database_is_survived() {
+    let Some(url) = test_database() else {
+        eprintln!("KOO_TEST_POSTGRES is not set: the tests of a failing database are skipped");
+        return;
+    };
+    let _alone = DATABASE.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    let proxy = failing_database(&url);
+    let mut failures = Vec::new();
+    for path in programs("tests/faults") {
+        let expected = expectation(&std::fs::read_to_string(&path).unwrap());
+        let output = Command::new(env!("CARGO_BIN_EXE_koo"))
+            .arg("run")
+            .arg(&path)
+            .env("KOO_LEAKS", "1")
+            .env("KOO_TEST_POSTGRES", &proxy)
+            .output()
+            .expect("koo runs");
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        if stdout != expected.stdout || output.status.code() != Some(expected.exit) {
+            failures.push(format!(
+                "{}: exit status {:?}\n--- expected\n{}--- found\n{stdout}--- stderr\n{}",
+                path.display(),
+                output.status.code(),
+                expected.stdout,
+                String::from_utf8_lossy(&output.stderr)
+            ));
+        }
+    }
+    assert!(failures.is_empty(), "\n{}", failures.join("\n\n"));
+}
+
 /// With `KOO_LOG=json` each line of the log is an object, with the values of the line as
 /// members: `tests/log/*.koo` are run so, with the time left out, and what they write to
 /// the standard error output is what the file of the same name with `.json` holds.
