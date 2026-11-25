@@ -824,11 +824,11 @@ $ curl localhost:8080/orders -d '{"customer": "Bob", "items": [{"sku": "a-1", "q
 - A path with no route is answered with 404, and one with a route for another method with 405.
 - `serve` runs until the program is told to stop, with Ctrl-C or a request to terminate, and then returns. It takes `port:`, `workers:`, `max_body:` (the most a request's body may be, 1 MB unless you say) and `log: true`, which writes a line for each request.
 
-The server answers requests on every core: `serve` starts a process for each, all listening on the one port, and stays behind to replace one that dies. A handler cannot tell, because nothing in memory is shared between requests in the first place. So a handler that panics costs the requests its worker was holding, and the server goes on. `workers: 1` keeps to one process, which is the plainest thing to debug, and which a panic ends. On one core it serves a "Hello, world!" as fast as a Rust server built on axum and tokio, and more than twice as fast as Node; the numbers and how they were taken are in the [README](../README.md).
+The server answers requests on every core: `serve` starts a process for each, all listening on the one port, and stays behind to replace one that dies. A handler cannot tell, because nothing in memory is shared between requests in the first place. A handler that panics costs the request that met it, which is answered with 500, and the server goes on, with one worker as with many. A handler that waits, for the database, another server or a `time.sleep`, is left where it is while its worker answers other requests, up to 128 of them at once. `workers: 1` keeps to one process, which is the plainest thing to debug. On one core it serves a "Hello, world!" as fast as a Rust server built on axum and tokio, and more than twice as fast as Node; the numbers and how they were taken are in the [README](../README.md).
 
 It runs on macOS and Linux alike. On Linux, `koo build --release --static` makes a program with nothing left to install, and [`examples/http/Dockerfile`](../examples/http/Dockerfile) puts one in an empty container.
 
-What it does not do yet: HTTPS and HTTP/2 (put it behind a proxy or a platform that speaks them), streaming a body in either direction, and waiting on something slow without holding up the other requests of the same worker. Working servers are in [`examples/http`](../examples/http).
+What it does not do yet: HTTPS and HTTP/2 (put it behind a proxy or a platform that speaks them), and streaming a body in either direction. Working servers are in [`examples/http`](../examples/http).
 
 ## Asking other servers
 
