@@ -152,7 +152,7 @@ fn main() ! sql.Error | http.Error {
 | `wasm32-none` | Core WebAssembly module for plugins and embedding | 1 |
 | `x86_64-macos`, `x86_64-windows`, `arm64-windows` | Native binary | 2 |
 
-The table is where the language is going. Today the compiler builds for the machine it runs on, and that machine is macOS on arm64, or Linux on x86-64 or arm64. The whole test suite passes on macOS and on arm64 Linux. On x86-64 Linux it was run under emulation, where everything passes but one test of the parser that the emulator runs out of memory on; it has not been run on x86-64 hardware yet. On Linux, `koo build --static` links everything in, so the program runs in an empty container ([`examples/http/Dockerfile`](examples/http/Dockerfile) makes one of 2.4 MB). Not yet: building for another machine than the one at hand, Windows, and WebAssembly.
+The table is where the language is going. Today the compiler builds for the machine it runs on, and that machine is macOS on arm64, or Linux on x86-64 or arm64. The whole test suite passes on macOS, on arm64 Linux, and on x86-64 Linux under emulation, database and TLS included; it has not been run on x86-64 hardware yet. On Linux, `koo build --static` links everything in, so the program runs in an empty container ([`examples/http/Dockerfile`](examples/http/Dockerfile) makes one of 2.4 MB). Not yet: building for another machine than the one at hand, Windows, and WebAssembly.
 
 ## What works today
 
