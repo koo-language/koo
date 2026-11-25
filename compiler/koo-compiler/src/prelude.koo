@@ -825,6 +825,26 @@ fn j__int(text: string, at: var int) -> int ! JsonError {
 
 fn j__float(text: string, at: var int) -> float ! JsonError {
     at = __json_ws(text, at)
+    // The three floats that are not numbers, as one process of a program writes them
+    // for another.
+    first := __str_byte(text, at)
+    if first == 78 or first == 73 or (first == 45 and __str_byte(text, at + 1) == 73) {
+        nan := __json_word(text, at, "NaN")
+        if nan >= 0 {
+            at = nan
+            return 0.0 / 0.0
+        }
+        up := __json_word(text, at, "Infinity")
+        if up >= 0 {
+            at = up
+            return 1.0 / 0.0
+        }
+        down := __json_word(text, at, "-Infinity")
+        if down >= 0 {
+            at = down
+            return -1.0 / 0.0
+        }
+    }
     end := __json_number(text, at)
     if end < 0 { fail j__expected(text, at, "a number") }
     at = end
@@ -929,7 +949,20 @@ fn int.from_json(text: string) -> int ! JsonError {
 
 /// JSON has no number for what is not one, or is without end: those are `null`.
 fn (self: float) _json_write(out: var string) {
-    if self - self == 0.0 { out += "{self}" } else { out += "null" }
+    if self - self == 0.0 {
+        out += "{self}"
+    } else if not __json_is_wire() {
+        // JSON has no way to write a float that is not a number (Section 10.4).
+        out += "null"
+    } else if self > 0.0 {
+        // Between the processes of one program it is written, in words that
+        // `j__float` reads, so that it arrives as it left.
+        out += "Infinity"
+    } else if self < 0.0 {
+        out += "-Infinity"
+    } else {
+        out += "NaN"
+    }
 }
 
 fn (self: float) to_json() -> string {

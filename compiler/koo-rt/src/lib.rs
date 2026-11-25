@@ -1664,6 +1664,18 @@ pub unsafe extern "C" fn koo_json_begin() {
     unsafe { thread::me().json_nest = 0 };
 }
 
+/// Says whether the JSON the thread writes from here on is for another process of the
+/// program, which must read back exactly what was written, or for anyone.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn koo_json_wire(on: bool) {
+    unsafe { thread::me().json_wire = on };
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn koo_json_is_wire() -> bool {
+    unsafe { thread::me().json_wire }
+}
+
 /// Goes one array or object deeper. Returns whether that is allowed.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn koo_json_enter() -> bool {

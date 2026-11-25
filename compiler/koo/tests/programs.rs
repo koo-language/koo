@@ -1503,6 +1503,20 @@ fn a_stopping_server_answers_what_it_has_in_hand() {
     assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
     for workers in [1, 3] {
         let (mut server, port) = serve(&executable, workers, &dir);
+        // A float that is not a number is itself when it comes back from an actor,
+        // though the actor is in another process.
+        for (asked, answer) in [
+            ("1&total=2", "0.5"),
+            ("1&total=0", "inf"),
+            ("-1&total=0", "-inf"),
+            ("0&total=0", "NaN"),
+        ] {
+            let got = get(port, &format!("/ratio?done={asked}"));
+            assert!(
+                got.ends_with(&format!("\r\n\r\n{answer}\n")),
+                "with {workers} workers: {got}"
+            );
+        }
         let asked: Vec<_> = (0..6)
             .map(|_| std::thread::spawn(move || get(port, "/visit")))
             .collect();

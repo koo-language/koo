@@ -553,14 +553,16 @@ impl<'a> Deriver<'a> {
                 format!("{}({})", method_function(name, called), args.join(", "))
             };
             // The arguments as one JSON array, for another process.
-            let mut pack = String::from("    var out__ := \"[\"\n");
+            // What goes to another process is written so that it comes back the same:
+            // a float that is not a number as itself, where JSON for others has `null`.
+            let mut pack = String::from("    __json_wire(true)\n    var out__ := \"[\"\n");
             for (i, param) in names.iter().enumerate() {
                 if i > 0 {
                     pack.push_str("    out__ += \",\"\n");
                 }
                 let _ = writeln!(pack, "    {param}._json_write(var out__)");
             }
-            pack.push_str("    out__ += \"]\"\n");
+            pack.push_str("    out__ += \"]\"\n    __json_wire(false)\n");
 
             // What crosses to the actor is frozen first, and so is what comes back:
             // another thread may be the next to have the actor, or the value.
@@ -641,7 +643,10 @@ impl<'a> Deriver<'a> {
             let given: Vec<String> = (0..sig.params.len()).map(|i| format!("a{i}")).collect();
             let given = given.join(", ");
             let answer = |value: &str, kind: &str| {
-                format!("var out := \"\"\n{value}._json_write(var out)\n__actor_reply(\"{kind}\", out)")
+                format!(
+                    "var out := \"\"\n__json_wire(true)\n{value}._json_write(var out)\n__json_wire(false)\n\
+                     __actor_reply(\"{kind}\", out)"
+                )
             };
             let asked = format!("self.{called}({given})");
             let body = match (returns.is_some(), errors.is_empty()) {

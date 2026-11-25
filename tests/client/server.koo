@@ -12,6 +12,11 @@ actor Visits {
         seen += 1
         return seen
     }
+
+    // What it is given, as it was given: a float goes to another process and back.
+    fn same(x: float) -> float {
+        return x
+    }
 }
 
 type Echo = { method: string, path: string, body: string, agent: string, kind: string, token: string }
@@ -19,6 +24,11 @@ type Echo = { method: string, path: string, body: string, agent: string, kind: s
 fn main() ! http.Error {
     visits := Visits.start()
     var app := http.App.new()
+    app.get("/ratio", req -> {
+        done := float.parse(req.query("done") else "0") else 0.0
+        total := float.parse(req.query("total") else "0") else 0.0
+        return http.text("{visits.same(done / total)}\n")
+    })
     // A handler that waits, and then asks an actor, which is in another process when
     // the server has more than one worker.
     app.get("/visit", req -> {

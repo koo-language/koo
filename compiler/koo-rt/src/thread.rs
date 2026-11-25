@@ -202,6 +202,8 @@ pub struct Thread {
     pub json_int: i64,
     pub json_float: f64,
     pub json_nest: i64,
+    /// Whether what the thread writes as JSON is for another process of the program.
+    pub json_wire: bool,
     pub held: *mut Held,
     pub held_len: usize,
     pub held_cap: usize,

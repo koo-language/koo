@@ -300,6 +300,18 @@ pub const INTRINSICS: &[Intrinsic] = &[
         params: &[],
         ret: I::Str,
     },
+    // Whether JSON is being written for another process of this program, and not for
+    // the world.
+    Intrinsic {
+        name: "json_wire",
+        params: &[I::Bool],
+        ret: I::Unit,
+    },
+    Intrinsic {
+        name: "json_is_wire",
+        params: &[],
+        ret: I::Bool,
+    },
     // Logging (`std/log`, `koo-rt/src/log.rs`).
     Intrinsic {
         name: "log_on",
