@@ -265,6 +265,11 @@ pub const INTRINSICS: &[Intrinsic] = &[
         ret: I::Bytes,
     },
     Intrinsic {
+        name: "random_between",
+        params: &[I::Int, I::Int],
+        ret: I::Int,
+    },
+    Intrinsic {
         name: "random_below",
         params: &[I::Int],
         ret: I::Int,

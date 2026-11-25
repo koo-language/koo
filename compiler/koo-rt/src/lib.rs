@@ -247,15 +247,24 @@ pub unsafe extern "C" fn koo_panic(message: *const u8, len: i64, file: *const He
         let _ = write!(place, ":{line}");
         out.push(b"\n  at ");
         out.push(&place.data[..place.len]);
+    } else if line < 0 {
+        // In a function of the library, which is named in place of a line.
+        place.push(unsafe { bytes(file) });
+        out.push(b"\n  in `");
+        out.push(&place.data[..place.len]);
+        out.push(b"`");
     }
     out.push(b"\n");
-    let fields = [(&b"at"[..], log::Field::Text(&place.data[..place.len]))];
+    let fields = [(
+        if line > 0 { &b"at"[..] } else { &b"in"[..] },
+        log::Field::Text(&place.data[..place.len]),
+    )];
     unsafe {
         log::said(
             b"error",
             &out.data[..out.len],
             &out.data[..said],
-            if line > 0 { &fields } else { &[] },
+            if line != 0 { &fields } else { &[] },
         )
     };
     // A panic ends the program, unless it is in a message that it only ends.
@@ -829,10 +838,15 @@ fn overflowed() {
         write_all(1, &out.data[..out.len]);
         out.len = 0;
     }
-    write_all(
-        2,
-        b"panic: the call stack is exhausted: a function calls itself too deeply or without end, or a value is nested too deeply\n",
-    );
+    // This runs where a signal is handled, on a small stack and with whatever the
+    // program was in the middle of left as it was: nothing is allocated, and the line
+    // for a log that is JSON is written out whole.
+    let text: &[u8] = if log::koo_log_json() {
+        b"{\"level\":\"error\",\"message\":\"panic: the call stack is exhausted: a function calls itself too deeply or without end, or a value is nested too deeply\"}\n"
+    } else {
+        b"panic: the call stack is exhausted: a function calls itself too deeply or without end, or a value is nested too deeply\n"
+    };
+    write_all(2, text);
 }
 
 unsafe fn c_text<'a>(s: *const u8) -> &'a [u8] {
@@ -1223,13 +1237,16 @@ pub unsafe extern "C" fn koo_print(s: *const Header) {
 /// Reports an error returned from `main` and exits with status 1 (Section 6.1).
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn koo_main_failed(description: *const Header) -> ! {
-    unsafe { koo_flush() };
-    let mut out = Buffer::new();
-    out.push(b"error: ");
-    out.push(unsafe { bytes(description) });
-    out.push(b"\n");
-    out.flush(2);
-    unsafe { exit(1) }
+    unsafe {
+        let description = bytes(description);
+        let mut plain = pg::Buf::new();
+        plain.push(b"error: ");
+        plain.push(description);
+        plain.push(b"\n");
+        // For a log that is JSON, the error is the message, as a line like the rest.
+        log::said(b"error", plain.bytes(), &plain.bytes()[..plain.len - 1], &[]);
+        exit(1)
+    }
 }
 
 // ---- lists ------------------------------------------------------------------------------

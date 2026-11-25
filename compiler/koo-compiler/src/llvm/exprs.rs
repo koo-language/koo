@@ -326,10 +326,13 @@ impl Gen<'_> {
             ExprKind::Continue => self.gen_break(true),
             ExprKind::Panic(message) => {
                 let text = self.borrow(message);
-                let file = self.file_string();
-                // A panic the prelude raises says in its message where the program went
-                // wrong; the line of the prelude would only be noise.
-                let line = if self.f.prelude { 0 } else { self.line(expr.span) };
+                // A panic the library raises says which of its functions the program
+                // called; the line of the library would only be noise.
+                let (file, line) = if self.f.prelude {
+                    self.library_place()
+                } else {
+                    (self.file_string(), self.line(expr.span) as i64)
+                };
                 self.emit(format!("call void @koo_panic_str(ptr {text}, ptr {file}, i64 {line})"));
                 self.terminate("unreachable");
             }

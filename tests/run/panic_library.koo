@@ -1,0 +1,13 @@
+// A panic inside a function of the library says which function it was, as the program
+// knows it, and not a line of the library.
+
+fn main() {
+    var names := ["ada", "bob"]
+    print(names.len)
+    names.remove(9)
+}
+
+//= 2
+//! exit 101
+//! stderr panic: index out of range
+//! stderr in `[T].remove<string>`

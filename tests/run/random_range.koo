@@ -1,0 +1,18 @@
+// `random.int` between numbers that are further apart than the largest integer.
+
+import std/random
+
+fn main() {
+    a := random.int(-10, 10)
+    print(a >= -10 and a < 10)
+    b := random.int(0, 9223372036854775807)
+    print(b >= 0)
+    c := random.int(-5000000000000000000, 5000000000000000000)
+    print(c >= -5000000000000000000 and c < 5000000000000000000)
+    print(random.int(7, 8))
+}
+
+//= true
+//= true
+//= true
+//= 7

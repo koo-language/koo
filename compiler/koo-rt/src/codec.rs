@@ -303,6 +303,25 @@ pub unsafe extern "C" fn koo_random_below(below: i64) -> i64 {
     }
 }
 
+/// A number from `low` up to, and not including, `high`, each as likely as another,
+/// however far apart the two are: the distance between them may be more than the
+/// largest integer, and is counted without a sign.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn koo_random_between(low: i64, high: i64) -> i64 {
+    unsafe {
+        let span = (high as u64).wrapping_sub(low as u64).max(1);
+        let limit = u64::MAX - u64::MAX % span;
+        loop {
+            let mut eight = [0u8; 8];
+            random(&mut eight);
+            let number = u64::from_ne_bytes(eight);
+            if number < limit {
+                return low.wrapping_add((number % span) as i64);
+            }
+        }
+    }
+}
+
 /// A number from zero up to, and not including, one.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn koo_random_float() -> f64 {

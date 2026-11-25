@@ -1723,7 +1723,7 @@ fn crypto__verify_password(password: string, hashed: string) -> bool {
 /// A number from `low` up to, and not including, `high`, each as likely as another.
 fn random__int(low: int, high: int) -> int {
     if high <= low { panic("random.int({low}, {high}): there is no number from {low} up to {high}") }
-    return low + __random_below(high - low)
+    return __random_between(low, high)
 }
 
 /// A number from zero up to, and not including, one.

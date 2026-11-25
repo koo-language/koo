@@ -423,6 +423,18 @@ impl<'a> Gen<'a> {
     }
 
     /// The name of the source of the function being generated, as a string value.
+    /// For a panic that a function of the library raises itself: the name of the
+    /// function, with -1 for a line, or nothing to say where, with 0.
+    fn library_place(&mut self) -> (String, i64) {
+        let name = self.p.functions[self.f.id].name.clone();
+        // An assertion says the line of the test it is in, which is the place.
+        let named = if name.starts_with("test__") { None } else { library_name(&name) };
+        match named {
+            Some(name) => (self.string(&name), -1),
+            None => (self.string("the prelude"), 0),
+        }
+    }
+
     fn file_string(&mut self) -> String {
         let name = if self.f.prelude {
             "the prelude".to_string()
@@ -831,12 +843,25 @@ impl<'a> Gen<'a> {
         text.push_str(&self.f.entry);
         text.push_str("  br label %start\nstart:\n");
         text.push_str(&self.f.body);
+        // A panic in a function of the library is not at a line of the program: it says
+        // which function it was in, which the program called.
+        let within = match (self.f.prelude, library_name(&function.name)) {
+            (false, _) => None,
+            (true, Some(name)) => {
+                self.string(&name);
+                Some((self.string_ids[&name], -1))
+            }
+            // A function of the library's own, which the program does not know of.
+            (true, None) => {
+                self.string("the prelude");
+                Some((self.string_ids["the prelude"], 0))
+            }
+        };
         for (label, message, line) in &self.f.panics {
             let len = self.messages[*message].len();
-            let file = if self.f.prelude {
-                self.string_ids["the prelude"]
-            } else {
-                self.string_ids[&self.f.file]
+            let (file, line) = match within {
+                Some(place) => place,
+                None => (self.string_ids[&self.f.file], *line as i64),
             };
             let _ = writeln!(
                 text,
@@ -1004,3 +1029,20 @@ static:
   ret i1 false
 }
 "#;
+
+/// The name of a function of the library as a program knows it, for a panic that
+/// happens inside it: `random__int` is `random.int`. Nothing for a function that the
+/// library has for its own use, whose name would mean nothing to the program.
+fn library_name(name: &str) -> Option<String> {
+    // A lambda, or a method that stands behind an operator, has no name to give.
+    if name.starts_with("lambda ") || name.contains("._") {
+        return None;
+    }
+    match name.split_once("__") {
+        None => Some(name.to_string()),
+        Some((package, function)) if package.len() > 1 && !function.contains("__") => {
+            Some(format!("{package}.{function}"))
+        }
+        Some(_) => None,
+    }
+}
