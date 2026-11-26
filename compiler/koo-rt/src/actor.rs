@@ -1644,6 +1644,7 @@ mod remote {
 
     unsafe extern "C" {
         fn socket(domain: i32, kind: i32, protocol: i32) -> i32;
+        fn setsockopt(fd: i32, level: i32, name: i32, value: *const i32, len: u32) -> i32;
         fn bind(fd: i32, address: *const u8, len: u32) -> i32;
         fn listen(fd: i32, backlog: i32) -> i32;
         fn accept(fd: i32, address: *mut u8, len: *mut u32) -> i32;
@@ -2144,6 +2145,13 @@ mod remote {
                     MAKING.unlock();
                     die(&[b"actors could not be started: ", c_text(strerror(error()))]);
                 }
+                // It is asked for a connection without waiting for one: the asking is
+                // done with a lock held (see `take` below).
+                fcntl(
+                    fd,
+                    4,
+                    fcntl(fd, 3) | if cfg!(target_os = "macos") { 0x4 } else { 0x800 },
+                );
                 LISTENER.store(fd, Release);
                 // A pipe by which the thread that waits for messages is told to look
                 // again, by one that has changed what it should be looking at.
@@ -2468,24 +2476,37 @@ mod remote {
                 if full && !made_room(true) {
                     break;
                 }
-                let mut fd = accept(LISTENER.load(Acquire), core::ptr::null_mut(), core::ptr::null_mut());
-                // 23 and 24 are the system's words for no more files.
-                if fd < 0 && matches!(error(), 23 | 24) && made_room(false) {
-                    fd = accept(LISTENER.load(Acquire), core::ptr::null_mut(), core::ptr::null_mut());
-                }
-                let mut room = false;
-                if fd >= 0 {
+                // A connection is taken and written down in one step, with the lock: a
+                // worker started between the two would have the connection, and not
+                // know of it to close it. What is said is whether there is one, and
+                // the system's word for why not.
+                let take = || {
                     SERVED.lock();
-                    CONNS[CONN_COUNT] = Conn {
-                        fd,
-                        turn: TURNS,
-                        ..NO_CONN
-                    };
-                    TURNS += 1;
-                    CONN_COUNT += 1;
-                    room = true;
+                    let fd = accept(LISTENER.load(Acquire), core::ptr::null_mut(), core::ptr::null_mut());
+                    let why = if fd < 0 { error() } else { 0 };
+                    if fd >= 0 {
+                        // What comes of a listener that does not wait does not wait
+                        // either, on some systems; a connection here is one that does.
+                        let non_blocking = if cfg!(target_os = "macos") { 0x4 } else { 0x800 };
+                        fcntl(fd, 4, fcntl(fd, 3) & !non_blocking);
+                        roomy(fd);
+                        CONNS[CONN_COUNT] = Conn {
+                            fd,
+                            turn: TURNS,
+                            ..NO_CONN
+                        };
+                        TURNS += 1;
+                        CONN_COUNT += 1;
+                    }
                     served_unlock();
-                } else if error() != EINTR && error() != EAGAIN {
+                    (fd >= 0, why)
+                };
+                let (mut room, mut why) = take();
+                // 23 and 24 are the system's words for no more files.
+                if !room && matches!(why, 23 | 24) && made_room(false) {
+                    (room, why) = take();
+                }
+                if !room && why != EINTR && why != EAGAIN {
                     // Every connection is in use: a moment is let pass, so that the
                     // asking again is not without end.
                     let (wanted, mut left) = ([0i64, 10_000_000], [0i64; 2]);
@@ -2925,6 +2946,32 @@ mod remote {
     /// connection this moment.
     const BUSY_THERE: i32 = -2;
 
+    /// Gives a connection between two processes room for a long message, at both of
+    /// its ends. A system that gives a socket of this kind a few thousand bytes, as
+    /// macOS does, has a message of a few hundred thousand cross in as many pieces as
+    /// that makes, each of which the other process must be woken to take: twenty
+    /// milliseconds for a message that crosses in a third of one where there is room.
+    /// (Where the system allows less than is asked, it gives what it allows.)
+    unsafe fn roomy(fd: i32) {
+        let (level, sending, receiving) = if cfg!(target_os = "macos") {
+            (0xffff, 0x1001, 0x1002)
+        } else {
+            (1, 7, 8)
+        };
+        let mut room: i32 = 1 << 20;
+        // A system that will not give so much is asked for less, until it gives.
+        while room >= 1 << 16 {
+            let asked = &room as *const i32;
+            let given = unsafe {
+                setsockopt(fd, level, sending, asked, 4) == 0 && setsockopt(fd, level, receiving, asked, 4) == 0
+            };
+            if given {
+                break;
+            }
+            room /= 2;
+        }
+    }
+
     /// A connection to another process that nothing else is using: one that was kept,
     /// or a new one when there is none, or when the ones kept are no longer to be
     /// trusted (`fresh`). Returns -1 if the process is not there.
@@ -2971,6 +3018,9 @@ mod remote {
             }
             let (address, len) = address(name);
             let fd = socket(AF_UNIX, SOCK_STREAM, 0);
+            if fd >= 0 {
+                roomy(fd);
+            }
             // Without waiting: where as many as the other process lets wait are
             // waiting already, the answer is that there is no room, and it is asked
             // again in a moment, by a handler that is left where it is meanwhile.
