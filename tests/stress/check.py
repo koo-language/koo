@@ -435,9 +435,8 @@ def bad_clients(name):
     check(name, problems)
 
 
-# How many rounds of ninety clients that leave, for each worker: fewer where the server
-# is many times slower than it is, under a sanitizer, and is looked at for other things.
-MANY = 1 if os.environ.get("CHECK_NO_DIVE") else 14
+# How many rounds of ninety clients that leave, for each worker.
+MANY = 14
 
 
 def left(name, server):
@@ -459,6 +458,12 @@ def left(name, server):
         for sock in socks:
             sock.close()
 
+    # A program built to be checked by a sanitizer answers one request at a time, since
+    # the sanitizer does not know of stacks that are switched; and a server that does
+    # so does not notice a client that leaves (Appendix C of the book). There is
+    # nothing here to look at then, and an hour of handlers that wait to sit through.
+    if os.environ.get("CHECK_NO_DIVE"):
+        return
     problems = []
     # Handlers that read of their requests after their clients have left: the path, a
     # header and the body are still there to read, though the connection is not.
