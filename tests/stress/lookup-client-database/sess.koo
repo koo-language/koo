@@ -1,0 +1,14 @@
+import std/os
+import std/sql
+import std/sql/postgres
+
+fn main() ! sql.Error {
+    db := postgres.connect(os.env("PG") else "", pool: 1)?
+    for row in db.query("select pid, application_name as app, state, (now() - backend_start)::text as age, left(query, 60) as q from pg_stat_activity where datname is not null and pid <> pg_backend_pid() order by backend_start")? {
+        print(row)
+    }
+    for row in db.query("select tablename from pg_tables where tablename like 'hunt2\\_d\\_%'")? {
+        print("table: {row.string("tablename")?}")
+    }
+    print("--")
+}

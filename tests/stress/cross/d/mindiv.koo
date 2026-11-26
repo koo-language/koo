@@ -1,0 +1,18 @@
+import std/os
+
+fn div(n: int, d: int) -> int {
+    return n / d
+}
+
+fn rem(n: int, d: int) -> int {
+    return n % d
+}
+
+fn main() {
+    small := -9223372036854775807 - 1
+    d := -1 - os.args().len
+    print(rem(small, d))
+    print(div(small + 1, d))
+    print(div(small, d))
+    print("not reached")
+}

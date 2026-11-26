@@ -1,0 +1,10 @@
+import std/io
+import std/os
+
+fn main() {
+    path := os.args().get(0) else "missing-argument"
+    match io.read_file(path) {
+        text => print("read {text.len} bytes")
+        ! e => print(e.message)
+    }
+}

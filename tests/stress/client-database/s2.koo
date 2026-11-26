@@ -1,0 +1,27 @@
+import std/http
+import std/sql/postgres
+import std/time
+
+fn main() ! http.Error {
+    var body := "0123456789abcdef"
+    for i in 0..19 { body += body }
+    var app := http.App.new()
+    app.get("/ping", req -> http.text("pong\n"))
+    // Sends 8 MB to a server that reads slowly, with a second to do it in.
+    app.get("/up", req -> {
+        started := time.uptime()
+        match http.post("http://127.0.0.1:39604/upload", body, timeout: 1s) {
+            reply => return http.text("status {reply.status} after {(time.uptime() - started).millis()} ms\n")
+            ! e => return http.text("{e.kind} after {(time.uptime() - started).millis()} ms\n")
+        }
+    })
+    // Connects to a database that accepts the connection and says nothing.
+    app.get("/db", req -> {
+        started := time.uptime()
+        match postgres.connect("postgres://u:p@127.0.0.1:39630/db") {
+            db => return http.text("connected\n")
+            ! e => return http.text("{e.kind} after {(time.uptime() - started).millis()} ms\n")
+        }
+    })
+    app.serve(port: 39621, workers: 1)?
+}

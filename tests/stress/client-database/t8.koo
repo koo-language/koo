@@ -1,0 +1,43 @@
+import std/http
+import std/time
+
+actor Asker {
+    var wrong: int = 0
+    var done: int = 0
+
+    fn ask(from: int, count: int) {
+        for i in 0..count {
+            id := from + i
+            match http.get("http://127.0.0.1:39601/id/{id}", timeout: 10s) {
+                reply => {
+                    want := "id {id}"
+                    if (reply.header("X-Id") else "") != "{id}" or not reply.body.starts_with(want) or reply.body.len != want.len + id % 5000 { wrong += 1 }
+                }
+                ! e => {
+                    wrong += 1
+                    print("{id}: {e.kind}: {e}")
+                }
+            }
+            done += 1
+        }
+    }
+
+    fn report() -> [int] {
+        return [done, wrong]
+    }
+}
+
+fn main() {
+    // The limit on a body.
+    for n in [268435456, 268435457] {
+        started := time.uptime()
+        match http.get("http://127.0.0.1:39602/big?n={n}", timeout: 60s) {
+            reply => print("{n} bytes: {reply.status}, {reply.body.len} read")
+            ! e => print("{n} bytes: {e.kind}: {e}")
+        }
+    }
+    var askers: [Asker] = []
+    for t in 0..8 { askers.push(Asker.start()) }
+    for t in 0..8 { askers[t].send.ask(1000000 * (t + 1), 300) }
+    for t in 0..8 { print(askers[t].report()) }
+}

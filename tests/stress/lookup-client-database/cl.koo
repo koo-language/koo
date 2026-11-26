@@ -1,0 +1,77 @@
+import std/encoding
+import std/http
+import std/os
+import std/time
+
+fn show(what: string, got: http.Reply ! http.Error, started: Duration) {
+    took := (time.uptime() - started).millis()
+    match got {
+        reply => print("{what}\n    => {reply.status} `{reply.body}` cl={reply.header("content-length") else "-"} [{took} ms]")
+        ! e => print("{what}\n    => {e.kind}: {e} [{took} ms]")
+    }
+}
+
+fn main() {
+    p := os.env("PORT") else "39700"
+    base := "http://localhost:{p}"
+    cases := [
+        "HTTP/1.1 200 OK\r\nContent-Length: 5\r\nContent-Length: 5\r\n\r\nhello",
+        "HTTP/1.1 200 OK\r\nContent-Length: 5\r\nContent-Length: 6\r\n\r\nhello!",
+        "HTTP/1.1 200 OK\r\nContent-Length: 6\r\nContent-Length: 5\r\n\r\nhello!",
+        "HTTP/1.1 200 OK\r\nContent-Length: 5, 5\r\n\r\nhello",
+        "HTTP/1.1 200 OK\r\nContent-Length: 5\r\ncontent-length:   05  \r\n\r\nhello",
+        "HTTP/1.1 200 OK\r\nContent-Length: 05\r\n\r\nhello",
+        "HTTP/1.1 200 OK\r\nContent-Length: +5\r\n\r\nhello",
+        "HTTP/1.1 200 OK\r\nContent-Length: -5\r\n\r\nhello",
+        "HTTP/1.1 200 OK\r\nContent-Length: 5x\r\n\r\nhello",
+        "HTTP/1.1 200 OK\r\nContent-Length: 0x5\r\n\r\nhello",
+        "HTTP/1.1 200 OK\r\nContent-Length:\r\n\r\nhello",
+        "HTTP/1.1 200 OK\r\nContent-Length: 5\r\nContent-Length:\r\n\r\nhello",
+        "HTTP/1.1 200 OK\r\nContent-Length : 5\r\n\r\nhello",
+        "HTTP/1.1 200 OK\r\nContent-Length: 000000000000005\r\n\r\nhello",
+        "HTTP/1.1 200 OK\r\nContent-Length: 0000000000000005\r\n\r\nhello",
+        "HTTP/1.1 200 OK\r\nContent-Length: 999999999999999\r\n\r\nhello",
+        "HTTP/1.1 200 OK\r\nContent-Length: 268435457\r\n\r\nhello",
+        "HTTP/1.1 200 OK\r\nContent-Length: 3\r\n\r\nhello",
+        "HTTP/1.1 200 OK\r\nContent-Length: 9\r\n\r\nhello",
+        "HTTP/1.1 200 OK\r\nContent-Length: 5\r\nTransfer-Encoding: chunked\r\n\r\n3\r\nabc\r\n0\r\n\r\n",
+        "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\nContent-Length: 5\r\n\r\n3\r\nabc\r\n0\r\n\r\n",
+        "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\nTransfer-Encoding: identity\r\nContent-Length: 5\r\n\r\n3\r\nabc\r\n0\r\n\r\n",
+        "HTTP/1.1 200 OK\r\nTransfer-Encoding: gzip, chunked\r\n\r\n3\r\nabc\r\n0\r\n\r\n",
+        "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked, gzip\r\nContent-Length: 2\r\n\r\n3\r\nabc\r\n0\r\n\r\n",
+        "HTTP/1.1 200 OK\r\nTransfer-Encoding: xchunked\r\nContent-Length: 2\r\n\r\n3\r\nabc\r\n0\r\n\r\n",
+        "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n3;ext=1\r\nabc\r\n00\r\nTrailer: x\r\n\r\n",
+        "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n-3\r\nabc\r\n0\r\n\r\n",
+        "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n+3\r\nabc\r\n0\r\n\r\n",
+        "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n0x3\r\nabc\r\n0\r\n\r\n",
+        "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\nFFFFFFFF\r\nabc\r\n0\r\n\r\n",
+        "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n3\r\nabcd\r\n0\r\n\r\n",
+        "HTTP/1.1 204 No Content\r\nContent-Length: 5\r\n\r\nhello",
+        "HTTP/1.1 304 Not Modified\r\nContent-Length: 5\r\n\r\n",
+        "HTTP/1.1 100 Continue\r\n\r\nHTTP/1.1 200 OK\r\nContent-Length: 5\r\n\r\nhello",
+        "HTTP/1.1 100 Continue\r\nContent-Length: 7\r\n\r\nHTTP/1.1 200 OK\r\nContent-Length: 5\r\n\r\nhello",
+        "HTTP/1.1 200 OK\nContent-Length: 5\n\nhello",
+        "HTTP/1.1 200\r\nContent-Length: 5\r\n\r\nhello",
+        "HTTP/1.1  200 OK\r\nContent-Length: 5\r\n\r\nhello",
+        "HTTP/1.0 200 OK\r\n\r\nhello",
+        "HTTP/2 200 OK\r\nContent-Length: 5\r\n\r\nhello",
+        "HTTP/1.1 200 OK\r\n folded: 1\r\nContent-Length: 5\r\n\r\nhello",
+        "HTTP/1.1 200 OK\r\nX: a\r\nx: b\r\nContent-Length: 5\r\n\r\nhello",
+        "\r\nHTTP/1.1 200 OK\r\nContent-Length: 5\r\n\r\nhello",
+        "HTTP/1.1 200 OK\r\nContent-Length: 5\r\n\r\nhelloHTTP/1.1 200 OK\r\nContent-Length: 6\r\n\r\nsecond"
+    ]
+    for answer in cases {
+        started := time.uptime()
+        shown := answer.replace("\r", "\\r").replace("\n", "\\n")
+        show(shown, http.get("{base}/raw?close=1&b=" + encoding.url(answer), timeout: 1s), started)
+    }
+    print("-- HEAD")
+    for answer in ["HTTP/1.1 200 OK\r\nContent-Length: 5\r\n\r\n", "HTTP/1.1 200 OK\r\nContent-Length: 5\r\nContent-Length: 6\r\n\r\n", "HTTP/1.1 200 OK\r\nContent-Length: 5\r\n\r\nhello", "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n", "HTTP/1.1 200 OK\r\nContent-Length: x\r\n\r\n"] {
+        started := time.uptime()
+        shown := answer.replace("\r", "\\r").replace("\n", "\\n")
+        show(shown, http.fetch("HEAD", "{base}/raw?close=1&b=" + encoding.url(answer), timeout: 1s), started)
+    }
+    // after all that, an ordinary request still gets its own answer
+    started := time.uptime()
+    show("plain", http.get("{base}/plain", timeout: 1s), started)
+}

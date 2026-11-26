@@ -1,0 +1,47 @@
+import std/http
+import std/os
+import std/time
+
+fn depth(n: int) -> int {
+    if n == 0 {
+        return 0
+    }
+    return depth(n - 1) + 1
+}
+
+actor Deep {
+    var n: int = 0
+
+    fn slow(ms: int) -> int {
+        time.sleep(ms * 1ms)
+        n += 1
+        return n
+    }
+
+    fn dive(k: int) -> int {
+        return depth(k)
+    }
+
+    fn get() -> int {
+        return n
+    }
+}
+
+fn main() ! http.Error {
+    port := int.parse(os.env("PORT") else "39050") else 39050
+    workers := int.parse(os.env("WORKERS") else "2") else 2
+    deep := Deep.start()
+    other := Deep.start()
+    var app := http.App.new()
+    app.get("/ping", req -> http.text("pong"))
+    app.get("/depth/:n", req -> http.text("{depth(int.parse(req.param("n")) else 0)}"))
+    app.get("/slow/:ms", req -> http.text("{deep.slow(int.parse(req.param("ms")) else 0)}"))
+    app.get("/other/slow/:ms", req -> http.text("{other.slow(int.parse(req.param("ms")) else 0)}"))
+    app.get("/dive/:n", req -> http.text("{deep.dive(int.parse(req.param("n")) else 0)}"))
+    app.get("/get", req -> http.text("{deep.get()}"))
+    app.get("/sleep/:ms", req -> {
+        time.sleep((int.parse(req.param("ms")) else 0) * 1ms)
+        return http.text("slept")
+    })
+    app.serve(port: port, workers: workers)?
+}

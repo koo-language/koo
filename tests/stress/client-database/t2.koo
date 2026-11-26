@@ -1,0 +1,62 @@
+import std/http
+import std/time
+
+fn hex(s: string) -> string {
+    digits := "0123456789abcdef"
+    var out := ""
+    for b in s.bytes() {
+        n := int.from(b)
+        out += digits.slice(n / 16, n / 16 + 1) + digits.slice(n % 16, n % 16 + 1)
+    }
+    return out
+}
+
+fn show(what: string, got: http.Reply ! http.Error) {
+    match got {
+        reply => {
+            var first := reply.body
+            if cut := first.find("\r\n") { first = first.slice(0, cut) }
+            print("{what}: {reply.status} `{first}`")
+        }
+        ! e => print("{what}: ERR {e.kind}: {e}")
+    }
+}
+
+fn main() {
+    a := "http://127.0.0.1:39601"
+    b := "http://127.0.0.1:39602"
+    who := ["Authorization": "Bearer s3cret", "Cookie": "sid=1", "X-Other": "kept"]
+    // method rules
+    for status in ["301", "302", "303", "307", "308"] {
+        for verb in ["GET", "POST", "PUT", "DELETE", "HEAD"] {
+            show("{status} {verb}", http.fetch(verb, "{a}/r/{status}?to={hex("/echo")}", body: if verb == "GET" or verb == "HEAD" or verb == "DELETE" { "" } else { "payload" }, redirects: 2, timeout: 3s))
+        }
+    }
+    // cross origin: auth and cookie
+    show("same origin", http.get("{a}/r/302?to={hex("/echo")}", headers: who, redirects: 2))
+    show("other port", http.get("{a}/r/302?to={hex(b + "/echo")}", headers: who, redirects: 2))
+    show("localhost vs 127", http.get("{a}/r/302?to={hex("http://localhost:39601/echo")}", headers: who, redirects: 2))
+    show("proto-relative", http.get("{a}/r/302?to={hex("//127.0.0.1:39602/echo")}", headers: who, redirects: 2))
+    show("back again", http.get("{a}/r/302?to={hex(b + "/r/302?to=" + hex(a + "/echo"))}", headers: who, redirects: 3))
+    show("upper scheme", http.get("{a}/r/302?to={hex("HTTP://127.0.0.1:39601/echo")}", headers: who, redirects: 2))
+    show("upper host", http.get("{a}/r/302?to={hex("http://127.0.0.1:39601/echo")}", headers: who, redirects: 2))
+    show("default port", http.get("http://127.0.0.1:39601/r/302?to={hex("http://127.0.0.1:39601:/echo")}", headers: who, redirects: 2))
+    show("userinfo", http.get("{a}/r/302?to={hex("http://127.0.0.1:39601@127.0.0.1:39602/echo")}", headers: who, redirects: 2))
+    show("backslash", http.get("{a}/r/302?to={hex("http://127.0.0.1:39601\\@127.0.0.1:39602/echo")}", headers: who, redirects: 2))
+    show("query no slash", http.get("http://127.0.0.1:39601?x=1", redirects: 0))
+    // relative
+    show("rel", http.get("{a}/r/302/x/y?to={hex("echo?z=1")}", redirects: 1))
+    show("dotdot", http.get("{a}/r/302/x/y?to={hex("../../../echo")}", redirects: 1))
+    show("frag", http.get("{a}/r/302?to={hex("/echo#frag")}", redirects: 1))
+    show("empty loc", http.get("{a}/r/302?to=", redirects: 1))
+    show("space loc", http.get("{a}/r/302?to={hex("/echo a")}", redirects: 1))
+    show("mailto", http.get("{a}/r/302?to={hex("mailto:x@y")}", redirects: 1))
+    show("ftp", http.get("{a}/r/302?to={hex("ftp://127.0.0.1/echo")}", redirects: 1))
+    show("loop 5", http.get("{a}/loop", redirects: 5))
+    show("loop 0", http.get("{a}/loop", redirects: 0))
+    show("loop -1", http.get("{a}/loop", redirects: -1))
+    started := time.uptime()
+    show("slowloop budget 1s", http.get("{a}/slowloop", redirects: 100, timeout: 1s))
+    print("took {time.uptime() - started}")
+    show("no path with query -> /echo", http.get("http://127.0.0.1:39601?to={hex("/echo")}&r=1", redirects: 1))
+}

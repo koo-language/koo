@@ -1,0 +1,32 @@
+// Finding: a worker with 128 handlers that all wait for an actor never comes back.
+import std/http
+import std/os
+import std/time
+
+actor Slow {
+    var done: int = 0
+
+    fn work(ms: int) -> int {
+        time.sleep(ms * 1ms)
+        done += 1
+        return done
+    }
+
+    fn total() -> int {
+        return done
+    }
+}
+
+fn main() ! http.Error {
+    port := int.parse(os.env("PORT") else "39020") else 39020
+    workers := int.parse(os.env("WORKERS") else "2") else 2
+    slow := Slow.start()
+    var app := http.App.new()
+    app.get("/ping", req -> http.text("pong"))
+    app.get("/slow/:ms", req -> {
+        ms := int.parse(req.param("ms")) else 0
+        return http.text("{slow.work(ms)}")
+    })
+    app.get("/total", req -> http.text("{slow.total()}"))
+    app.serve(port: port, workers: workers)?
+}

@@ -1,0 +1,11 @@
+import std/http
+
+fn main() {
+    who := ["Authorization": "Bearer s3cret"]
+    for path in ["/to-http", "/to-other", "/to-same"] {
+        match http.get("https://127.0.0.1:39632{path}", headers: who, redirects: 3, timeout: 3s) {
+            reply => print("{path}: {reply.status} `{reply.body}` location={reply.header("location")}")
+            ! e => print("{path}: ERR {e.kind}: {e}")
+        }
+    }
+}

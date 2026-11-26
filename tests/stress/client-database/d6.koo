@@ -1,0 +1,16 @@
+import std/os
+import std/sql/postgres
+
+fn main() {
+    db := postgres.connect(os.env("KOO_TEST_POSTGRES") else "", pool: 1) else e => {
+        print("connect: {e}")
+        return
+    }
+    db.exec("create table if not exists hunt_d_copy (id int)") else 0
+    print("before copy")
+    match db.exec("copy hunt_d_copy from stdin") {
+        n => print("copy returned {n}")
+        ! e => print("copy failed: {e.kind}: {e}")
+    }
+    print("after copy")
+}

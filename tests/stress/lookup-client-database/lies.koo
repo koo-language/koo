@@ -1,0 +1,18 @@
+import std/os
+import std/sql
+import std/sql/postgres
+
+fn main() ! sql.Error {
+    db := postgres.connect(os.args().get(0) else "", pool: 1)?
+    for i in 0..3 {
+        match db.query("select 1") {
+            rows => {
+                print("{rows.len} rows")
+                for row in rows {
+                    print("  {row.columns().len} columns; a = {row.maybe_string("a") else none}")
+                }
+            }
+            ! e => print("{e.kind} [{e.code}]: {e.message}")
+        }
+    }
+}

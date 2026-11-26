@@ -1,0 +1,15 @@
+import std/os
+import std/sql/postgres
+
+fn main() {
+    url := os.args().get(0) else ""
+    match postgres.connect(url, wait: 2s) {
+        db => {
+            match db.query_row("select current_user as u, current_database() as d, current_setting('application_name') as a, current_setting('statement_timeout') as st") {
+                row => print("OK   {url} -> {row}")
+                ! e => print("QERR {url} -> {e.kind}: {e}")
+            }
+        }
+        ! e => print("ERR  {url} -> {e.kind}: {e}")
+    }
+}

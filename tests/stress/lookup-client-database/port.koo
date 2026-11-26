@@ -1,0 +1,9 @@
+// 4295021625 is 2^32 + 54329: not a port, and yet the database at port 54329 is reached.
+import std/sql/postgres
+
+fn main() {
+    match postgres.connect("postgres://postgres:PASSWORD@localhost:4295021625/postgres") {
+        db => print("connected")
+        ! e => print("{e.kind}: {e.message}")
+    }
+}

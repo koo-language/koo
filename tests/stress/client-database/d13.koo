@@ -1,0 +1,49 @@
+import std/os
+import std/sql
+import std/sql/postgres
+import std/time
+
+actor Holder {
+    db: sql.Pool
+
+    fn hold(seconds: float) {
+        db.transaction(tx -> tx.query("select pg_sleep({seconds})")?) else e => []
+    }
+
+    fn try(n: int) -> string {
+        started := time.uptime()
+        match db.query("select 1") {
+            rows => return "got a connection after {(time.uptime() - started).millis()} ms"
+            ! e => return "{e.kind} after {(time.uptime() - started).millis()} ms: {e}"
+        }
+    }
+}
+
+fn main() ! sql.Error {
+    db := postgres.connect(os.env("KOO_TEST_POSTGRES") else "", pool: 1, wait: 700ms)?
+    // arrays
+    back: string = "ends in a backslash\\"
+    empty: [string] = []
+    row := db.query_row("select {[back, "", " ", "a,b", "\{", "}", "null", "Null", "  padded  ", "new\nline", "tab\t", "\"", "'", "😀"]}::text[] as odd, {empty}::text[] as none_at_all, {[""]}::text[] as one_empty, null::int[] as missing, {[-1, 0, -9223372036854775807]}::bigint[] as neg, array[1.5, -0.0, 'NaN'::float8, '-Infinity'::float8, 1e300] as fl, array[true, false, null] as tf, array[null, null]::text[] as nulls, '[2:3]=\{7,8}'::int[] as bounds, array['x']::char(3)[] as padded, array[now()] as times")?
+    odd := row.strings("odd")?
+    print("{odd.len} {odd == [back, "", " ", "a,b", "\{", "}", "null", "Null", "  padded  ", "new\nline", "tab\t", "\"", "'", "😀"]}")
+    print("{row.strings("none_at_all")?.len} {row.strings("one_empty")?} {row.ints("neg")?} {row.floats("fl")?}")
+    for column in ["missing", "tf", "nulls", "bounds", "padded", "times"] {
+        match row.strings(column) {
+            v => print("  {column}: {v}")
+            ! e => print("  {column}: {e}")
+        }
+    }
+    match row.bools("tf") {
+        v => print("  tf as bools: {v}")
+        ! e => print("  tf as bools: {e}")
+    }
+    // the pool's patience
+    holder := Holder.start(db: db)
+    other := Holder.start(db: db)
+    holder.send.hold(2.0)
+    time.sleep(200ms)
+    print(other.try(1))
+    time.sleep(2s)
+    print(other.try(2))
+}

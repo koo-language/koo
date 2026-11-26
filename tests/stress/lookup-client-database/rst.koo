@@ -1,0 +1,12 @@
+import std/http
+
+fn main() {
+    for path in ["/", "/half"] {
+        for method in ["GET", "POST"] {
+            match http.fetch(method, "http://127.0.0.1:39720" + path, timeout: 2s) {
+                reply => print("{method} {path}: {reply.status}")
+                ! e => print("{method} {path}: {e.kind}: {e}")
+            }
+        }
+    }
+}

@@ -1,0 +1,11 @@
+import std/http
+import std/os
+
+fn main() {
+    for url in os.args() {
+        match http.get(url, timeout: 3s) {
+            reply => print("{url}: {reply.status} `{reply.body}`")
+            ! e => print("{url}: ERR {e.kind}: {e}")
+        }
+    }
+}

@@ -1,0 +1,48 @@
+import std/encoding
+import std/http
+import std/os
+
+fn show(what: string, got: http.Reply ! http.Error) {
+    match got {
+        reply => print("{what}\n    => {reply.status} `{reply.body}` location={reply.header("location") else "-"}")
+        ! e => print("{what}\n    => {e.kind}: {e}")
+    }
+}
+
+fn main() {
+    p := os.env("PORT") else "39700"
+    base := "http://localhost:{p}"
+    // where each Location leads, from a few addresses
+    froms := ["{base}/r?s=302&to=", "{base}/a/b/../r?s=302&to="]
+    tos := ["next", "?y=2", "#top", "", "/abs?q=1#f", "../up", "../../../up", "./", "..", ".", "x?y=http://z/w", "//localhost:{p}/sr", "http://LOCALHOST:{p}/case", "HTTP://localhost:{p}/upper", "http://localhost:{p}", "http://localhost:{p}?q=1", "http://localhost:{p}#f", "/sp ace", "/a//b/./c/..", "/%2e%2e/x", "ftp://x/y", "mailto:a@b", "http:/one", "http:two", "/x#a?b", "/q?a=1?b=2", "/semi;v=1/../y"]
+    for to in tos {
+        show("to `{to}`", http.get(froms[0] + encoding.url(to), redirects: 1))
+    }
+    // from addresses with queries, fragments and no path: what is asked first, and where a relative Location leads
+    show("no path, query", http.get("{base}?s=1", redirects: 1))
+    show("no path, fragment", http.get("{base}#frag", redirects: 1))
+    show("no path, fragment with slash and query", http.get("{base}#a/b?c", redirects: 1))
+    show("path, fragment", http.get("{base}/p/q#frag", redirects: 1))
+    show("fragment with ? in it", http.get("{base}/p/q#frag?x=1", redirects: 1))
+    show("query with # after", http.get("{base}/p/q?x=1#frag", redirects: 1))
+    show("query with / in it, relative", http.get("{base}/a/b/r?s=302&to=rel&z=/deep/er/", redirects: 1))
+    show("fragment with / in it, relative", http.get("{base}/a/b/r?s=302&to=rel#/deep/er/", redirects: 1))
+    show("query only, from query with slash", http.get("{base}/a/r?z=/q/&s=302&to=%3Fnew%3D1", redirects: 1))
+    // methods
+    for status in ["301", "302", "303", "307", "308"] {
+        for method in ["HEAD", "POST", "PUT", "DELETE", "GET"] {
+            body := if method == "POST" or method == "PUT" { "payload" } else { "" }
+            show("{method} through {status}", http.fetch(method, "{base}/r?s={status}&to=/landed", body: body, headers: ["Content-Type": "text/x"], redirects: 2))
+        }
+    }
+    // who is asking
+    who := ["Authorization": "Bearer s3cret", "Cookie": "sid=1", "X-Key": "k"]
+    other := int.parse(p) else 0
+    show("same origin", http.get("{base}/r?s=302&to=/same", headers: who, redirects: 1))
+    show("other port", http.get("{base}/r?s=302&to=" + encoding.url("http://localhost:{other + 1}/otherport"), headers: who, redirects: 1))
+    show("other host", http.get("{base}/r?s=302&to=" + encoding.url("http://127.0.0.1:{p}/otherhost"), headers: who, redirects: 1))
+    show("same host, upper case", http.get("{base}/r?s=302&to=" + encoding.url("http://LocalHost:{p}/upper"), headers: who, redirects: 1))
+    show("away and back", http.get("{base}/r?s=302&to=" + encoding.url("http://127.0.0.1:{p}/r?s=302&to=" + encoding.url("http://localhost:{p}/back")), headers: who, redirects: 2))
+    show("lower-case names", http.get("{base}/r?s=302&to=" + encoding.url("http://127.0.0.1:{p}/lower"), headers: ["authorization": "Bearer low", "COOKIE": "sid=2"], redirects: 1))
+    show("trailing dot host", http.get("{base}/r?s=302&to=" + encoding.url("http://localhost.:{p}/dot"), headers: who, redirects: 1))
+}

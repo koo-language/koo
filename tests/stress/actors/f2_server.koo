@@ -1,0 +1,25 @@
+// Finding: big asks/answers to many actors wedge every worker and the supervisor.
+import std/http
+import std/os
+
+actor Echo {
+    fn same(text: string) -> string {
+        return text
+    }
+}
+
+fn main() ! http.Error {
+    port := int.parse(os.env("PORT") else "39010") else 39010
+    workers := int.parse(os.env("WORKERS") else "2") else 2
+    var echos: [Echo] = []
+    for i in 0..64 {
+        echos.push(Echo.start())
+    }
+    var app := http.App.new()
+    app.get("/ping", req -> http.text("pong"))
+    app.post("/echo/:i", req -> {
+        i := int.parse(req.param("i")) else 0
+        return http.text(echos[i % echos.len].same(req.body()))
+    })
+    app.serve(port: port, workers: workers, max_body: 67108864)?
+}

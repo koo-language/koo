@@ -1,0 +1,52 @@
+// A server whose handlers ask other servers and a database; /ping must be answered meanwhile.
+import std/http
+import std/sql/postgres
+import std/time
+
+fn main() ! http.Error {
+    var app := http.App.new()
+    app.get("/ping", req -> http.text("pong"))
+    app.get("/get", req -> {
+        url := req.query("url") else "http://ok.test:8080/"
+        limit := int.parse(req.query("ms") else "5000") else 5000
+        started := time.uptime()
+        match http.get(url, timeout: 1ms * limit) {
+            reply => return http.text("{reply.status} {reply.body.len} bytes after {(time.uptime() - started).millis()} ms\n")
+            ! e => return http.text("{e.kind}: {e} after {(time.uptime() - started).millis()} ms\n")
+        }
+    })
+    app.get("/post", req -> {
+        url := req.query("url") else "http://127.0.0.1:8081/"
+        limit := int.parse(req.query("ms") else "5000") else 5000
+        size := int.parse(req.query("size") else "1000") else 1000
+        var body := "0123456789abcdef"
+        while body.len < size { body = body + body }
+        started := time.uptime()
+        match http.post(url, body, timeout: 1ms * limit) {
+            reply => return http.text("{reply.status} {reply.body.len} bytes after {(time.uptime() - started).millis()} ms\n")
+            ! e => return http.text("{e.kind}: {e} after {(time.uptime() - started).millis()} ms\n")
+        }
+    })
+    app.get("/pg", req -> {
+        url := req.query("url") else ""
+        started := time.uptime()
+        match postgres.connect(url, pool: 1, wait: 1s) {
+            db => return http.text("connected after {(time.uptime() - started).millis()} ms\n")
+            ! e => return http.text("{e.kind}: {e} after {(time.uptime() - started).millis()} ms\n")
+        }
+    })
+    app.get("/pgbig", req -> {
+        url := req.query("url") else ""
+        started := time.uptime()
+        db := postgres.connect(url, pool: 1, wait: 1s) else e => {
+            return http.text("{e.kind}: {e} after {(time.uptime() - started).millis()} ms\n")
+        }
+        var big := "0123456789abcdef"
+        while big.len < 8000000 { big = big + big }
+        match db.exec("select length({big})") {
+            n => return http.text("ran after {(time.uptime() - started).millis()} ms\n")
+            ! e => return http.text("{e.kind}: {e} after {(time.uptime() - started).millis()} ms\n")
+        }
+    })
+    app.serve(port: 8090, workers: 1)?
+}

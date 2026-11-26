@@ -1,0 +1,31 @@
+// Many requests that fail in every way; then a pause, in which what is still open can be counted.
+import std/http
+import std/os
+import std/sql/postgres
+import std/time
+
+fn main() {
+    rounds := int.parse(os.args().get(0) else "50") else 50
+    var failed := 0
+    var fine := 0
+    for i in 0..rounds {
+        for url in ["http://nx.test:8080/", "http://tc.test:8080/", "http://tcnotcp.test:8080/", "http://tcshortlen.test:8080/", "http://garbage.test:8080/", "http://refused.test:8080/", "http://ok.test:1/", "http://ok.test:8080/", "http://wrongid.test:8080/", "http://tcstall.test:8080/", "http://127.0.0.1:8083/", "http://127.0.0.1:8084/", "http://10.255.255.1:81/"] {
+            match http.get(url, timeout: 30ms) {
+                reply => { fine += 1 }
+                ! e => { failed += 1 }
+            }
+        }
+        for port in [39606, 39607, 39608, 39611, 39614, 39615, 1] {
+            match postgres.connect("postgres://u:p@127.0.0.1:{port}/x") {
+                db => { fine += 1 }
+                ! e => { failed += 1 }
+            }
+        }
+        match postgres.connect("postgres://u:p@nx.test:5432/x") {
+            db => { fine += 1 }
+            ! e => { failed += 1 }
+        }
+    }
+    print("fine {fine}, failed {failed}")
+    time.sleep(4s)
+}

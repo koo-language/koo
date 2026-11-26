@@ -1,0 +1,12 @@
+import std/os
+import std/sql
+import std/sql/postgres
+
+fn main() ! sql.Error {
+    db := postgres.connect(os.env("PG") else "", pool: 1)?
+    db.exec("drop table if exists hunt2_d_copy")?
+    for row in db.query("select tablename from pg_tables where tablename like 'hunt2\\_d\\_%'")? {
+        print("still there: {row.string("tablename")?}")
+    }
+    print("dropped")
+}

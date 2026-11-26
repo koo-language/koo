@@ -1,0 +1,13 @@
+import std/os
+import std/sql/postgres
+import std/time
+
+fn main() {
+    url := os.args().get(0) else ""
+    started := time.uptime()
+    match postgres.connect(url) {
+        db => print("connected")
+        ! e => print("{e.kind}: {e.message}")
+    }
+    print("after {(time.uptime() - started).millis()} ms")
+}

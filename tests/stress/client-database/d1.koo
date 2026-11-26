@@ -1,0 +1,68 @@
+import std/sql/postgres
+
+fn try(url: string) {
+    match postgres.connect(url, wait: 2s) {
+        db => {
+            match db.query_row("select current_user as u, current_database() as d, inet_server_port() as p, current_setting('application_name') as a") {
+                row => print("OK   {url} -> {row}")
+                ! e => print("QERR {url} -> {e.kind}: {e}")
+            }
+        }
+        ! e => print("ERR  {url} -> {e.kind}: {e}")
+    }
+}
+
+fn main() {
+    pw := "PASSWORD"
+    try("postgres://postgres:{pw}@localhost:54329/postgres")
+    try("postgresql://postgres:{pw}@127.0.0.1:54329/postgres")
+    try("postgres://postgres:{pw}@[::1]:39610/postgres")
+    try("postgres://postgres:{pw}@[::1]:39610")
+    try("postgres://postgres:{pw}@[0:0:0:0:0:0:0:1]:39610/postgres?sslmode=disable")
+    try("postgres://postgres:{pw}@::1:39610/postgres")
+    try("postgres://postgres:{pw}@[::1:39610/postgres")
+    try("postgres://postgres:{pw}@[::1]]:39610/postgres")
+    try("postgres://postgres:{pw}@[::1]/postgres")
+    try("postgres://postgres:{pw}@[::ffff:127.0.0.1]:54329/postgres")
+    try("postgres://:{pw}@localhost:54329/postgres")
+    try("postgres://:{pw}@localhost:54329")
+    try("postgres://:{pw}@localhost:54329/")
+    try("postgres://localhost:54329/postgres")
+    try("postgres://postgres:wrong@localhost:54329/postgres")
+    try("postgres://postgres:{pw}@localhost:54329/nosuchdb")
+    try("postgres://nosuchuser:{pw}@localhost:54329/postgres")
+    try("postgres://postgres:{pw}@localhost:54329/postgres?sslmod=verify-full")
+    try("postgres://postgres:{pw}@localhost:54329/postgres?ssl=true")
+    try("postgres://postgres:{pw}@localhost:54329/postgres?zzzzzzzzzzzz=1")
+    try("postgres://postgres:{pw}@localhost:54329/postgres?sslmode=bogus")
+    try("postgres://postgres:{pw}@localhost:54329/postgres?sslmode=require")
+    try("postgres://postgres:{pw}@localhost:54329/postgres?sslmode=prefer")
+    try("postgres://postgres:{pw}@localhost:54329/postgres?sslmode=disable")
+    try("postgres://postgres:{pw}@localhost:54329/postgres?sslmode=verify-full")
+    try("postgres://postgres:{pw}@localhost:54329/postgres?sslmode")
+    try("postgres://postgres:{pw}@localhost:54329/postgres?sslmode=require&sslmode=disable")
+    try("postgres://postgres:{pw}@localhost:54329/postgres?sslmode=disable&sslmode=require")
+    try("postgres://postgres:{pw}@localhost:54329/postgres?connect_timeout=1&application_name=mine")
+    try("postgres://postgres:{pw}@localhost:54329/postgres?dbname=nosuchdb")
+    try("postgres://postgres:{pw}@localhost:54329/postgres?port=1&host=nowhere.invalid&user=nobody&password=wrong")
+    try("postgres://localhost:54329/postgres?user=postgres&password={pw}")
+    try("postgres://postgres:{pw}@localhost:54329/postgres?requiressl=1")
+    try("postgres://postgres:{pw}@localhost:54329/postgres?require_auth=none")
+    try("postgres://postgres:{pw}@localhost:54329/postgres?options=-c%20statement_timeout%3D5s")
+    try("postgres://postgres:{pw}@localhost:54329/postgres?options=-c%20application_name%3Dfromopts")
+    try("postgres://postgres:{pw}@localhost:54329/postgres?options=--bogus")
+    try("postgres://post%67res:koo%2Dtest%2Dpw@local%68ost:54329/post%67res")
+    try("postgres://postgres:{pw}@localhost:54329/postgres%00x")
+    try("postgres://postgres%00options%00-c%20application_name%3Dinjected:{pw}@localhost:54329/postgres")
+    try("postgres://postgres:{pw}@localhost:0/postgres")
+    try("postgres://postgres:{pw}@localhost:65536/postgres")
+    try("postgres://postgres:{pw}@localhost:/postgres")
+    try("postgres://postgres:{pw}@localhost:abc/postgres")
+    try("postgres://postgres:{pw}@:54329/postgres")
+    try("postgres://postgres:{pw}@localhost:54329/postgres#frag")
+    try("mysql://postgres:{pw}@localhost:54329/postgres")
+    try("")
+    try("postgres://")
+    try("postgres://postgres:{pw}@nonexistent-host-koo-hunt.invalid:54329/postgres")
+    try("postgres://postgres:{pw}@localhost:1/postgres")
+}

@@ -1,0 +1,54 @@
+import std/os
+import std/sql
+import std/sql/postgres
+
+fn rt(db: sql.Pool, what: string, text: string) {
+    t := Time.parse(text) else {
+        print("{what}: Time.parse refuses `{text}`")
+        return
+    }
+    match db.query_row("select {t}::timestamptz as tz, {t}::timestamp as ts, {t}::timestamptz::text as shown, {[t, t]}::timestamptz[] as both") {
+        row => {
+            a := row.time("tz")
+            b := row.time("ts")
+            match a {
+                back => { if back == t { print("ok   {what} tz: {t} -> {row.string("shown") else "?"} -> {back}") } else { print("FAIL {what} tz: sent {t}, pg shows {row.string("shown") else "?"}, read {back}") } }
+                ! e => print("FAIL {what} tz: sent {t}: {e}")
+            }
+            match b {
+                back => { if back == t { print("ok   {what} ts") } else { print("FAIL {what} ts: sent {t}, read {back} (pg: {row.string("ts") else "?"})") } }
+                ! e => print("FAIL {what} ts: sent {t}: {e}")
+            }
+        }
+        ! e => print("ERR  {what}: {e.kind}: {e}")
+    }
+}
+
+fn main() ! sql.Error {
+    url := os.env("KOO_TEST_POSTGRES") else ""
+    for zone in ["", "?options=-c%20timezone%3DAsia/Kolkata", "?options=-c%20timezone%3DAmerica/St_Johns", "?options=-c%20timezone%3DAsia/Kathmandu"] {
+        print("-- session {zone}")
+        db := postgres.connect(url + zone, pool: 1)?
+        rt(db, "plain", "2026-01-31T12:00:00Z")
+        rt(db, "fraction", "2026-01-31T12:00:00.25Z")
+        rt(db, "micros", "2026-01-31T23:59:59.999999Z")
+        rt(db, "nanos", "2026-01-31T23:59:59.999999999Z")
+        rt(db, "offset", "2026-06-30T23:30:00+05:30")
+        rt(db, "epoch", "1970-01-01T00:00:00Z")
+        rt(db, "before 1970", "1969-07-16T13:32:00.5Z")
+        rt(db, "1900", "1900-01-01T00:00:00Z")
+        rt(db, "1800", "1800-06-15T12:00:00Z")
+        rt(db, "year 1", "0001-01-01T00:00:00Z")
+        rt(db, "9999", "9999-12-31T23:59:59Z")
+        rt(db, "leap day", "2024-02-29T00:00:00Z")
+        nothing: Time? = none
+        row := db.query_row("select {nothing}::timestamptz as n, now() as now, 'infinity'::timestamptz as inf, '2026-01-31 12:00:00 BC'::timestamp as bc, '12:00:00+02'::timetz as ttz, '10000-01-01 00:00:00'::timestamp as far")?
+        print("maybe_time NULL: {row.maybe_time("n")?}; now reads: {row.time("now")? > Time.from_unix(1700000000)}")
+        for column in ["inf", "bc", "ttz", "far"] {
+            match row.time(column) {
+                t => print("  {column}: read as {t} from `{row.string(column) else "?"}`")
+                ! e => print("  {column}: {e}")
+            }
+        }
+    }
+}

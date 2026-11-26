@@ -1,0 +1,4 @@
+#!/bin/sh
+# d NAME "<resolv.conf>" "<servers>" cmd...   -- runs one scenario in a fresh container
+name=$1; shift
+exec docker --context colima run --rm --name koo-hunt2-d-$name -v KOO_ROOT/target/hunt2-d:/x:ro koo-hunt2-d-img /x/run1.sh "$@"

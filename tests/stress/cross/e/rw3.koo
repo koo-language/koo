@@ -1,0 +1,29 @@
+import std/io
+import std/os
+
+fn show(label: string, path: string) {
+    match io.read_file(path) {
+        text => print("{label}: read {text.len} bytes")
+        ! e => print("{label}: {e.message}")
+    }
+}
+
+fn main() {
+    locked := os.args().get(0) else "missing-argument"
+    other := os.args().get(1) else "missing-argument"
+    show("1 before anything", locked)
+    match io.write_file(locked, "x") {
+        _ => print("wrote")
+        ! e => print("2 write: {e.message}")
+    }
+    show("3 other file after failed write", other)
+    show("4 locked file after failed write", locked)
+    show("5 again", locked)
+    match io.read_file("/nonexistent/file") {
+        text => print("read")
+        ! e => print("6 read: {e.message}")
+    }
+    show("7 after failed read", locked)
+    text := io.read_file(locked) else "FAILED"
+    print("8 else form: {text}")
+}

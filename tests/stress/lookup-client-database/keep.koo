@@ -1,0 +1,24 @@
+import std/http
+import std/os
+import std/time
+
+fn show(what: string, got: http.Reply ! http.Error, started: Duration) {
+    took := (time.uptime() - started).millis()
+    match got {
+        reply => print("{what} => {reply.status} `{reply.body}` [{took} ms]")
+        ! e => print("{what} => {e.kind}: {e} [{took} ms]")
+    }
+}
+
+fn main() {
+    base := "http://127.0.0.1:" + (os.env("PORT") else "39710")
+    for method in ["GET", "HEAD", "PUT", "DELETE", "OPTIONS", "POST", "PATCH"] {
+        for path in ["/drop", "/rst", "/partial", "/slow"] {
+            var started := time.uptime()
+            show("  first", http.get(base + "/first", timeout: 1s), started)
+            started = time.uptime()
+            body := if method == "POST" or method == "PUT" or method == "PATCH" { "payload" } else { "" }
+            show("{method} {path}", http.fetch(method, base + path, body: body, timeout: 1s), started)
+        }
+    }
+}

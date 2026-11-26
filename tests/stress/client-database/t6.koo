@@ -1,0 +1,13 @@
+import std/http
+import std/os
+import std/time
+
+fn main() {
+    for url in os.args() {
+        started := time.uptime()
+        match http.get(url, timeout: 500ms) {
+            reply => print("{url}: {reply.status} `{reply.body}` after {(time.uptime() - started).millis()} ms (timeout 500 ms)")
+            ! e => print("{url}: ERR {e.kind}: {e} after {(time.uptime() - started).millis()} ms (timeout 500 ms)")
+        }
+    }
+}

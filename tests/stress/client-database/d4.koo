@@ -1,0 +1,113 @@
+import std/os
+import std/sql
+import std/sql/postgres
+
+fn check(what: string, got: string, want: string) {
+    if got == want { print("ok   {what}") } else { print("FAIL {what}: got `{got}` want `{want}`") }
+}
+
+fn fl(db: sql.Pool, x: float) -> string {
+    match db.query_row("select {x}::float8 as v, {x}::float8::text as t") {
+        row => {
+            match row.float("v") {
+                v => return "{v == x or (v != v and x != x)} koo={x} pg={row.string("t") else "?"} back={v}"
+                ! e => return "READ ERR {e}"
+            }
+        }
+        ! e => return "SEND ERR koo={x}: {e}"
+    }
+}
+
+fn main() ! sql.Error {
+    db := postgres.connect(os.env("KOO_TEST_POSTGRES") else "")?
+    // floats
+    for x in [0.1 + 0.2, 1.0e300, 1.7976931348623157e308, 5.0e-324, 2.2250738585072014e-308, -0.0, 1.0e21, 1.0e22, 123456789012345680000.0, 0.000001, 1.0e-7, 9007199254740993.0, 1.0 / 3.0] {
+        print(fl(db, x))
+    }
+    // float columns as PostgreSQL writes them
+    for t in ["1e+300", "1e-300", "1.5e+15", "-1e+20", "0.1", "1e+308", "5e-324"] {
+        match db.query_row(sql.Query.raw("select '{t}'::float8 as v")) {
+            row => {
+                match row.float("v") {
+                    v => print("ok   float8 {t} -> {v}")
+                    ! e => print("FAIL float8 {t}: {e}")
+                }
+            }
+            ! e => print("ERR {e}")
+        }
+    }
+    // float4
+    row4 := db.query_row("select 1.1::float4 as a, 'NaN'::float4 as b, '-Infinity'::float4 as c, 16777217::float4 as d")?
+    print("float4 {row4.float("a")?} {row4.float("b")?} {row4.float("c")?} {row4.float("d")?}")
+    // numerics
+    nrow := db.query_row("select 12345678901234567890.123456789::numeric as big, 'NaN'::numeric as nan, 1e100::numeric as huge, 0.1::numeric as tenth, 'Infinity'::numeric as inf, 9223372036854775807::bigint as maxi, (-9223372036854775807-1)::bigint as mini, 32767::smallint as s, 99999999999999999999::numeric as over")?
+    print(nrow)
+    print("big as float {nrow.float("big")?}; nan {nrow.float("nan")?}; huge {nrow.float("huge")?}; inf {nrow.float("inf")?}")
+    print("maxi {nrow.int("maxi")?} mini {nrow.int("mini")?}")
+    match nrow.int("over") {
+        v => print("FAIL over read as {v}")
+        ! e => print("ok   over: {e}")
+    }
+    match nrow.int("tenth") {
+        v => print("?? tenth as int {v}")
+        ! e => print("ok   tenth as int: {e}")
+    }
+    // int extremes as params
+    lo := -9223372036854775807 - 1
+    irow := db.query_row("select {9223372036854775807}::bigint as hi, {lo}::bigint as lo, {lo}::bigint - 0 as lo2")?
+    print("{irow.int("hi")?} {irow.int("lo")?}")
+    // bools
+    brow := db.query_row("select {true} as t, {false} as f, {true}::bool as t2, null::bool as n")?
+    print("{brow.string("t")?} {brow.bool("t2")?} {brow.maybe_bool("n")?}")
+    // text of every plane, and quotes
+    for s in ["", " ", "plain", "it's", "semi; drop table x; --", "back\\slash", "quo\"te", "new\nline\r\ttab", "héllo", "日本語", "𝄞 clef 😀", "\u{10FFFF}", "\u{FFFD}", "$1 $2 \{braces}", "%s %d", "'; select pg_sleep(10); --", "\u{1}\u{7f}"] {
+        match db.query_row("select {s} as v, length({s}) as n, octet_length({s}) as o") {
+            r => {
+                back := r.string("v")?
+                if back == s { print("ok   text len {s.len} chars {r.int("n")?} bytes {r.int("o")?}") } else { print("FAIL text `{s}` came back `{back}`") }
+            }
+            ! e => print("ERR text `{s}`: {e.kind} {e}")
+        }
+    }
+    match db.query_row("select {"nul\0inside"} as v") {
+        r => print("?? NUL accepted: len {r.string("v")?.len}")
+        ! e => print("ok   NUL param: {e.kind}: {e}")
+    }
+    match db.query_row(sql.Query.raw("select 1 as a\0, 2 as b")) {
+        r => print("?? NUL in statement accepted: {r}")
+        ! e => print("NUL in statement: {e.kind}: {e}")
+    }
+    match db.query_row("select 1 as after_nul") {
+        r => print("ok   after NUL: {r}")
+        ! e => print("FAIL after NUL: {e.kind}: {e}")
+    }
+    // NULL handling
+    nobody: string? = none
+    n2: int? = none
+    nr := db.query_row("select {nobody} as a, {n2}::int as b, {nobody}::text is null as c, coalesce({n2}::int, 7) as d")?
+    print(nr)
+    match nr.string("a") {
+        v => print("FAIL null string read as `{v}`")
+        ! e => print("ok   {e}")
+    }
+    // empty string vs NULL
+    er := db.query_row("select {""} as e, {""}::text is null as isnull")?
+    print("{er.maybe_string("e")?} {er.bool("isnull")?}")
+    // duplicate column names, no columns, no rows
+    print(db.query_row("select 1 as x, 2 as x")?)
+    print(db.query("select")?.len)
+    print(db.query("select from generate_series(1,3)")?.len)
+    print(db.exec("select 1")?)
+    print(db.exec("")?)
+    match db.query("select 1; select 2") {
+        r => print("?? two statements ran: {r.len}")
+        ! e => print("ok   two statements: {e.kind} {e}")
+    }
+    // other column types as strings
+    o := db.query_row("select '\{\"a\":1}'::jsonb as j, 'a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11'::uuid as u, '\\xdeadbeef'::bytea as b, '1 day 2 hours'::interval as iv, '192.168.1.1/24'::inet as ip, 'x'::char(3) as c, date '2026-01-31' as d, time '12:34:56' as tm, point(1,2) as p")?
+    print(o)
+    match o.time("d") {
+        t => print("date as time: {t}")
+        ! e => print("date as time: {e}")
+    }
+}

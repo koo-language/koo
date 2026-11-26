@@ -1,0 +1,71 @@
+// The server every reproduction in this directory uses: one kind of actor, 256 of them.
+import std/http
+import std/os
+import std/time
+
+actor Counter {
+    var count: int = 0
+    var told: int = 0
+
+    fn next() -> int {
+        count += 1
+        return count
+    }
+
+    fn nap(millis: int) -> int {
+        time.sleep(1ms * millis)
+        count += 1
+        return count
+    }
+
+    fn echo(text: string) -> string {
+        return text
+    }
+
+    fn big(n: int) -> string {
+        return "x".repeat(n)
+    }
+
+    fn tell() {
+        told += 1
+    }
+
+    fn slow_tell(millis: int) {
+        time.sleep(1ms * millis)
+        told += 1
+    }
+}
+
+fn num(req: http.Request, name: string) -> int {
+    return int.parse(req.param(name)) else 0
+}
+
+fn main() ! http.Error {
+    var counters: [Counter] = []
+    for i in 0..256 {
+        counters.push(Counter.start())
+    }
+    var app := http.App.new()
+    app.get("/ping", req -> http.text("pong\n"))
+    app.get("/next/:i", req -> http.text("{counters[num(req, "i") % 256].next()}\n"))
+    app.get("/nap/:i/:ms", req -> http.text("{counters[num(req, "i") % 256].nap(num(req, "ms"))}\n"))
+    app.post("/echo/:i", req -> http.text(counters[num(req, "i") % 256].echo(req.body())))
+    app.get("/big/:i/:n", req -> http.text(counters[num(req, "i") % 256].big(num(req, "n"))))
+    app.get("/tell/:i", req -> {
+        counters[num(req, "i") % 256].send.tell()
+        return http.text("told\n")
+    })
+    app.get("/slowtell/:i/:ms", req -> {
+        counters[num(req, "i") % 256].send.slow_tell(num(req, "ms"))
+        return http.text("told\n")
+    })
+    // A handler that computes, and keeps its worker meanwhile.
+    app.get("/spin/:n", req -> {
+        var work := 0
+        for i in 0..num(req, "n") {
+            work = (work + i) % 1000003
+        }
+        return http.text("{work}\n")
+    })
+    app.serve(port: 8080, workers: int.parse(os.env("WORKERS") else "") else 2)?
+}

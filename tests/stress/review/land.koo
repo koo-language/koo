@@ -1,0 +1,28 @@
+import std/http
+
+fn deep(n: int) -> int {
+    if n == 0 { return 0 }
+    return 1 + deep(n - 1)
+}
+
+actor Store {
+    var n: int = 0
+
+    fn hit() -> int {
+        n += 1
+        return n
+    }
+
+    fn sink() -> int {
+        n += 1
+        return deep(100000000)
+    }
+}
+
+fn main() ! http.Error {
+    a := Store.start()
+    var app := http.App.new()
+    app.get("/hit", req -> http.text("{a.hit()}"))
+    app.get("/sink", req -> http.text("{a.sink()}"))
+    app.serve(port: 39902, workers: 2)?
+}

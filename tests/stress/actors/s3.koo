@@ -1,0 +1,368 @@
+import std/http
+import std/os
+import std/time
+
+error TooBig { limit: int, asked: int }
+error Empty
+
+enum Shape {
+    Circle { radius: float }
+    Rect { width: float, height: float }
+    Dot
+}
+
+type Inner = { name: string, tags: [string], score: float? }
+type Wire = {
+    i: int,
+    f: float,
+    b: bool,
+    s: string,
+    o: int?,
+    oo: string?,
+    list: [int],
+    nested: [[string]],
+    map: [string: Inner],
+    shape: Shape,
+    shapes: [Shape],
+    inner: Inner,
+    raw: [byte],
+}
+
+actor Acc {
+    var n: int = 0
+
+    fn add(k: int) -> int {
+        n += k
+        return n
+    }
+
+    fn get() -> int {
+        return n
+    }
+
+    fn boom(k: int) -> int {
+        empty: [int] = []
+        return empty[k]
+    }
+
+    fn slow(ms: int) -> int {
+        time.sleep(ms * 1ms)
+        n += 1
+        return n
+    }
+
+    fn slowboom(ms: int) -> int {
+        time.sleep(ms * 1ms)
+        empty: [int] = []
+        return empty[3]
+    }
+
+    fn limited(k: int) -> int ! TooBig | Empty {
+        if k == 0 { fail Empty }
+        if k > 100 { fail TooBig { limit: 100, asked: k } }
+        n += k
+        return n
+    }
+
+    fn check(k: int) ! TooBig {
+        if k > 100 { fail TooBig { limit: 100, asked: k } }
+    }
+
+    fn wire(w: Wire) -> Wire {
+        return w
+    }
+
+    fn text(s: string) -> string {
+        return s
+    }
+
+    fn floats(xs: [float]) -> [float] {
+        return xs
+    }
+
+    fn ints(xs: [int]) -> [int] {
+        return xs
+    }
+
+    fn opt(x: int?) -> int? {
+        return x
+    }
+
+    fn optopt(x: [int?]) -> [int?] {
+        return x
+    }
+
+    fn shape(s: Shape) -> Shape {
+        return s
+    }
+
+    fn bytes(b: [byte]) -> [byte] {
+        return b
+    }
+}
+
+actor Outer {
+    inner: Acc
+    var calls: int = 0
+
+    fn nested(k: int) -> int {
+        calls += 1
+        return inner.add(k)
+    }
+
+    fn nested_boom() -> int {
+        calls += 1
+        return inner.boom(5)
+    }
+
+    fn nested_slow(ms: int) -> int {
+        calls += 1
+        return inner.slow(ms)
+    }
+
+    fn count() -> int {
+        return calls
+    }
+
+    fn handle() -> Acc {
+        return inner
+    }
+}
+
+actor Ping {
+    var other: Pong? = none
+
+    fn meet(pong: Pong) {
+        other = pong
+    }
+
+    fn serve() -> int {
+        if pong := other {
+            return pong.hit()
+        }
+        return 0
+    }
+
+    fn echo() -> int {
+        return 1
+    }
+}
+
+actor Pong {
+    ping: Ping
+
+    fn hit() -> int {
+        return ping.echo()
+    }
+}
+
+actor Selfie {
+    var n: int = 0
+
+    fn again() -> int {
+        return self.one()
+    }
+
+    fn one() -> int {
+        n += 1
+        return n
+    }
+}
+
+@mailbox(4)
+actor Printer {
+    var printed: int = 0
+
+    fn page(ms: int) {
+        time.sleep(ms * 1ms)
+        printed += 1
+    }
+
+    fn count() -> int {
+        return printed
+    }
+}
+
+actor Log {
+    var lines: int = 0
+    var sum: int = 0
+
+    fn write(k: int) {
+        lines += 1
+        sum += k
+    }
+
+    fn count() -> int {
+        return lines
+    }
+
+    fn total() -> int {
+        return sum
+    }
+}
+
+actor Sess {
+    name: string
+    var hits: int = 0
+
+    fn hit() -> string {
+        hits += 1
+        return "{name}:{hits}"
+    }
+}
+
+actor Rooms {
+    var rooms: [string: Sess] = [:]
+
+    fn find(name: string) -> Sess? {
+        return rooms[name]
+    }
+
+    fn keep(name: string, room: Sess) -> Sess {
+        if there := rooms[name] {
+            return there
+        }
+        rooms[name] = room
+        return room
+    }
+
+    fn drop(name: string) -> Sess? {
+        found := rooms[name]
+        rooms.remove(name)
+        return found
+    }
+
+    fn size() -> int {
+        return rooms.len
+    }
+}
+
+fn num(req: http.Request, name: string) -> int {
+    return int.parse(req.param(name)) else 0
+}
+
+fn main() ! http.Error {
+    port := int.parse(os.env("PORT") else "39030") else 39030
+    workers := int.parse(os.env("WORKERS") else "2") else 2
+    acc := Acc.start()
+    other := Acc.start()
+    inner := Acc.start()
+    outer := Outer.start(inner: inner)
+    ping := Ping.start()
+    pong := Pong.start(ping: ping)
+    ping.meet(pong)
+    selfie := Selfie.start()
+    printer := Printer.start()
+    log := Log.start()
+    rooms := Rooms.start()
+    victim := Acc.start()
+    var app := http.App.new()
+    app.get("/ping", req -> http.text("pong"))
+    app.get("/add/:k", req -> http.text("{acc.add(num(req, "k"))}"))
+    app.get("/get", req -> http.text("{acc.get()}"))
+    app.get("/other/add/:k", req -> http.text("{other.add(num(req, "k"))}"))
+    app.get("/other/get", req -> http.text("{other.get()}"))
+    app.get("/boom", req -> http.text("{acc.boom(3)}"))
+    app.get("/slow/:ms", req -> http.text("{acc.slow(num(req, "ms"))}"))
+    app.get("/slowboom/:ms", req -> http.text("{acc.slowboom(num(req, "ms"))}"))
+    app.get("/limited/:k", req -> {
+        return match acc.limited(num(req, "k")) {
+            n => http.text("ok {n}")
+            ! TooBig { limit, asked } => http.status(422, "too big: {asked} > {limit}")
+            ! Empty => http.status(400, "empty")
+        }
+    })
+    app.get("/check/:k", req -> {
+        return match acc.check(num(req, "k")) {
+            _ => http.text("fine")
+            ! TooBig { limit, asked } => http.status(422, "too big: {asked} > {limit}")
+        }
+    })
+    app.get("/nested/:k", req -> http.text("{outer.nested(num(req, "k"))}"))
+    app.get("/nested_boom", req -> http.text("{outer.nested_boom()}"))
+    app.get("/nested_slow/:ms", req -> http.text("{outer.nested_slow(num(req, "ms"))}"))
+    app.get("/outer/count", req -> http.text("{outer.count()}"))
+    app.get("/inner/get", req -> http.text("{inner.get()}"))
+    app.get("/inner/slow/:ms", req -> http.text("{inner.slow(num(req, "ms"))}"))
+    app.get("/inner/via", req -> http.text("{outer.handle().add(1)}"))
+    app.get("/cycle", req -> http.text("{ping.serve()}"))
+    app.get("/pingecho", req -> http.text("{ping.echo()}"))
+    app.get("/selfie", req -> http.text("{selfie.again()}"))
+    app.get("/selfie/one", req -> http.text("{selfie.one()}"))
+    app.get("/try/:ms", req -> http.text("{printer.try_send.page(num(req, "ms"))}"))
+    app.get("/send/:ms", req -> {
+        printer.send.page(num(req, "ms"))
+        return http.text("sent")
+    })
+    app.get("/printed", req -> http.text("{printer.count()}"))
+    app.get("/log/:k", req -> {
+        log.send.write(num(req, "k"))
+        return http.text("ok")
+    })
+    app.get("/trylog/:k", req -> http.text("{log.try_send.write(num(req, "k"))}"))
+    app.get("/log", req -> http.text("{log.count()} {log.total()}"))
+    app.get("/room/:name", req -> {
+        name := req.param("name")
+        room := rooms.find(name) else rooms.keep(name, Sess.start(name: name))
+        return http.text(room.hit())
+    })
+    app.get("/room/:name/close", req -> {
+        if room := rooms.drop(req.param("name")) {
+            room.stop()
+            return http.text("closed")
+        }
+        return http.status(404, "no room")
+    })
+    app.get("/rooms", req -> http.text("{rooms.size()}"))
+    // An actor made, used and stopped within a request.
+    app.get("/temp/:k", req -> {
+        temp := Acc.start()
+        a := temp.add(num(req, "k"))
+        b := temp.add(1)
+        temp.stop()
+        return http.text("{a} {b}")
+    })
+    app.get("/victim/slow/:ms", req -> http.text("{victim.slow(num(req, "ms"))}"))
+    app.get("/victim/add/:k", req -> http.text("{victim.add(num(req, "k"))}"))
+    app.get("/victim/stop", req -> {
+        victim.stop()
+        return http.text("stopped")
+    })
+    app.post("/wire", req -> {
+        w: Wire = req.json()?
+        return http.json(acc.wire(w))
+    })
+    app.post("/text", req -> http.text(acc.text(req.body())))
+    app.post("/bytes", req -> http.bytes(acc.bytes(req.bytes())))
+    app.post("/floats", req -> {
+        xs: [float] = req.json()?
+        zero := 0.0
+        var extra := xs
+        for x in [zero / zero, 1.0 / zero, -1.0 / zero, -0.0, 5e-324, 1.7976931348623157e308, 0.1, 1e21, 123456789.123456789] {
+            extra.push(x)
+        }
+        back := acc.floats(extra)
+        var out := ""
+        for x in back {
+            out += "{x} "
+        }
+        return http.text(out)
+    })
+    app.post("/ints", req -> {
+        xs: [int] = req.json()?
+        return http.json(acc.ints(xs))
+    })
+    app.get("/opt", req -> {
+        a := acc.opt(none)
+        b := acc.opt(7)
+        c := acc.optopt([none, 1, none, 2])
+        return http.text("{a} {b} {c}")
+    })
+    app.get("/shape", req -> {
+        a := acc.shape(Shape.Dot)
+        b := acc.shape(Shape.Circle { radius: 1.5 })
+        c := acc.shape(Shape.Rect { width: 2.0, height: 3.0 })
+        return http.text("{a} {b} {c}")
+    })
+    app.serve(port: port, workers: workers, max_body: 67108864)?
+}

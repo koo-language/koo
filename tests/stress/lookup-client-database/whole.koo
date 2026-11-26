@@ -1,0 +1,43 @@
+// The whole of a request has one time: each phase is made slow in turn.
+import std/http
+import std/os
+import std/time
+
+fn show(what: string, limit: int, got: http.Reply ! http.Error, started: Duration) {
+    took := (time.uptime() - started).millis()
+    flag := if took > limit + 150 { "  <-- OVER" } else { "" }
+    match got {
+        reply => print("{what} [{limit} ms]: {reply.status} {reply.body.len} bytes -- {took} ms{flag}")
+        ! e => print("{what} [{limit} ms]: {e.kind}: {e} -- {took} ms{flag}")
+    }
+}
+
+fn main() {
+    host := os.args().get(0) else "127.0.0.1"
+    base := int.parse(os.args().get(1) else "8080") else 8080
+    hole := os.args().get(2) else "10.255.255.1"
+    var body := "0123456789abcdef"
+    while body.len < 30000000 { body = body + body }
+    for limit in [300, 1500] {
+        var started := time.uptime()
+        show("connect to a hole", limit, http.get("http://{hole}:81/", timeout: 1ms * limit), started)
+        started = time.uptime()
+        show("post 32 MB to one that never reads", limit, http.post("http://{host}:{base + 1}/", body, timeout: 1ms * limit), started)
+        started = time.uptime()
+        show("post 32 MB to one that reads slowly", limit, http.post("http://{host}:{base + 2}/", body, timeout: 1ms * limit), started)
+        started = time.uptime()
+        show("put 32 MB to one that never reads", limit, http.put("http://{host}:{base + 1}/", body, timeout: 1ms * limit), started)
+        started = time.uptime()
+        show("get from one that never answers", limit, http.get("http://{host}:{base + 3}/", timeout: 1ms * limit), started)
+        started = time.uptime()
+        show("get, body a byte at a time", limit, http.get("http://{host}:{base + 4}/", timeout: 1ms * limit), started)
+        started = time.uptime()
+        show("get, head a byte at a time", limit, http.get("http://{host}:{base + 5}/", timeout: 1ms * limit), started)
+        started = time.uptime()
+        show("post 32 MB to one that reads", limit, http.post("http://{host}:{base + 6}/", body, timeout: 1ms * limit), started)
+    }
+    for extra in os.args().slice(3, os.args().len) {
+        started := time.uptime()
+        show(extra, 1500, http.get(extra, timeout: 1500ms), started)
+    }
+}

@@ -1,0 +1,19 @@
+import std/http
+import std/io
+import std/os
+
+fn main() {
+    path := os.args().get(0) else "missing-argument"
+    match http.get("http://127.0.0.1:39301/", timeout: 1s) {
+        reply => print("1 status {reply.status}")
+        ! e => print("1 fetch failed: {e.message}")
+    }
+    match io.read_file(path) {
+        text => print("2 read {text.len} bytes")
+        ! e => print("2 read failed: {e.message}")
+    }
+    match io.read_file(path) {
+        text => print("3 read {text.len} bytes")
+        ! e => print("3 read failed: {e.message}")
+    }
+}

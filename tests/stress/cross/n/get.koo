@@ -1,0 +1,17 @@
+import std/http
+import std/os
+import std/time
+
+fn main() {
+    args := os.args()
+    url := args.get(0) else "http://localhost:8080/"
+    seconds := int.parse(args.get(1) else "2") else 2
+    limit := Duration.parse("{seconds}s") else 2s
+    before := time.uptime()
+    match http.get(url, timeout: limit) {
+        reply => print("status {reply.status} body {reply.body.trim()}")
+        ! e => print("error {e.kind}: {e.message}")
+    }
+    took := time.uptime() - before
+    print("took {took.millis() / 100} tenths of a second")
+}

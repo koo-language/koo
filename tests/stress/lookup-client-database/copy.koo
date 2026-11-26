@@ -1,0 +1,132 @@
+import std/os
+import std/sql
+import std/sql/postgres
+import std/time
+
+fn show(what: string, got: int ! sql.Error) {
+    match got {
+        n => print("{what}: ok {n}")
+        ! e => print("{what}: {e.kind} [{e.code}]: {e.message}")
+    }
+}
+
+fn alive(what: string, db: sql.Pool) {
+    match db.query_row("select 41 + 1 as n, pg_backend_pid() as pid") {
+        row => print("  after {what}: n={row.int("n") else -1} pid={row.int("pid") else -1}")
+        ! e => print("  after {what}: {e.kind}: {e.message}")
+    }
+}
+
+fn main() ! sql.Error {
+    url := os.env("PG") else ""
+    db := postgres.connect(url, pool: 1, wait: 2s)?
+    db.exec("drop table if exists hunt2_d_copy")?
+    db.exec("create table hunt2_d_copy (a int, b text)")?
+    db.exec("insert into hunt2_d_copy select g, 'row ' || g from generate_series(1, 5) g")?
+    alive("setup", db)
+
+    show("copy from stdin", db.exec("copy hunt2_d_copy from stdin"))
+    alive("copy from stdin", db)
+    show("copy to stdout", db.exec("copy hunt2_d_copy to stdout"))
+    alive("copy to stdout", db)
+    match db.query("copy hunt2_d_copy to stdout") {
+        rows => print("copy to stdout as query: {rows.len} rows")
+        ! e => print("copy to stdout as query: {e.kind}: {e.message}")
+    }
+    alive("copy to stdout query", db)
+    show("copy (select) to stdout", db.exec("copy (select * from generate_series(1, 300000)) to stdout"))
+    alive("big copy to stdout", db)
+
+    // inside a transaction
+    got := db.transaction(tx -> {
+        show("tx copy from stdin", tx.exec("copy hunt2_d_copy from stdin"))
+        show("tx after copy from", tx.exec("select 1"))
+        return 1
+    })
+    match got {
+        n => print("tx1 committed {n}")
+        ! e => print("tx1: {e.kind}: {e.message}")
+    }
+    alive("tx copy from", db)
+    got2 := db.transaction(tx -> {
+        show("tx copy to stdout", tx.exec("copy hunt2_d_copy to stdout"))
+        show("tx after copy to", tx.exec("insert into hunt2_d_copy values (99, 'tx')"))
+        return 2
+    })
+    match got2 {
+        n => print("tx2 committed {n}")
+        ! e => print("tx2: {e.kind}: {e.message}")
+    }
+    alive("tx copy to", db)
+    print(db.query_row("select count(*) as n from hunt2_d_copy")?.int("n")?)
+
+    // each
+    match db.each("copy hunt2_d_copy to stdout", row -> { print(row) }) {
+        n => print("each copy to: {n}")
+        ! e => print("each copy to: {e.kind}: {e.message}")
+    }
+    alive("each copy to", db)
+    match db.each("copy hunt2_d_copy from stdin", row -> { print(row) }) {
+        n => print("each copy from: {n}")
+        ! e => print("each copy from: {e.kind}: {e.message}")
+    }
+    alive("each copy from", db)
+    match db.each("select * from hunt2_d_copy order by a", row -> {
+        show("  copy inside each body (pool)", db.exec("copy hunt2_d_copy from stdin"))
+    }, batch: 2) {
+        n => print("each w/ pool inside: {n}")
+        ! e => print("each w/ pool inside: {e.kind}: {e.message}")
+    }
+    alive("each pool inside", db)
+    got3 := db.transaction(tx -> {
+        seen := tx.each("select * from hunt2_d_copy order by a", row -> {
+            if row.int("a")? == 2 {
+                show("  copy from inside tx.each", tx.exec("copy hunt2_d_copy from stdin"))
+            }
+        }, batch: 2)?
+        return seen
+    })
+    match got3 {
+        n => print("tx3 committed {n}")
+        ! e => print("tx3: {e.kind}: {e.message}")
+    }
+    alive("tx.each copy", db)
+    got4 := db.transaction(tx -> {
+        seen := tx.each("select * from hunt2_d_copy order by a", row -> {
+            if row.int("a")? == 2 {
+                show("  copy to inside tx.each", tx.exec("copy hunt2_d_copy to stdout"))
+            }
+        }, batch: 2)?
+        return seen
+    })
+    match got4 {
+        n => print("tx4 committed {n}")
+        ! e => print("tx4: {e.kind}: {e.message}")
+    }
+    alive("tx.each copy to", db)
+    // odd statements
+    show("empty", db.exec(""))
+    alive("empty", db)
+    show("two statements", db.exec("select 1; select 2"))
+    alive("two", db)
+    show("comment only", db.exec("-- nothing"))
+    show("listen", db.exec("listen hunt2_d"))
+    show("notify", db.exec("notify hunt2_d, 'x'"))
+    alive("notify", db)
+    show("copy both?", db.exec("copy hunt2_d_copy from stdin with (format binary)"))
+    alive("binary", db)
+    show("copy from program", db.exec("copy hunt2_d_copy to program 'true'"))
+    alive("program", db)
+    show("begin by hand", db.exec("begin"))
+    alive("begin by hand", db)
+    show("copy in a hand tx", db.exec("copy hunt2_d_copy from stdin"))
+    alive("copy in hand tx", db)
+    show("rollback", db.exec("rollback"))
+    show("set statement_timeout", db.exec("set statement_timeout = 300"))
+    started := time.uptime()
+    show("copy from stdin with timeout", db.exec("copy hunt2_d_copy from stdin"))
+    show("sleep", db.exec("select pg_sleep(2)"))
+    print((time.uptime() - started).millis() < 1500)
+    show("reset", db.exec("reset statement_timeout"))
+    db.exec("drop table hunt2_d_copy")?
+}

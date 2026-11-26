@@ -1,0 +1,37 @@
+// Finding: asks of the first actor a program starts are not held up one behind another
+// in the supervising process; each takes a thread, and 32 of them take every thread.
+import std/http
+import std/os
+import std/time
+
+actor Slow {
+    var done: int = 0
+
+    fn work(ms: int) -> int {
+        time.sleep(ms * 1ms)
+        done += 1
+        return done
+    }
+}
+
+actor Quick {
+    var n: int = 0
+
+    fn next() -> int {
+        n += 1
+        return n
+    }
+}
+
+fn main() ! http.Error {
+    port := int.parse(os.env("PORT") else "39070") else 39070
+    workers := int.parse(os.env("WORKERS") else "4") else 4
+    first := Slow.start()
+    second := Slow.start()
+    quick := Quick.start()
+    var app := http.App.new()
+    app.get("/first/:ms", req -> http.text("{first.work(int.parse(req.param("ms")) else 0)}"))
+    app.get("/second/:ms", req -> http.text("{second.work(int.parse(req.param("ms")) else 0)}"))
+    app.get("/quick", req -> http.text("{quick.next()}"))
+    app.serve(port: port, workers: workers)?
+}

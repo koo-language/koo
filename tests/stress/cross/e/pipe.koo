@@ -1,0 +1,8 @@
+import std/io
+
+fn main() {
+    for i in 0..2000000 {
+        print("line {i}")
+    }
+    io.eprint("finished all lines")
+}

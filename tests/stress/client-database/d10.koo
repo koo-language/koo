@@ -1,0 +1,48 @@
+// One pool of one connection, two threads. Each round both send one statement at the
+// same moment; the one that finds the connection in use waits for it.
+import std/os
+import std/sql
+import std/sql/postgres
+import std/time
+
+actor Worker {
+    db: sql.Pool
+    var worst: int = 0
+    var slow: int = 0
+
+    fn quick() {
+        started := time.uptime()
+        match db.query("select 1") {
+            rows => {}
+            ! e => print("quick failed: {e.kind}: {e}")
+        }
+        took := (time.uptime() - started).millis()
+        if took > worst { worst = took }
+        if took > 1000 { slow += 1 }
+    }
+
+    fn worst_millis() -> int {
+        return worst
+    }
+
+    fn slow_ones() -> int {
+        return slow
+    }
+}
+
+fn main() ! sql.Error {
+    db := postgres.connect(os.env("KOO_TEST_POSTGRES") else "", pool: 1, wait: 3s)?
+    a := Worker.start(db: db)
+    b := Worker.start(db: db)
+    rounds := int.parse(os.args().get(0) else "") else 20000
+    started := time.uptime()
+    for round in 0..rounds {
+        a.send.quick()
+        b.send.quick()
+        if round % 64 == 0 {
+            a.worst_millis()
+            b.worst_millis()
+        }
+    }
+    print("{rounds} rounds in {(time.uptime() - started).millis()} ms; the longest a statement took: {a.worst_millis()} ms and {b.worst_millis()} ms; over a second: {a.slow_ones() + b.slow_ones()}")
+}

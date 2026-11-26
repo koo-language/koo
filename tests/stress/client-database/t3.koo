@@ -1,0 +1,82 @@
+import std/http
+import std/time
+
+fn show(what: string, got: http.Reply ! http.Error) {
+    match got {
+        reply => {
+            var first := reply.body
+            if cut := first.find("\r\n") { first = first.slice(0, cut) }
+            if first.len > 80 { first = first.slice(0, 80) }
+            print("{what}: {reply.status} `{first}`")
+        }
+        ! e => print("{what}: ERR {e.kind}: {e}")
+    }
+}
+
+fn timed(what: string, url: string, limit: Duration) {
+    started := time.uptime()
+    got := http.get(url, timeout: limit)
+    show(what, got)
+    print("   took {time.uptime() - started} of {limit}")
+}
+
+fn main() {
+    a := "http://127.0.0.1:39601"
+    timed("drip body", a + "/drip", 1s)
+    timed("drip head", a + "/drip-head", 1s)
+    timed("stall", a + "/stall", 700ms)
+    timed("noclen-keep", a + "/noclen-keep", 700ms)
+    timed("blackhole", "http://10.255.255.1:81/", 700ms)
+    timed("nxdomain", "http://nonexistent-host-koo-hunt.invalid/", 700ms)
+    timed("1ns", a + "/ok", 1ns)
+    // IPv6
+    show("v6 literal", http.get("http://[::1]:39603/echo"))
+    show("v6 literal upper", http.get("http://[0:0:0:0:0:0:0:1]:39603/ok"))
+    show("v6 on v4-only", http.get("http://[::1]:39601/ok"))
+    show("v4 on v6-only", http.get("http://127.0.0.1:39603/ok"))
+    show("localhost on v6-only", http.get("http://localhost:39603/ok"))
+    show("localhost on v4", http.get("http://localhost:39601/ok"))
+    show("LOCALHOST", http.get("http://LOCALHOST:39601/ok"))
+    show("v4-mapped", http.get("http://[::ffff:127.0.0.1]:39601/ok"))
+    show("v4-mapped hex", http.get("http://[::ffff:7f00:1]:39601/ok"))
+    show("zone", http.get("http://[fe80::1%lo0]:39603/ok"))
+    show("zone25", http.get("http://[fe80::1%25lo0]:39603/ok"))
+    show("no bracket", http.get("http://::1:39603/ok"))
+    show("unclosed", http.get("http://[::1:39603/ok"))
+    show("double close", http.get("http://[::1]]:39603/ok"))
+    show("empty brackets", http.get("http://[]:39603/ok"))
+    show("bracket v4", http.get("http://[127.0.0.1]:39601/ok"))
+    show("junk after bracket", http.get("http://[::1]x:39603/ok"))
+    show("bracket two ports", http.get("http://[::1]:39603:39603/ok"))
+    show("v6 no port", http.get("http://[::1]/ok", timeout: 1s))
+    show("userinfo", http.get("http://user:pw@127.0.0.1:39601/ok"))
+    show("empty host", http.get("http:///ok"))
+    show("empty host port", http.get("http://:39601/ok"))
+    show("port 0", http.get("http://127.0.0.1:0/ok"))
+    show("port 65536", http.get("http://127.0.0.1:65536/ok"))
+    show("port empty", http.get("http://127.0.0.1:/ok"))
+    show("port 039601", http.get("http://127.0.0.1:039601/ok"))
+    show("port +", http.get("http://127.0.0.1:+39601/ok"))
+    show("frag", http.get("http://127.0.0.1:39601/echo#frag"))
+    show("frag only", http.get("http://127.0.0.1:39601#frag"))
+    show("query only", http.get("http://127.0.0.1:39601?q=1"))
+    show("pct", http.get("http://127.0.0.1:39601/echo%20a%00b?x=%0d%0a"))
+    show("non-ascii", http.get("http://127.0.0.1:39601/echo/héllo/日本?q=ü"))
+    show("non-ascii host", http.get("http://bücher.invalid:39601/ok", timeout: 2s))
+    show("tab", http.get("http://127.0.0.1:39601/echo\tx"))
+    show("nul", http.get("http://127.0.0.1:39601/echo\0x"))
+    show("del", http.get("http://127.0.0.1:39601/echo\u{7f}x"))
+    show("dotted decimal odd", http.get("http://127.1:39601/ok", timeout: 2s))
+    show("int host", http.get("http://2130706433:39601/ok", timeout: 2s))
+    show("hex host", http.get("http://0x7f.0.0.1:39601/ok", timeout: 2s))
+    show("octal host", http.get("http://0177.0.0.1:39601/ok", timeout: 2s))
+    show("leading zeros", http.get("http://127.000.000.001:39601/ok", timeout: 2s))
+    show("trailing dot", http.get("http://localhost.:39601/ok", timeout: 2s))
+    show("upper scheme", http.get("HTTP://127.0.0.1:39601/ok"))
+    var long := "http://127.0.0.1:39601/echo?"
+    for i in 0..20000 { long += "aaaaaaaaaa" }
+    show("200KB url", http.get(long))
+    var longhost := "http://"
+    for i in 0..30 { longhost += "aaaaaaaaaa." }
+    show("long host", http.get(longhost + "invalid:39601/ok", timeout: 2s))
+}

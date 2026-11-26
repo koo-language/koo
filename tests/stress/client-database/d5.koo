@@ -1,0 +1,124 @@
+import std/os
+import std/sql
+import std/sql/postgres
+import std/time
+
+fn say(what: string, got: [sql.Row] ! sql.Error) {
+    match got {
+        rows => {
+            var first := ""
+            if rows.len > 0 { first = rows[0].to_string() }
+            if first.len > 80 { first = first.slice(0, 80) }
+            print("{what}: {rows.len} rows {first}")
+        }
+        ! e => print("{what}: ERR {e.kind} [{e.code}]: {e.message}")
+    }
+}
+
+fn main() ! sql.Error {
+    url := os.env("KOO_TEST_POSTGRES") else ""
+    db := postgres.connect(url, pool: 2, wait: 1s)?
+    db.exec("drop table if exists hunt_d_t")?
+    db.exec("create table hunt_d_t (id int primary key, note text)")?
+
+    // 1. a statement that ends its own connection
+    say("terminate self", db.query("select pg_terminate_backend(pg_backend_pid())"))
+    say("after terminate", db.query("select 1 as one"))
+    // an insert that dies with its connection: was it sent twice? was it kept?
+    say("insert and die", db.query("insert into hunt_d_t select 1, 'x' from (select pg_terminate_backend(pg_backend_pid())) t returning id"))
+    say("rows after", db.query("select count(*) as n from hunt_d_t"))
+    // an idle connection of this program's own, ended from another of its own
+    victim := postgres.connect(url, pool: 1)?
+    pid := victim.query_row("select pg_backend_pid() as p")?.int("p")?
+    say("end my own idle one", db.query("select pg_terminate_backend({pid})"))
+    time.sleep(100ms)
+    say("victim after", victim.query("select 2 as two"))
+    pid2 := victim.query_row("select pg_backend_pid() as p")?.int("p")?
+    say("end it again", db.query("select pg_terminate_backend({pid2})"))
+    time.sleep(100ms)
+    say("victim insert after", victim.query("insert into hunt_d_t values (2, 'y') returning id"))
+
+    // 2. in a transaction
+    match db.transaction(tx -> {
+        tx.exec("insert into hunt_d_t values (3, 'z')")?
+        say("  tx terminate", tx.query("select pg_terminate_backend(pg_backend_pid())"))
+        say("  tx after", tx.query("select 1"))
+        return 1
+    }) {
+        v => print("tx returned {v}")
+        ! e => print("tx: ERR {e.kind}: {e.message}")
+    }
+    say("row 3 kept?", db.query("select count(*) as n from hunt_d_t where id = 3"))
+
+    // 3. a failed statement swallowed
+    match db.transaction(tx -> {
+        tx.exec("insert into hunt_d_t values (4, 'a')")?
+        tx.exec("insert into hunt_d_t values (4, 'dup')") else 0
+        say("  after failed", tx.query("select 1"))
+        return 1
+    }) {
+        v => print("swallowed returned {v}")
+        ! e => print("swallowed: ERR {e.kind} [{e.code}]: {e.message}")
+    }
+    say("row 4 kept?", db.query("select count(*) as n from hunt_d_t where id = 4"))
+
+    // 4. tx kept and used later
+    var kept: [sql.Tx] = []
+    db.transaction(tx -> {
+        kept.push(tx)
+        tx.exec("insert into hunt_d_t values (5, 'b')")?
+    })?
+    say("tx used later", kept[0].query("select 1"))
+    db.transaction(tx -> {
+        say("  old tx inside new", kept[0].query("select 1"))
+    })?
+
+    // 5. statement inside own transaction on the pool, pool of 2: one more connection, then none
+    match db.transaction(tx -> {
+        say("  pool inside tx (1 free)", db.query("select 1"))
+        db.transaction(tx2 -> {
+            started := time.uptime()
+            say("  pool inside two tx", db.query("select 1"))
+            print("    after {(time.uptime() - started).millis()} ms")
+        })?
+    }) {
+        _ => print("nested ok")
+        ! e => print("nested: {e.kind}: {e.message}")
+    }
+
+    // 6. timeouts
+    db2 := postgres.connect(url + "?options=-c%20statement_timeout%3D200ms%20-c%20lock_timeout%3D100ms", pool: 2)?
+    say("statement timeout", db2.query("select pg_sleep(2)"))
+    say("after timeout", db2.query("select 1"))
+    db.transaction(tx -> {
+        tx.exec("lock table hunt_d_t in access exclusive mode")?
+        say("  lock timeout", db2.query("select * from hunt_d_t"))
+    })?
+    // inside a transaction, a timeout ends it
+    match db2.transaction(tx -> {
+        tx.exec("insert into hunt_d_t values (6, 'c')")?
+        say("  tx timeout", tx.query("select pg_sleep(2)"))
+        return 1
+    }) {
+        v => print("tx after timeout returned {v}")
+        ! e => print("tx after timeout: {e.kind}: {e.message}")
+    }
+
+    // 7. isolation levels
+    for level in [sql.Isolation.ReadCommitted, sql.Isolation.RepeatableRead, sql.Isolation.Serializable] {
+        print(db.transaction(tx -> tx.query_row("select current_setting('transaction_isolation') as l")?.string("l")?, isolation: level)?)
+    }
+    // 8. COPY out
+    say("copy to stdout", db2.query("copy hunt_d_t to stdout"))
+    print("copy to stdout affected {db2.exec("copy hunt_d_t to stdout") else -1}")
+    say("after copy out", db2.query("select 1"))
+    // 9. listen/notify and notices
+    say("listen", db.query("listen hunt_d_chan"))
+    say("notify", db.query("notify hunt_d_chan, 'hello'"))
+    say("after notify", db.query("select 1"))
+    say("notice", db.query(sql.Query.raw("do $$ begin raise notice 'a notice'; raise warning 'a warning'; end $$")))
+    say("raise", db.query(sql.Query.raw("do $$ begin raise exception 'custom' using errcode = 'KOO01'; end $$")))
+    say("div zero", db.query("select 1/0"))
+    say("after errors", db.query("select 1"))
+    db.exec("drop table hunt_d_t")?
+}

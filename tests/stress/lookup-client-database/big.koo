@@ -1,0 +1,37 @@
+import std/os
+import std/sql
+import std/sql/postgres
+import std/time
+
+fn main() ! sql.Error {
+    url := os.env("PG") else ""
+    db := postgres.connect(url, pool: 2, wait: 2s)?
+    var piece := "0123456789abcdef"
+    while piece.len < 1048576 { piece = piece + piece }
+    for megabytes in [600] {
+        var big := ""
+        var parts: [string] = []
+        for i in 0..megabytes { parts.push(piece) }
+        big = parts.join("")
+        started := time.uptime()
+        match db.query_row("select length({big}) as n, md5({big}) as h") {
+            row => print("{megabytes} MB x2: length {row.int("n") else -1} in {(time.uptime() - started).millis()} ms")
+            ! e => print("{megabytes} MB x2: {e.kind} [{e.code}]: {e.message} in {(time.uptime() - started).millis()} ms")
+        }
+        match db.query_row("select 1 as n") {
+            row => print("  alive")
+            ! e => print("  then: {e.kind}: {e.message}")
+        }
+        match db.query_row("select length({big}) as n") {
+            row => print("{megabytes} MB: length {row.int("n") else -1}")
+            ! e => print("{megabytes} MB: {e.kind} [{e.code}]: {e.message}")
+        }
+        // and back
+        if megabytes <= 200 {
+            match db.query_row("select repeat('x', {megabytes * 1048576}::int) as s") {
+                row => print("  back: {(row.string("s") else "").len}")
+                ! e => print("  back: {e.kind}: {e.message}")
+            }
+        }
+    }
+}

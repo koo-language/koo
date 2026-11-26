@@ -1,0 +1,32 @@
+import std/http
+import std/os
+import std/time
+
+actor Noisy {
+    tag: int
+    var n: int = 0
+
+    fn work(ms: int) -> int {
+        n += 1
+        print("line {tag} {n}")
+        time.sleep(ms * 1ms)
+        return n
+    }
+}
+
+fn main() ! http.Error {
+    port := int.parse(os.env("PORT") else "39040") else 39040
+    workers := int.parse(os.env("WORKERS") else "4") else 4
+    var noisy: [Noisy] = []
+    for i in 0..16 {
+        noisy.push(Noisy.start(tag: i))
+    }
+    var app := http.App.new()
+    app.get("/ping", req -> http.text("pong"))
+    app.get("/work/:i/:ms", req -> {
+        i := int.parse(req.param("i")) else 0
+        ms := int.parse(req.param("ms")) else 0
+        return http.text("{i} {noisy[i % noisy.len].work(ms)}")
+    })
+    app.serve(port: port, workers: workers)?
+}

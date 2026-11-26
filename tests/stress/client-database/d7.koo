@@ -1,0 +1,118 @@
+import std/os
+import std/sql
+import std/sql/postgres
+import std/time
+
+error Stop { at: int }
+
+fn main() ! sql.Error {
+    url := os.env("KOO_TEST_POSTGRES") else ""
+    db := postgres.connect(url, pool: 2, wait: 1s)?
+    db.exec("drop table if exists hunt_d_e")?
+    db.exec("create table hunt_d_e (id int primary key, note text)")?
+    db.exec("insert into hunt_d_e select g, 'n' || g from generate_series(1, 2500) g")?
+
+    // exact multiples of the batch
+    for batch in [1, 2499, 2500, 2501, 1000, 0, -5, 1000000] {
+        var n := 0
+        seen := db.each("select * from hunt_d_e order by id", row -> { n += 1 }, batch: batch)?
+        print("batch {batch}: seen {seen} called {n}")
+    }
+    // with parameters
+    lim := 10
+    var ids: [int] = []
+    db.each("select id from hunt_d_e where id <= {lim} and note like {"n%"} order by id", row -> { ids.push(row.int("id")?) }, batch: 3)?
+    print(ids)
+    // body fails with its own error; body fails with sql error; then pool is fine
+    var count := 0
+    match db.each("select id from hunt_d_e order by id", row -> {
+        count += 1
+        if count == 5 { fail Stop { at: count } }
+    }, batch: 2) {
+        n => print("all {n}")
+        ! e: Stop => print("stopped at {e.at}")
+        ! e: sql.Error => print("sql: {e}")
+    }
+    // nested pool queries inside the body: pool of 2
+    var inner := 0
+    match db.each("select id from hunt_d_e where id <= 5 order by id", row -> {
+        inner += db.query_row("select count(*) as n from hunt_d_e where id <= {row.int("id")?}")?.int("n")?
+    }, batch: 2) {
+        n => print("nested pool: {n} rows, inner {inner}")
+        ! e => print("nested pool: {e.kind}: {e}")
+    }
+    // nested each on the pool inside each on the pool: needs 2 connections; a third level cannot be had
+    var pairs := 0
+    match db.each("select id from hunt_d_e where id <= 3", a -> {
+        db.each("select id from hunt_d_e where id <= 2", b -> {
+            db.each("select id from hunt_d_e where id <= 2", c -> { pairs += 1 })?
+        })?
+    }) {
+        n => print("three levels: {n} pairs {pairs}")
+        ! e => print("three levels: {e.kind}: {e}")
+    }
+    // writes inside each on a tx; then each sees a failed statement
+    match db.transaction(tx -> {
+        var touched := 0
+        tx.each("select id from hunt_d_e where id <= 10 order by id", row -> {
+            touched += tx.exec("update hunt_d_e set note = 'touched' where id = {row.int("id")?}")?
+        }, batch: 3)?
+        return touched
+    }) {
+        n => print("touched {n}")
+        ! e => print("touched: {e.kind}: {e}")
+    }
+    match db.transaction(tx -> {
+        var n := 0
+        tx.each("select id from hunt_d_e where id <= 10 order by id", row -> {
+            n += 1
+            if n == 4 { tx.exec("select 1/0") else 0 }
+        }, batch: 3)?
+        return n
+    }) {
+        n => print("FAIL? each after failed statement returned {n}")
+        ! e => print("each after failed statement: {e.kind} [{e.code}]: {e}")
+    }
+    // not a select
+    match db.each("insert into hunt_d_e values (9001, 'x') returning id", row -> print(row)) {
+        n => print("insert each: {n}")
+        ! e => print("insert each: {e.kind}: {e}")
+    }
+    match db.each("select 1;", row -> print(row)) {
+        n => print("semicolon each: {n}")
+        ! e => print("semicolon each: {e.kind}: {e}")
+    }
+    match db.each("select 1 -- comment", row -> print(row)) {
+        n => print("comment each: {n}")
+        ! e => print("comment each: {e.kind}: {e}")
+    }
+    // The pool afterwards: both connections usable, nothing left in a transaction
+    for i in 0..4 {
+        print(db.query_row("select count(*) as n, (select count(*) from pg_cursors) as cursors, pg_backend_pid() > 0 as ok, now() = statement_timestamp() as fresh from hunt_d_e")?)
+    }
+    // large results and rows
+    started := time.uptime()
+    big := db.query("select g as id, repeat('x', 100) as pad from generate_series(1, 300000) g")?
+    print("{big.len} rows in {(time.uptime() - started).millis() > 0}; last {big[big.len - 1].int("id")?}")
+    wide := db.query_row("select repeat('y', 50000000) as v")?
+    print("one value of {wide.string("v")?.len} bytes")
+    var manycols := "select 1 as c0"
+    for i in 1..1600 { manycols += ", {i} as c{i}" }
+    r := db.query_row(sql.Query.raw(manycols))?
+    print("{r.columns().len} columns, last {r.int("c1599")?}")
+    // many parameters
+    var q: sql.Query = "select 0"
+    for i in 0..65534 { q.append(" + {1}") }
+    match db.query_row(q) {
+        row => print("65534 params: {row}")
+        ! e => print("65534 params: {e.kind}: {e}")
+    }
+    q.append(" + {1}")
+    q.append(" + {1}")
+    match db.query_row(q) {
+        row => print("65536 params: {row}")
+        ! e => print("65536 params: {e.kind}: {e}")
+    }
+    print(db.query_row("select 'still fine' as s")?)
+    db.exec("drop table hunt_d_e")?
+}

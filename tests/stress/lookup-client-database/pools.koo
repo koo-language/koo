@@ -1,0 +1,70 @@
+// Two pools, more actors than connections: every statement runs, or times out after `wait`, and nothing else.
+import std/os
+import std/sql
+import std/sql/postgres
+import std/time
+
+fn judge(name: string, started: Duration, limit: int, got: int ! sql.Error) -> string {
+    took := (time.uptime() - started).millis()
+    match got {
+        n => return ""
+        ! e => {
+            if e.kind == sql.ErrorKind.Timeout and e.code == "" {
+                if took < limit - 50 or took > limit + 400 { return "{name}: timeout after {took} ms, limit {limit}: {e.message}" }
+                return "late"
+            }
+            return "{name}: {e.kind} [{e.code}]: {e.message}"
+        }
+    }
+}
+
+actor Worker {
+    a: sql.Pool
+    b: sql.Pool
+    name: string
+    var ran: int = 0
+    var late: int = 0
+    var odd: [string] = []
+
+    fn count(verdict: string) {
+        if verdict == "" { ran += 1 } else if verdict == "late" { late += 1 } else { odd.push(verdict) }
+    }
+
+    fn work(rounds: int) {
+        for i in 0..rounds {
+            var started := time.uptime()
+            count(judge(name, started, 300, a.transaction(tx -> {
+                tx.exec("select pg_sleep(0.05)")?
+                return tx.query_row("select 1 as n")?.int("n")?
+            })))
+            started = time.uptime()
+            count(judge(name, started, 1000, b.exec("select pg_sleep(0.02)")))
+            started = time.uptime()
+            // one pool inside the other's transaction
+            count(judge(name, started, 1000, b.transaction(tx -> {
+                tx.exec("select 1")?
+                return a.exec("select pg_sleep(0.01)") else e => {
+                    if e.kind != sql.ErrorKind.Timeout { fail e }
+                    return -1
+                }
+            })))
+        }
+    }
+
+    fn report() -> string {
+        return "{name}: ran {ran}, timed out {late}, odd {odd}"
+    }
+}
+
+fn main() ! sql.Error {
+    url := os.env("PG") else ""
+    a := postgres.connect(url, pool: 2, wait: 300ms)?
+    b := postgres.connect(url, pool: 1, wait: 1s)?
+    var workers: [Worker] = []
+    for i in 0..10 { workers.push(Worker.start(a: a, b: b, name: "w{i}")) }
+    started := time.uptime()
+    for w in workers { w.send.work(15) }
+    for w in workers { print(w.report()) }
+    print("all done in {(time.uptime() - started).millis()} ms")
+    print(a.query_row("select count(*) as n from pg_stat_activity where application_name = 'koo' and pid <> pg_backend_pid()")?.int("n")?)
+}

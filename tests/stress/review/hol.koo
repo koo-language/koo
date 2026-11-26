@@ -1,0 +1,29 @@
+import std/http
+
+actor Store {
+    var n: int = 0
+
+    fn hit() -> int {
+        n += 1
+        return n
+    }
+
+    fn keep(text: string) -> int {
+        return text.len
+    }
+}
+
+fn fib(n: int) -> int {
+    if n < 2 { return n }
+    return fib(n - 1) + fib(n - 2)
+}
+
+fn main() ! http.Error {
+    a := Store.start()
+    b := Store.start()
+    var app := http.App.new()
+    app.get("/hit", req -> http.text("{b.hit()}"))
+    app.post("/keep", req -> http.text("{a.keep(req.body())}"))
+    app.get("/spin", req -> http.text("{fib(43)}"))
+    app.serve(port: 39901, workers: 2)?
+}

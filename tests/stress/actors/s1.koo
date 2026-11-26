@@ -1,0 +1,78 @@
+import std/http
+import std/os
+import std/time
+
+actor Counter {
+    var count: int = 0
+
+    fn next() -> int {
+        count += 1
+        return count
+    }
+
+    fn total() -> int {
+        return count
+    }
+}
+
+actor Slow {
+    var done: int = 0
+
+    fn work(ms: int) -> int {
+        time.sleep(ms * 1ms)
+        done += 1
+        return done
+    }
+
+    fn total() -> int {
+        return done
+    }
+}
+
+actor Echo {
+    fn same(text: string) -> string {
+        return text
+    }
+    fn big(n: int) -> string {
+        return "x".repeat(n)
+    }
+}
+
+fn main() ! http.Error {
+    port := int.parse(os.env("PORT") else "39000") else 39000
+    workers := int.parse(os.env("WORKERS") else "2") else 2
+    nslow := int.parse(os.env("NSLOW") else "64") else 64
+    counter := Counter.start()
+    echo := Echo.start()
+    var slows: [Slow] = []
+    for i in 0..nslow {
+        slows.push(Slow.start())
+    }
+    var echos: [Echo] = []
+    for i in 0..nslow {
+        echos.push(Echo.start())
+    }
+    var app := http.App.new()
+    app.get("/ping", req -> http.text("pong"))
+    app.get("/count", req -> http.text("{counter.next()}"))
+    app.get("/total", req -> http.text("{counter.total()}"))
+    app.get("/slow/:i/:ms", req -> {
+        i := int.parse(req.param("i")) else 0
+        ms := int.parse(req.param("ms")) else 0
+        return http.text("{slows[i % slows.len].work(ms)}")
+    })
+    app.get("/slowtotal/:i", req -> {
+        i := int.parse(req.param("i")) else 0
+        return http.text("{slows[i % slows.len].total()}")
+    })
+    app.post("/echo/:i", req -> {
+        i := int.parse(req.param("i")) else 0
+        return http.text(echos[i % echos.len].same(req.body()))
+    })
+    app.get("/big/:i/:n", req -> {
+        i := int.parse(req.param("i")) else 0
+        n := int.parse(req.param("n")) else 0
+        return http.text(echos[i % echos.len].big(n))
+    })
+    app.serve(port: port, workers: workers, max_body: 67108864)?
+}

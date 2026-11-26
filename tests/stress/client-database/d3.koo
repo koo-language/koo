@@ -1,0 +1,12 @@
+import std/os
+import std/sql/postgres
+
+fn main() {
+    url := os.env("KOO_TEST_POSTGRES") else ""
+    for i in 1..21 {
+        match postgres.connect(url) {
+            db => print("{i}: connected")
+            ! e => print("{i}: {e.kind}: {e}")
+        }
+    }
+}

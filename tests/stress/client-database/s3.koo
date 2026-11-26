@@ -1,0 +1,17 @@
+import std/http
+
+actor Counter {
+    var n: int = 0
+
+    fn next() -> int {
+        n += 1
+        return n
+    }
+}
+
+fn main() ! http.Error {
+    counter := Counter.start()
+    var app := http.App.new()
+    app.get("/n", req -> http.text("{counter.next()}\n"))
+    app.serve(port: 39622, workers: 2)?
+}

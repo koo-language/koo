@@ -1,0 +1,71 @@
+import std/sql/postgres
+import std/time
+
+fn try(url: string) {
+    started := time.uptime()
+    match postgres.connect(url, pool: 1, wait: 1s) {
+        db => {
+            match db.query_row("select current_user as u, current_database() as d, inet_server_port() as p") {
+                row => print("{url}: connected as {row.string("u") else "?"} to {row.string("d") else "?"} port {row.int("p") else 0}")
+                ! e => print("{url}: connected, then {e}")
+            }
+        }
+        ! e => print("{url}: {e.kind}: {e.message} [{(time.uptime() - started).millis()} ms]")
+    }
+}
+
+fn main() {
+    pw := "PASSWORD"
+    try("postgres://postgres:{pw}@localhost:54329/postgres")
+    try("postgres://postgres:{pw}@localhost:4295021625/postgres")
+    try("postgres://postgres:{pw}@localhost:054329/postgres")
+    try("postgres://postgres:{pw}@localhost:0/postgres")
+    try("postgres://postgres:{pw}@localhost:65536/postgres")
+    try("postgres://postgres:{pw}@localhost:/postgres")
+    try("postgres://postgres:{pw}@localhost:+54329/postgres")
+    try("postgres://postgres:{pw}@127.0.0.1:54329/postgres")
+    try("postgres://postgres:{pw}@[127.0.0.1]:54329/postgres")
+    try("postgres://postgres:{pw}@[::1]:54329/postgres")
+    try("postgres://postgres:{pw}@::1:54329/postgres")
+    try("postgres://postgres:{pw}@[::1:54329/postgres")
+    try("postgres://postgres:{pw}@[]:54329/postgres")
+    try("postgres://postgres:{pw}@[::1]54329/postgres")
+    try("postgres://postgres:{pw}@[::1]x:54329/postgres")
+    try("postgres://postgres:{pw}@[::ffff:127.0.0.1]:54329/postgres")
+    try("postgres://postgres:{pw}@loc%61lhost:54329/postgres")
+    try("postgres://postgres:{pw}@localhost%00.evil:54329/postgres")
+    try("postgres://postgres%00x:{pw}@localhost:54329/postgres")
+    try("postgres://postgres:{pw}%00@localhost:54329/postgres")
+    try("postgres://postgres:{pw}@localhost:54329/postgres%00x")
+    try("postgres://postgres:{pw}@localhost:54329/postgres?options=-c%00x")
+    try("postgres://postgres:{pw}@localhost:54329/postgres?sslrootcert=/x%00y&sslmode=disable")
+    try("postgres://postgres:{pw}@localhost:54329/postgres?options=-c%20statement_timeout%3D5s")
+    try("postgres://postgres:{pw}@localhost:54329/postgres?options=-c%20statement_timeout%3D5s&options=-c%20x")
+    try("postgres://postgres:{pw}@localhost:54329/postgres?sslmode=disable&sslmode=verify-full")
+    try("postgres://postgres:{pw}@localhost:54329/postgres?sslmode")
+    try("postgres://postgres:{pw}@localhost:54329/postgres?=x")
+    try("postgres://postgres:{pw}@localhost:54329/postgres?&&")
+    try("postgres://postgres:{pw}@localhost:54329/postgres?ssl%6dode=disable")
+    try("postgres://postgres:{pw}@localhost:54329/postgres?user=nobody")
+    try("postgres://postgres:{pw}@localhost:54329/postgres?host=example.invalid&port=1&dbname=nope&password=x")
+    try("postgres://postgres:{pw}@localhost:54329/postgres%")
+    try("postgres://postgres:{pw}@localhost:54329/postgres%4")
+    try("postgres://postgres:{pw}@localhost:54329/post%67res")
+    try("postgres://postgres:{pw}@localhost:54329/postgres%zz")
+    try("postgres://postgres:{pw}@localhost:54329/")
+    try("postgres://postgres:{pw}@localhost:54329")
+    try("postgres://:{pw}@localhost:54329")
+    try("postgres://postgres:{pw}@:54329")
+    try("postgres://postgres:wrong@localhost:54329/postgres")
+    try("postgres://postgres@localhost:54329/postgres")
+    try("postgres://postgres:{pw}@localhost:54329/nope")
+    try("postgres://postgres:{pw}@localhost:54329/postgres/extra")
+    try("postgres://postgres:{pw}@localhost:54329/postgres#frag")
+    try("postgresql://postgres:{pw}@LOCALHOST:54329/postgres")
+    try("POSTGRES://postgres:{pw}@localhost:54329/postgres")
+    try("postgres://postgres:{pw}@localhost:54329/postgres?options=-c%20timezone%3DAsia/Kolkata%20-c%20search_path%3Da\\%20b")
+    try("")
+    try("postgres://")
+    try("postgres://@")
+    try("postgres://a@b@localhost:54329/postgres")
+}

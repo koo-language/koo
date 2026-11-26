@@ -1,0 +1,22 @@
+// A redirection to a path beside the one asked for, when that path has a letter outside ASCII in it.
+import std/http
+import std/os
+
+fn main() {
+    which := os.args().get(0) else "1"
+    base := "http://localhost:39700"
+    if which == "1" {
+        // the program's own address has the letter
+        match http.get(base + "/caf\u{e9}/r?s=302&to=next", redirects: 1) {
+            reply => print("{reply.status} `{reply.body}`")
+            ! e => print("{e.kind}: {e}")
+        }
+    } else {
+        // the address is plain; the server sends the client to such a path, and from there to one beside it
+        match http.get(base + "/r?s=302&to=%2Fcaf%C3%A9%2Fr%3Fs%3D302%26to%3Dnext", redirects: 2) {
+            reply => print("{reply.status} `{reply.body}`")
+            ! e => print("{e.kind}: {e}")
+        }
+    }
+    print("still running")
+}

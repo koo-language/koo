@@ -1,0 +1,14 @@
+import std/http
+import std/time
+
+fn main() {
+    var body := "0123456789abcdef"
+    for i in 0..19 { body += body }
+    print("body is {body.len} bytes")
+    started := time.uptime()
+    match http.post("http://127.0.0.1:39604/upload", body, timeout: 1s) {
+        reply => print("status {reply.status}")
+        ! e => print("ERR {e.kind}: {e}")
+    }
+    print("took {time.uptime() - started} of 1s")
+}

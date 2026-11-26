@@ -1,0 +1,69 @@
+import std/http
+import std/os
+import std/sql
+import std/sql/postgres
+import std/time
+
+error Wanted { id: int }
+
+fn main() ! http.Error | sql.Error {
+    db := postgres.connect(os.env("KOO_TEST_POSTGRES") else "", pool: int.parse(os.env("POOL") else "") else 4, wait: 20s)?
+    db.exec("create table if not exists hunt_d_s1 (id int primary key, note text)")?
+    port := int.parse(os.env("PORT") else "") else 39620
+    workers := int.parse(os.env("WORKERS") else "") else 1
+    var app := http.App.new()
+    app.get("/fetch/:id", req -> {
+        id := req.param("id")
+        reply := http.get("http://127.0.0.1:39601/id/{id}", timeout: 10s)?
+        return http.text("{reply.body.slice(0, 3 + id.len)}|{reply.header("x-id") else "?"}|{reply.body.len}")
+    })
+    app.get("/db/:id", req -> {
+        id := int.parse(req.param("id")) else 0
+        row := db.query_row("select {id}::int as id, pg_sleep(random() * 0.05), repeat('x', {id} % 5000) as pad")?
+        return http.text("{row.int("id")?}|{row.string("pad")?.len}")
+    })
+    app.get("/tx/:id", req -> {
+        id := int.parse(req.param("id")) else 0
+        match db.transaction(tx -> {
+            tx.exec("insert into hunt_d_s1 values ({id}, {"n{id}"})")?
+            tx.query("select pg_sleep(random() * 0.03)")?
+            back := tx.query_row("select note from hunt_d_s1 where id = {id}")?.string("note")?
+            if id % 2 == 1 { fail Wanted { id } }
+            return back
+        }) {
+            note => return http.text("kept {note}")
+            ! e: Wanted => return http.text("undone {e.id}")
+            ! e: sql.Error => return http.status(500, "sql {e.kind}: {e}")
+        }
+    })
+    app.get("/each/:n", req -> {
+        n := int.parse(req.param("n")) else 0
+        var total := 0
+        seen := db.each("select g from generate_series(1, {n}) as g", row -> {
+            total += row.int("g")?
+        }, batch: 100)?
+        return http.text("{seen}|{total}")
+    })
+    app.get("/panic/:id", req -> {
+        id := int.parse(req.param("id")) else 0
+        db.transaction(tx -> {
+            tx.exec("insert into hunt_d_s1 values ({id}, {"panicked"})")?
+            empty: [int] = []
+            print(empty[id])
+        })?
+        return http.text("not reached")
+    })
+    app.get("/both/:id", req -> {
+        id := int.parse(req.param("id")) else 0
+        reply := http.get("http://127.0.0.1:39601/id/{id}", timeout: 10s)?
+        row := db.query_row("select {reply.header("x-id") else "-1"}::int as id")?
+        again := http.get("http://[::1]:39603/id/{id}", timeout: 10s)?
+        return http.text("{row.int("id")?}|{again.header("x-id") else "?"}")
+    })
+    app.get("/count", req -> http.text("{db.query_row("select count(*) as n, count(*) filter (where note = 'panicked') as p from hunt_d_s1")?}"))
+    app.get("/sleep", req -> {
+        time.sleep(200ms)
+        return http.text("slept")
+    })
+    app.serve(port: port, workers: workers)?
+}

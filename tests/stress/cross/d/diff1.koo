@@ -1,0 +1,122 @@
+import std/io
+import std/os
+import std/hash
+import std/encoding
+import std/crypto
+
+fn show_round(x: float) {
+    match x.round() {
+        n => print("round {x} = {n}")
+        ! e => print("round {x}: overflow")
+    }
+    match x.trunc() {
+        n => print("trunc {x} = {n}")
+        ! e => print("trunc {x}: overflow")
+    }
+    match x.floor() {
+        n => print("floor {x} = {n}")
+        ! e => print("floor {x}: overflow")
+    }
+    match x.ceil() {
+        n => print("ceil {x} = {n}")
+        ! e => print("ceil {x}: overflow")
+    }
+}
+
+fn parse(text: string) {
+    match float.parse(text) {
+        x => print("parse '{text}' = {x}")
+        ! e => print("parse '{text}': error")
+    }
+}
+
+fn main() {
+    zero := 0.0
+    nan := zero / zero
+    inf := 1.0 / zero
+    print(nan)
+    print(inf)
+    print(-inf)
+    print(-nan)
+    print(-zero)
+    print(nan == nan)
+    print(nan.compare(nan))
+    print(nan.min(1.0))
+    print(nan.max(1.0))
+    print(1.0.min(nan))
+    print(nan.abs())
+    print((-1.0).sqrt())
+    print([nan, 1.0, -1.0].sorted())
+    print([3.0, nan, 1.0].min())
+    print([3.0, nan, 1.0].max())
+    for x in [0.1, 0.5, 1.5, 2.5, -0.5, -1.5, 1e15, 1e16, 1e17, 1e21, 1e22, 1e300, 1e-300, 5e-324, 1.7976931348623157e308, 2.2250738585072014e-308, 123456789.123456789, 0.1 + 0.2, 1.0 / 3.0, 9007199254740993.0, 9223372036854775807.0, 9223372036854775808.0, -9223372036854775808.0, -9223372036854775809.0, 4.9e-324, 1e-7, 1e-5, 123e-20] {
+        print(x)
+        show_round(x)
+    }
+    show_round(nan)
+    show_round(inf)
+    show_round(-inf)
+    show_round(9223372036854775295.0)
+    show_round(9223372036854774784.0)
+    for t in ["1", "1.", ".5", "1e5", "1E5", "1e400", "1e-400", "-0", "0x10", "inf", "nan", "NaN", "Infinity", " 1", "1 ", "1_000", "+1.5", "1e", "1e+", "4.9e-324", "2.4703282292062328e-324", "2.4703282292062327e-324", "1.7976931348623159e308", "1.7976931348623158e308", "0.1e1", "١", "1,5", "", "-", ".", "1e99999999999999999999", "0.000000000000000000000000000000000000000000001", "123456789012345678901234567890", "1d5", "1f", "0b1", "1e5.5", "--1", "1\00"] {
+        parse(t)
+    }
+    for t in ["9223372036854775807", "9223372036854775808", "-9223372036854775808", "-9223372036854775809", "+5", " 5", "5 ", "0x5", "05", "-0", "", "1e3", "٣", "1_0"] {
+        match int.parse(t) {
+            n => print("int '{t}' = {n}")
+            ! e => print("int '{t}': error")
+        }
+    }
+    big := 9223372036854775807
+    small := -9223372036854775807 - 1
+    print(big.wrapping_add(1))
+    print(small.wrapping_sub(1))
+    print(big.wrapping_mul(big))
+    print(1.shl(63))
+    print(small.shr(63))
+    print(2.pow(62))
+    print((-2).pow(63))
+    print(7 / -2)
+    print(7 % -2)
+    print(-7 / 2)
+    print(-7 % 2)
+    print(float.from(big))
+    print(float.from(small))
+    print("héllo wörld ✓ 日本語 🎉".to_upper())
+    print("HÉLLO İI ΣΑΣ".to_lower())
+    print("日本語".count())
+    print("日本語".len)
+    print("🎉".bytes())
+    print("a\tb".hash())
+    print(42.hash())
+    print("".hash())
+    print(encoding.hex(hash.sha256("abc".bytes())))
+    print(encoding.base64("héllo".bytes()))
+    print(encoding.base64_url("\u{ff}~?>".bytes()))
+    print(encoding.url("a b/c?d=é&✓"))
+    print(encoding.hex(crypto.hmac_sha256("key".bytes(), "data".bytes())))
+    print([3, 1, 2].sorted())
+    print(["b", "a", "É", "e", "é", "Z"].sorted())
+    m := ["one": 1, "two": 2, "three": 3]
+    print(m)
+    print(m.to_json())
+    print([1.5, 1e100, -0.0, 1e-7].to_json())
+    print(0.1.to_json())
+    print(1e21.to_json())
+    print(1e20.to_json())
+    print(100.0.to_json())
+    print(Time.from_unix(0))
+    print(Time.from_unix(-1))
+    print(Time.from_unix(4102444800).weekday())
+    print(Duration.parse("1h30m") else 0s)
+    print(90061s)
+    print(1500ms.seconds())
+    print(os.args())
+    print(os.env("HUNT_VAR"))
+    print(os.env("HUNT_EMPTY"))
+    print(os.env(""))
+    print(os.env("A=B"))
+    lines := io.read_lines()
+    print(lines.len)
+    print(lines)
+}

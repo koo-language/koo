@@ -1,0 +1,11 @@
+// A redirection to a path, from an address that has a query and no path.
+import std/http
+
+fn main() ! http.Error {
+    // The server answers 302 with `Location: /echo` (2f6563686f is `/echo` in hexadecimal).
+    reply := http.get("http://127.0.0.1:39601?to=2f6563686f", redirects: 1)?
+    print("{reply.status} {reply.body.split("\r\n")[0]}")
+    // The same with a slash before the query.
+    reply2 := http.get("http://127.0.0.1:39601/?to=2f6563686f", redirects: 1)?
+    print("{reply2.status} {reply2.body.split("\r\n")[0]}")
+}

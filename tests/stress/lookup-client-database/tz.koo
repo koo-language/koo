@@ -1,0 +1,31 @@
+import std/os
+import std/sql
+import std/sql/postgres
+
+fn main() ! sql.Error {
+    base := os.env("PG") else ""
+    zones := ["UTC", "Asia/Kolkata", "Asia/Kathmandu", "Australia/Lord_Howe", "America/St_Johns", "Europe/Dublin", "Europe/Amsterdam", "Africa/Monrovia", "Pacific/Kiritimati", "Pacific/Apia", "America/Juneau", "Asia/Manila", "UTC+14:30:45", "<x>-13:59:59", "Europe/London"]
+    stamps := ["2026-01-31 12:00:00+00", "2026-07-01 00:00:00.123456+00", "1900-01-01 00:00:00+00", "1850-06-15 23:59:59.999999+00", "1600-02-29 12:00:00+00", "0001-01-01 00:00:00+00", "1969-12-31 23:59:59+00", "1970-01-01 00:00:00+00", "9999-12-31 23:59:59+00", "1937-06-30 23:30:00+00", "1867-10-18 12:00:00+00", "1844-12-31 12:00:00+00"]
+    for zone in zones {
+        db := postgres.connect(base + "?options=-c%20timezone%3D" + zone.replace("+", "%2B").replace("<", "%3C").replace(">", "%3E"), pool: 1) else e => {
+            print("{zone}: {e}")
+            continue
+        }
+        for stamp in stamps {
+            row := db.query_row("select {stamp}::timestamptz as t, {stamp}::timestamptz::text as s, extract(epoch from {stamp}::timestamptz)::float8 as e, ({stamp}::timestamptz at time zone 'UTC')::text as u")?
+            text := row.string("s")?
+            match row.time("t") {
+                t => {
+                    want := row.float("e")?
+                    got := float.from(t.unix_nanos()) / 1000000000.0
+                    diff := got - want
+                    if diff > 0.002 or diff < -0.002 {
+                        print("WRONG {zone}: {text} read as {t} (off by {diff} s), UTC is {row.string("u")?}")
+                    }
+                }
+                ! e => print("FAIL {zone}: {text}: {e.message}")
+            }
+        }
+    }
+    print("done")
+}

@@ -1,0 +1,30 @@
+import std/http
+import std/time
+
+fn main() {
+    var ok := 0
+    var failed := 0
+    names := ["127.0.0.1", "localhost", "127.1", "2130706433", "0x7f.0.0.1", "[::ffff:127.0.0.1]", "localhost.", "127.000.000.001"]
+    for round in 0..3 {
+        for port in ["39601", "39602", "39605", "39606"] {
+            for name in names {
+                match http.get("http://{name}:{port}/ok", timeout: 3s) {
+                    reply => { if reply.status == 200 { ok += 1 } else { failed += 1 } }
+                    ! e => { failed += 1 }
+                }
+            }
+        }
+    }
+    print("kept phase: ok {ok} failed {failed}")
+    // every way to fail, many times
+    for i in 0..60 {
+        for p in ["/truncated", "/garbage", "/empty", "/chunked-bad", "/chunked-trunc", "/noclen", "/bighead", "/close-after", "/extra", "/204-body", "/neg-clen"] {
+            http.get("http://127.0.0.1:39601{p}", timeout: 2s) else e => http.Reply { status: 0, headers: [:], body: "" }
+        }
+        http.get("http://127.0.0.1:1/", timeout: 200ms) else e => http.Reply { status: 0, headers: [:], body: "" }
+        http.get("https://127.0.0.1:39601/", timeout: 200ms) else e => http.Reply { status: 0, headers: [:], body: "" }
+        http.get("https://127.0.0.1:39632/", timeout: 200ms) else e => http.Reply { status: 0, headers: [:], body: "" }
+    }
+    print("errors done")
+    time.sleep(6s)
+}

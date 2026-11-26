@@ -1,0 +1,23 @@
+import std/http
+import std/os
+import std/time
+
+fn show(what: string, got: http.Reply ! http.Error) {
+    match got {
+        reply => print("{what}: {reply.status} len={reply.body.len} raw={reply.bytes().len} body=`{reply.body.slice(0, if reply.body.len < 60 { reply.body.len } else { 60 })}` headers={reply.headers}")
+        ! e => print("{what}: ERR {e.kind}: {e}")
+    }
+}
+
+fn main() {
+    base := "http://127.0.0.1:" + (os.env("PORT") else "39601")
+    for p in ["/ok", "/truncated", "/noclen", "/chunked", "/chunked-bad", "/chunked-trunc", "/chunked-neg", "/chunked-huge", "/chunked-and-clen", "/chunked-upper", "/two-clen", "/neg-clen", "/garbage", "/empty", "/http10", "/204", "/204-body", "/ok", "/304", "/ok", "/head", "/100", "/fold", "/dup", "/lf", "/bighead", "/manyheads", "/nostatus", "/status999", "/status000", "/binary", "/nul", "/badutf8", "/close-after", "/ok", "/close-said", "/ok", "/extra", "/ok", "/late-extra"] {
+        show(p, http.get(base + p, timeout: 3s))
+    }
+    time.sleep(500ms)
+    show("after late-extra", http.get(base + "/ok", timeout: 3s))
+    show("HEAD /head", http.fetch("HEAD", base + "/head", timeout: 3s))
+    show("after HEAD", http.get(base + "/ok", timeout: 3s))
+    show("POST close-after", http.post(base + "/close-after", "x", timeout: 3s))
+    show("POST after", http.post(base + "/ok", "x", timeout: 3s))
+}

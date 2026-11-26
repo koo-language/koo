@@ -1,0 +1,34 @@
+import std/sql/postgres
+import std/time
+
+fn try(url: string) {
+    started := time.uptime()
+    match postgres.connect(url, pool: 1, wait: 1s) {
+        db => {
+            match db.query_row("select current_user as u, current_database() as d, inet_server_port() as p") {
+                row => print("{url}: connected as {row.string("u") else "?"} to {row.string("d") else "?"} port {row.int("p") else 0}")
+                ! e => print("{url}: connected, then {e}")
+            }
+        }
+        ! e => print("{url}: {e.kind}: {e.message} [{(time.uptime() - started).millis()} ms]")
+    }
+}
+
+fn main() {
+    pw := "PASSWORD"
+    try("postgres://postgres:{pw}@localhost:54329")
+    try("postgres://:{pw}@localhost:54329")
+    try("postgres://postgres:{pw}@:54329")
+    try("postgres://postgres:wrong@localhost:54329/postgres")
+    try("postgres://postgres@localhost:54329/postgres")
+    try("postgres://postgres:{pw}@localhost:54329/nope")
+    try("postgres://postgres:{pw}@localhost:54329/postgres/extra")
+    try("postgres://postgres:{pw}@localhost:54329/postgres#frag")
+    try("postgresql://postgres:{pw}@LOCALHOST:54329/postgres")
+    try("POSTGRES://postgres:{pw}@localhost:54329/postgres")
+    try("postgres://postgres:{pw}@localhost:54329/postgres?options=-c%20timezone%3DAsia/Kolkata%20-c%20search_path%3Da\\%20b")
+    try("")
+    try("postgres://")
+    try("postgres://@")
+    try("postgres://a@b@localhost:54329/postgres")
+}

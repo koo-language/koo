@@ -1,0 +1,18 @@
+// A function that calls itself without end runs out of stack, and that is a panic,
+// with what was printed before it written first (Section 5.9).
+fn down(depth: int, seen: var [int]) {
+    seen[0] += 1
+    down(depth + 1, var seen)
+    seen[0] -= 1
+}
+
+fn main() {
+    print("going down")
+    var seen := [0]
+    down(0, var seen)
+    print("not reached")
+}
+
+//= going down
+//! exit 101
+//! stderr panic: the call stack is exhausted

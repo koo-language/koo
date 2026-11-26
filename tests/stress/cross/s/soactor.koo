@@ -1,0 +1,18 @@
+actor Diver {
+    var seen: int = 0
+
+    fn down(depth: int) -> int {
+        return 1 + dive(depth)
+    }
+}
+
+fn dive(depth: int) -> int {
+    return 1 + dive(depth + 1)
+}
+
+fn main() {
+    print("going down")
+    d := Diver.start()
+    print(d.down(0))
+    print("not reached")
+}

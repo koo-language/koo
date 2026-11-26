@@ -1,0 +1,19 @@
+import std/io
+import std/random
+import std/crypto
+
+fn main() {
+    io.eprint("1")
+    print(random.uuid().len)
+    io.eprint("2")
+    print(random.bytes(8).len)
+    io.eprint("3")
+    n := random.int(0, 10)
+    io.eprint("4")
+    x := random.float()
+    io.eprint("5")
+    kept := crypto.hash_password("secret")
+    io.eprint("6")
+    print(crypto.verify_password("secret", kept))
+    io.eprint("7")
+}

@@ -1,0 +1,13 @@
+import std/os
+import std/sql
+import std/sql/postgres
+
+fn main() ! sql.Error {
+    db := postgres.connect(os.env("KOO_TEST_POSTGRES") else "")?
+    for row in db.query("select tablename from pg_tables where tablename like {"hunt\\_d\\_%"} order by 1")? {
+        name := row.string("tablename")?
+        db.exec(sql.Query.raw("drop table \"{name}\""))?
+        print("dropped {name}")
+    }
+    print("left: {db.query_row("select count(*) as n from pg_tables where tablename like {"hunt\\_d\\_%"}")?.int("n")?}")
+}

@@ -1,0 +1,7 @@
+import std/http
+
+fn main() ! http.Error {
+    var app := http.App.new()
+    app.get("/ok", req -> http.text("ok from {req.header("Host") else "?"}"))
+    app.serve(port: 39640, workers: 1)?
+}

@@ -1,0 +1,8 @@
+import std/sql/postgres
+
+fn main() {
+    match postgres.connect("postgres://10.255.255.1/db?sslmode=disable") {
+        db => print("connected")
+        ! e => print("{e.kind}: {e.message}")
+    }
+}

@@ -1,0 +1,38 @@
+import std/http
+import std/os
+import std/time
+
+fn deep(n: int) -> int {
+    if n == 0 { return 0 }
+    return 1 + deep(n - 1)
+}
+
+fn main() ! http.Error {
+    port := int.parse(os.env("PORT") else "8080") else 8080
+    var app := http.App.new()
+    app.get("/", req -> http.text("hello"))
+    app.get("/alloc/:mb", req -> {
+        mb := int.parse(req.param("mb")) else 1
+        var block := List<int>.with_size(mb * 131072)
+        var i := 0
+        while i < block.len {
+            block[i] = i
+            i += 512
+        }
+        return http.text("allocated {mb} MB, last {block[block.len - 1]}")
+    })
+    app.get("/deep/:n", req -> http.text("depth {deep(int.parse(req.param("n")) else 1)}"))
+    app.get("/sleep/:ms", req -> {
+        time.sleep(Duration.parse("{req.param("ms")}ms") else 1s)
+        return http.text("slept")
+    })
+    app.get("/get", req -> {
+        match http.get(req.query("url") else "http://localhost:1/", timeout: 2s) {
+            reply => { return http.text("status {reply.status}") }
+            ! e => { return http.text("error {e.kind}: {e.message}") }
+        }
+    })
+    print("serving on {port}")
+    app.serve(port: port)?
+    print("serve returned")
+}

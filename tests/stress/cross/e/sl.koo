@@ -1,0 +1,11 @@
+import std/time
+
+fn main() {
+    print("a")
+    before := time.uptime()
+    print("b")
+    time.sleep(250ms)
+    print("c")
+    took := (time.uptime() - before).millis()
+    print(took)
+}

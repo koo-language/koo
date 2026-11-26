@@ -1,0 +1,33 @@
+// Redirections from addresses with a query, a fragment, and no path.
+import std/http
+
+fn show(from: string) {
+    match http.get(from, redirects: 1) {
+        reply => print("{from}\n    => {reply.status} `{reply.body}`")
+        ! e => print("{from}\n    => {e.kind}: {e}")
+    }
+}
+
+fn main() {
+    base := "http://localhost:39700"
+    show("{base}?s=302&to=next")
+    show("{base}?s=302&to=%3Fy%3D2")
+    show("{base}?s=302&to=next#a/b?c")
+    show("{base}?s=302&to=%2Fabs#frag")
+    show("{base}?s=302&to=..%2Fup")
+    show("{base}?s=302&to=")
+    show("{base}?s=302&to=%23f")
+    show("{base}?s=302&to=%2F%2Flocalhost:39701%2Fsr")
+    show("{base}#frag?s=302&to=next")
+    show("{base}/?s=302&to=next")
+    show("{base}/a/b/r?s=302&to=rel&z=/deep/er/")
+    show("{base}/a/b/r?s=302&to=rel#/deep/er/")
+    show("{base}/a/b/r?z=/q/&s=302&to=%3Fnew%3D1")
+    show("{base}/a/b/?s=302&to=rel")
+    show("{base}/a/b?s=302&to=.")
+    show("{base}/a/b?s=302&to=%3F")
+    show("{base}/a/b;p=1?s=302&to=c")
+    show("{base}/a/b/?s=302&to=..%2F..%2F..%2Fc%3Fq%3D..%2F")
+    show("{base}/a?s=307&to=http:%2F%2Flocalhost:39701")
+    show("{base}/a?s=307&to=http:%2F%2Flocalhost:39701%3Fq%3D1%23f")
+}

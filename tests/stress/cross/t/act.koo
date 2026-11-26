@@ -1,0 +1,30 @@
+import std/time
+
+actor Sleeper {
+    var n: int = 0
+
+    fn nap() {
+        time.sleep(3s)
+        n += 1
+    }
+
+    fn count() -> int {
+        return n
+    }
+}
+
+fn main() {
+    var all: [Sleeper] = []
+    for i in 0..40 {
+        s := Sleeper.start()
+        s.send.nap()
+        all.push(s)
+    }
+    time.sleep(1s)
+    print("started")
+    var total := 0
+    for s in all {
+        total += s.count()
+    }
+    print(total)
+}

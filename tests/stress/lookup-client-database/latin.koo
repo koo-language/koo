@@ -1,0 +1,22 @@
+// Headers that are not UTF-8.
+import std/http
+import std/os
+
+fn main() {
+    base := "http://localhost:39700"
+    which := os.args().get(0) else "1"
+    var answer := ""
+    if which == "1" { answer = "HTTP/1.1%20200%20OK%0D%0AX-Thing:%20caf%E9%20%FF%FE%0D%0AContent-Length:%202%0D%0A%0D%0Aok" }
+    if which == "2" { answer = "HTTP/1.1%20302%20Found%0D%0ALocation:%20/caf%E9/x%0D%0AContent-Length:%200%0D%0A%0D%0A" }
+    if which == "3" { answer = "HTTP/1.1%20302%20Found%0D%0ALocation:%20caf%E9%0D%0AContent-Length:%200%0D%0A%0D%0A" }
+    if which == "4" { answer = "HTTP/1.1%20302%20Found%0D%0ALocation:%20/a/%E9/r?s=302%26to=next%0D%0AContent-Length:%200%0D%0A%0D%0A" }
+    if which == "5" { answer = "HTTP/1.1%20200%20OK%0D%0AX-%E9:%201%0D%0AContent-Length:%202%0D%0A%0D%0Aok" }
+    match http.get(base + "/raw?close=1&b=" + answer, redirects: 2) {
+        reply => {
+            print("{reply.status} `{reply.body}`")
+            for (name, value) in reply.headers { print("  {name} = {value} ({value.len} bytes)") }
+        }
+        ! e => print("{e.kind}: {e}")
+    }
+    print("still running")
+}

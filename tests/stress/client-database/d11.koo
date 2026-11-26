@@ -1,0 +1,18 @@
+import std/os
+import std/sql/postgres
+
+fn main() {
+    match postgres.connect(os.args().get(0) else "", pool: 2) {
+        db => {
+            var pids: [string] = []
+            for i in 0..6 {
+                match db.query_row("select pg_backend_pid() as p, (select ssl from pg_stat_ssl where pid = pg_backend_pid()) as ssl, (select version from pg_stat_ssl where pid = pg_backend_pid()) as v") {
+                    row => pids.push("{row.string("p") else "?"}/{row.string("ssl") else "?"}/{row.maybe_string("v") else none}")
+                    ! e => pids.push("ERR {e}")
+                }
+            }
+            print(pids)
+        }
+        ! e => print("connect: {e.kind}: {e}")
+    }
+}
