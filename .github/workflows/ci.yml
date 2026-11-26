@@ -11,6 +11,10 @@ jobs:
       matrix:
         os: [macos-latest, ubuntu-latest, ubuntu-24.04-arm]
     runs-on: ${{ matrix.os }}
+    # Every program the tests run looks its own tables over as it goes, and ends at once
+    # if one is not as it should be.
+    env:
+      KOO_CHECK: "1"
     steps:
       - uses: actions/checkout@v4
       - name: clang (Linux)

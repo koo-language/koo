@@ -317,6 +317,31 @@ def burst(name, actors, each, rounds):
     check(name, problems)
 
 
+def prompt(name):
+    """Asks one after another from forty clients, each the moment the last is answered,
+    beside an actor that takes its time: a handler's ask goes out on the connection the
+    one before it has just done with, and none waits for anything but its own actor."""
+    def client(index):
+        mine, slowest = Client(), 0.0
+        for k in range(50):
+            status, _, took = mine.ask(f"/next/{96 + (index + k) % 4}")
+            slowest = max(slowest, took if status == 200 else 99.0)
+        return slowest
+
+    # Four ask one actor that takes its time, so that three messages are held up for
+    # it; the asks of other actors beside them are answered as fast as ever.
+    napping = [threading.Thread(target=lambda: ask("/nap/95/400"), daemon=True) for _ in range(4)]
+    for t in napping:
+        t.start()
+    time.sleep(0.1)
+    beside = max(ask(f"/next/{96 + k % 4}")[2] for k in range(40))
+    slowest = max(fan([(lambda i=i: client(i)) for i in range(40)]))
+    slowest = max(slowest, beside)
+    for t in napping:
+        t.join()
+    check(name, [slowest > 0.5 and f"an ask took {slowest:.2f}s with nothing in its way"])
+
+
 def large(name):
     rng = random.Random(7)
     bodies = [bytes(rng.choice(b"abcdefghijklmnopqrstuvwxyz0123456789") for _ in range(4096)) * rng.randint(60, 220) for _ in range(24)]
@@ -607,6 +632,7 @@ burst("600 asks at once, three times over, each answered exactly once", range(0,
 # is what is open after any such load, and is compared with what is open at the end.
 time.sleep(1)
 files_before = files(server.pid)
+prompt("asks one after another are each answered at once")
 large("long messages and long answers arrive whole")
 slow_and_quick("slow actors do not hold up quick ones")
 tells("3000 told messages all arrive")

@@ -292,7 +292,13 @@ unsafe fn join<'a>() -> &'a mut Thread {
         THREADS[index].store(block, Release);
         THREAD_COUNT.store(index + 1, Release);
         // One of those that were on their way is here, if any was.
-        let _ = STARTING.fetch_update(Relaxed, Relaxed, |starting| starting.checked_sub(1));
+        let mut starting = STARTING.load(Relaxed);
+        while starting > 0 {
+            match STARTING.compare_exchange_weak(starting, starting - 1, Relaxed, Relaxed) {
+                Ok(_) => break,
+                Err(now) => starting = now,
+            }
+        }
         pthread_setspecific(KEY.load(Relaxed) - 1, block as *const u8);
         REGISTRY.unlock();
         &mut *block

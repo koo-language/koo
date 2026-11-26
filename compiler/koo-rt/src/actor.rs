@@ -1650,6 +1650,8 @@ mod remote {
         fn recv(fd: i32, data: *mut u8, len: usize, flags: i32) -> isize;
         fn shutdown(fd: i32, how: i32) -> i32;
         fn fcntl(fd: i32, command: i32, ...) -> i32;
+        fn pipe(fds: *mut i32) -> i32;
+        fn read(fd: i32, data: *mut u8, len: usize) -> isize;
     }
 
     const MSG_PEEK: i32 = 2;
@@ -1805,6 +1807,170 @@ mod remote {
     static mut CONN_COUNT: usize = 0;
     static mut TURN: usize = 0;
     static mut TURNS: u64 = 0;
+    /// The two ends of a pipe: the thread that waits for messages watches the first,
+    /// and a thread that has changed what is to be watched writes to the second. The
+    /// one that waits made its list before the change, and would otherwise wait out
+    /// its time before it made another.
+    static mut WAKE: [i32; 2] = [-1; 2];
+
+    /// Has the thread that waits for messages look again at what it waits for.
+    #[allow(static_mut_refs)]
+    unsafe fn wake() {
+        unsafe {
+            if WAKE[1] >= 0 {
+                write(WAKE[1], b"w".as_ptr(), 1);
+            }
+        }
+    }
+
+    // ---- looking the tables over ---------------------------------------------------------
+    //
+    // A program started with `KOO_CHECK` set looks its tables over each time it lets go
+    // of the lock on one, and ends at once, saying what it found, if a table is not as
+    // every piece of this file takes it to be. The tests run with it set. What is looked
+    // for is what has gone wrong before, or would be a message never answered, an actor
+    // answering two at once, or memory let go of twice, if it did.
+
+    /// 0 until it is known, then 1 for a program that does not look and 2 for one that does.
+    static CHECKING: AtomicU32 = AtomicU32::new(0);
+
+    fn checking() -> bool {
+        unsafe extern "C" {
+            fn getenv(name: *const u8) -> *const u8;
+        }
+        match CHECKING.load(Relaxed) {
+            0 => {
+                let set = unsafe { !getenv(c"KOO_CHECK".as_ptr() as *const u8).is_null() };
+                CHECKING.store(if set { 2 } else { 1 }, Relaxed);
+                set
+            }
+            known => known == 2,
+        }
+    }
+
+    #[cold]
+    unsafe fn unsound(table: &[u8], what: &[u8], at: usize) -> ! {
+        unsafe extern "C" {
+            fn abort() -> !;
+        }
+        unsafe {
+            let mut out = Buffer::new();
+            out.push(b"koo: KOO_CHECK: the table of ");
+            out.push(table);
+            out.push(b" is not as it should be: ");
+            out.push(what);
+            let _ = writeln!(out, " (entry {at})");
+            out.flush(2);
+            abort()
+        }
+    }
+
+    /// Lets go of `SERVED`, having looked the connections over if the program looks.
+    #[inline]
+    #[allow(static_mut_refs)]
+    unsafe fn served_unlock() {
+        unsafe {
+            if checking() {
+                connections_sound();
+            }
+            SERVED.unlock();
+        }
+    }
+
+    #[cold]
+    #[allow(static_mut_refs)]
+    unsafe fn connections_sound() {
+        unsafe {
+            static mut SEEN: [u64; 1024] = [0; 1024];
+            let wrong = |what: &[u8], at: usize| -> ! { unsound(b"connections", what, at) };
+            if CONN_COUNT > MOST_CLIENTS {
+                wrong(b"more connections than there is room for", CONN_COUNT);
+            }
+            SEEN = [0; 1024];
+            for (at, conn) in CONNS[..CONN_COUNT].iter().enumerate() {
+                if conn.fd < 0 {
+                    wrong(b"a connection that is closed", at);
+                }
+                if (conn.fd as usize) < 65536 {
+                    let (word, bit) = (conn.fd as usize / 64, 1u64 << (conn.fd % 64));
+                    if SEEN[word] & bit != 0 {
+                        wrong(b"one connection twice", at);
+                    }
+                    SEEN[word] |= bit;
+                }
+                if !conn.message.is_null() && conn.len < 3 {
+                    wrong(b"a message shorter than a message is", at);
+                }
+                if !conn.out.is_null() && conn.doing != SENDING && conn.doing != BUSY && conn.doing != GONE {
+                    wrong(b"an answer put by on a connection that is not sending one", at);
+                }
+                match conn.doing {
+                    IDLE => {
+                        if conn.actor != NO_ACTOR {
+                            wrong(b"an idle connection that keeps an actor", at);
+                        }
+                        if conn.message.is_null() != (conn.got < 4) {
+                            wrong(b"an idle connection whose message and count of it disagree", at);
+                        }
+                        if !conn.message.is_null() && conn.got > 4 + conn.len {
+                            wrong(b"more of a message than the message has", at);
+                        }
+                    }
+                    BUSY | GONE => {
+                        if !conn.message.is_null() {
+                            wrong(b"a message being answered that is still with its connection", at);
+                        }
+                        let twice = conn.actor != NO_ACTOR
+                            && CONNS[..at]
+                                .iter()
+                                .any(|other| other.actor == conn.actor && matches!(other.doing, BUSY | GONE));
+                        if twice {
+                            wrong(b"an actor that answers two messages at once", at);
+                        }
+                    }
+                    HELD_UP => {
+                        if conn.message.is_null() || conn.actor == NO_ACTOR {
+                            wrong(b"a message held up that is not there, or is held up for no actor", at);
+                        }
+                        let answering = CONNS[..CONN_COUNT]
+                            .iter()
+                            .any(|other| other.actor == conn.actor && matches!(other.doing, BUSY | GONE));
+                        if !answering {
+                            wrong(b"a message held up for an actor that nobody is answering for", at);
+                        }
+                    }
+                    SENDING => {
+                        if conn.out.is_null() || conn.out_sent >= conn.out_len {
+                            wrong(b"a connection sending an answer that has none left to send", at);
+                        }
+                        if conn.actor != NO_ACTOR || !conn.message.is_null() {
+                            wrong(b"a connection sending an answer that keeps an actor or a message", at);
+                        }
+                    }
+                    _ => wrong(b"a connection in no state there is", at),
+                }
+            }
+        }
+    }
+
+    /// Lets go of `KEPT`, having looked over the connections kept by if the program looks.
+    #[inline]
+    #[allow(static_mut_refs)]
+    unsafe fn kept_unlock() {
+        unsafe {
+            if checking() {
+                if HOME_COUNT > MOST_HOMES {
+                    unsound(b"connections kept by", b"more than there is room for", HOME_COUNT);
+                }
+                for (at, (_, fd)) in HOMES[..HOME_COUNT].iter().enumerate() {
+                    if *fd < 0 || HOMES[..at].iter().any(|(_, other)| other == fd) {
+                        unsound(b"connections kept by", b"one that is closed, or is there twice", at);
+                    }
+                }
+            }
+            KEPT.unlock();
+        }
+    }
 
     /// The threads that answer other processes. One of them at a time waits for a
     /// message, holding `LEADING`; when it has one, it lets another wait and answers.
@@ -1974,6 +2140,19 @@ mod remote {
                     die(&[b"actors could not be started: ", c_text(strerror(error()))]);
                 }
                 LISTENER = fd;
+                // A pipe by which the thread that waits for messages is told to look
+                // again, by one that has changed what it should be looking at.
+                if pipe(WAKE.as_mut_ptr()) == 0 {
+                    for end in WAKE {
+                        fcntl(
+                            end,
+                            4,
+                            fcntl(end, 3) | if cfg!(target_os = "macos") { 0x4 } else { 0x800 },
+                        );
+                    }
+                } else {
+                    WAKE = [-1; 2];
+                }
                 // The socket has a file on macOS, which is removed however the process
                 // ends, short of being killed: by `main` returning, a panic, or `exit`.
                 if cfg!(target_os = "macos") {
@@ -2039,7 +2218,7 @@ mod remote {
         if begins {
             SERVED.lock();
         } else {
-            SERVED.unlock();
+            unsafe { served_unlock() };
         }
     }
 
@@ -2052,13 +2231,19 @@ mod remote {
                 close(LISTENER);
                 LISTENER = -1;
             }
+            for end in WAKE {
+                if end >= 0 {
+                    close(end);
+                }
+            }
+            WAKE = [-1; 2];
             for conn in &CONNS[..CONN_COUNT] {
                 close(conn.fd);
             }
             CONN_COUNT = 0;
             // What a thread of the parent held is let go of; the threads are not here.
-            SERVED.unlock();
-            KEPT.unlock();
+            served_unlock();
+            kept_unlock();
             ANSWERERS.store(0, Release);
             SPARE.store(0, Release);
             OUT.store(0, Release);
@@ -2193,7 +2378,7 @@ mod remote {
     #[allow(static_mut_refs)]
     unsafe fn take(milliseconds: i32) -> bool {
         unsafe {
-            let mut fds: [PollFd; MOST_CLIENTS + 1] = core::array::from_fn(|_| PollFd {
+            let mut fds: [PollFd; MOST_CLIENTS + 2] = core::array::from_fn(|_| PollFd {
                 fd: -1,
                 events: POLLIN,
                 revents: 0,
@@ -2217,9 +2402,15 @@ mod remote {
                     count += 1;
                 }
             }
-            SERVED.unlock();
-            if poll(fds.as_mut_ptr(), count, milliseconds) <= 0 {
+            served_unlock();
+            // And the pipe by which it is told that the list has changed, last.
+            fds[count].fd = WAKE[0];
+            if poll(fds.as_mut_ptr(), count + 1, milliseconds) <= 0 {
                 return false;
+            }
+            if fds[count].revents != 0 {
+                let mut told = [0u8; 64];
+                while read(WAKE[0], told.as_mut_ptr(), told.len()) == told.len() as isize {}
             }
             // Every connection that waits to be taken is taken, and not one at a time:
             // a worker whose handlers all ask at once makes as many.
@@ -2249,7 +2440,7 @@ mod remote {
                     if let Some(idle) = idle {
                         drop_conn(idle);
                     }
-                    SERVED.unlock();
+                    served_unlock();
                     idle.is_some()
                 };
                 if CONN_COUNT >= MOST_CLIENTS && !made_room(()) {
@@ -2272,7 +2463,7 @@ mod remote {
                     TURNS += 1;
                     CONN_COUNT += 1;
                     room = true;
-                    SERVED.unlock();
+                    served_unlock();
                 } else if error() != EINTR && error() != EAGAIN {
                     // Every connection is in use: a moment is let pass, so that the
                     // asking again is not without end.
@@ -2296,7 +2487,7 @@ mod remote {
                 let fd = slot.fd;
                 SERVED.lock();
                 let Some(index) = CONNS[..CONN_COUNT].iter().position(|conn| conn.fd == fd) else {
-                    SERVED.unlock();
+                    served_unlock();
                     continue;
                 };
                 if CONNS[index].doing == SENDING {
@@ -2322,7 +2513,7 @@ mod remote {
                             }
                         }
                     }
-                    SERVED.unlock();
+                    served_unlock();
                     continue;
                 }
                 if CONNS[index].doing != IDLE {
@@ -2341,7 +2532,7 @@ mod remote {
                     } else {
                         CONNS[index].early = true;
                     }
-                    SERVED.unlock();
+                    served_unlock();
                     continue;
                 }
                 if taken {
@@ -2382,7 +2573,7 @@ mod remote {
                             free(message);
                         }
                     }
-                    SERVED.unlock();
+                    served_unlock();
                     continue;
                 }
                 // What has come of its message is read, and what has not is not waited
@@ -2395,7 +2586,7 @@ mod remote {
                     CONNS[index].len,
                     CONNS[index].head,
                 );
-                SERVED.unlock();
+                served_unlock();
                 let mut gone = false;
                 loop {
                     if got >= 4 && message.is_null() {
@@ -2432,7 +2623,7 @@ mod remote {
                 // looked for again.
                 let Some(index) = CONNS[..CONN_COUNT].iter().position(|conn| conn.fd == fd) else {
                     free(message);
-                    SERVED.unlock();
+                    served_unlock();
                     continue;
                 };
                 (
@@ -2443,12 +2634,12 @@ mod remote {
                 ) = (got, message, size, head);
                 if gone || (all && !whole) {
                     drop_conn(index);
-                    SERVED.unlock();
+                    served_unlock();
                     continue;
                 }
                 if !whole {
                     // The rest is read when it comes.
-                    SERVED.unlock();
+                    served_unlock();
                     continue;
                 }
                 (CONNS[index].got, CONNS[index].message) = (0, core::ptr::null_mut());
@@ -2470,11 +2661,11 @@ mod remote {
                     TURNS += 1;
                     CONNS[index].message = message;
                     CONNS[index].len = size;
-                    SERVED.unlock();
+                    served_unlock();
                     continue;
                 }
                 TURN = (TURN + step + 1) % (count - 1);
-                SERVED.unlock();
+                served_unlock();
                 let me = core::ptr::from_mut(me());
                 (*me).asked_on = fd + 1;
                 (*me).asked_kind = text[0];
@@ -2543,7 +2734,14 @@ mod remote {
                         // message sends the rest: the actor is not kept for that.
                         CONNS[index].doing = SENDING;
                         CONNS[index].actor = NO_ACTOR;
+                        wake();
                     } else {
+                        // Its next message may be here already, sent the moment the
+                        // answer arrived and before this was reached: whoever waits
+                        // for messages left it alone then, and is told to look again.
+                        if CONNS[index].early {
+                            wake();
+                        }
                         CONNS[index].doing = IDLE;
                         CONNS[index].actor = NO_ACTOR;
                         CONNS[index].early = false;
@@ -2562,7 +2760,7 @@ mod remote {
                     }
                 }
                 let Some(next) = next else {
-                    SERVED.unlock();
+                    served_unlock();
                     return;
                 };
                 let conn = &mut CONNS[next];
@@ -2572,7 +2770,7 @@ mod remote {
                 (*me).asked_len = conn.len;
                 (*me).asked_kind = *(*me).asked;
                 (*me).asked_method = 3 + u16::from_le_bytes([*(*me).asked.add(1), *(*me).asked.add(2)]) as usize;
-                SERVED.unlock();
+                served_unlock();
             }
         }
     }
@@ -2669,7 +2867,7 @@ mod remote {
                     (*me).asked_on = -(*me).asked_on;
                 }
             }
-            SERVED.unlock();
+            served_unlock();
         }
     }
 
@@ -2739,7 +2937,7 @@ mod remote {
                     close(fd);
                 }
             }
-            KEPT.unlock();
+            kept_unlock();
             if kept >= 0 {
                 return kept;
             }
@@ -2790,7 +2988,7 @@ mod remote {
                     index += 1;
                 }
             }
-            KEPT.unlock();
+            kept_unlock();
         }
     }
 
@@ -2811,7 +3009,7 @@ mod remote {
             } else {
                 close(fd);
             }
-            KEPT.unlock();
+            kept_unlock();
             OUT.fetch_sub(1, AcqRel);
         }
     }
@@ -3010,13 +3208,13 @@ mod remote {
                 }
             }
             CONN_COUNT = 0;
-            SERVED.unlock();
+            served_unlock();
             KEPT.lock();
             for (_, fd) in &HOMES[..HOME_COUNT] {
                 close(*fd);
             }
             HOME_COUNT = 0;
-            KEPT.unlock();
+            kept_unlock();
         }
     }
 }
