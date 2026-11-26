@@ -1872,9 +1872,12 @@ fn a_stopping_server_answers_what_it_has_in_hand() {
                 );
             }
             // The first actor a server starts is held up for like any other: while
-            // forty wait for it, those who ask another are answered at once.
+            // forty wait for it, those who ask another are answered at once. (The
+            // forty are two seconds of waiting, one after another, where the machine
+            // is quick: each is given five to be answered in, and a machine that
+            // makes a wait of 100 ms last 125 would have none to spare with four.)
             let lingering: Vec<_> = (0..40)
-                .map(|_| std::thread::spawn(move || get(port, "/linger/100")))
+                .map(|_| std::thread::spawn(move || get(port, "/linger/50")))
                 .collect();
             std::thread::sleep(std::time::Duration::from_millis(50));
             let started = std::time::Instant::now();
