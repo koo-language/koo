@@ -1,0 +1,17 @@
+// What a type keeps to itself, a field whose name begins with `_`, is no part of its
+// JSON: it is not written, and a text that has it is read as if it had not.
+type Token = { name: string, _uses: int = 0, _note: string? = none }
+
+fn main() {
+    token := Token { name: "k", _uses: 42, _note: "kept" }
+    print(token.to_json())
+    back := Token.from_json("\{\"name\":\"k\",\"_uses\":7,\"_note\":\"x\"}") else Token { name: "?" }
+    print(back.name)
+    print(back._uses)
+    print(back._note else "none")
+}
+
+//= {"name":"k"}
+//= k
+//= 0
+//= none

@@ -1,0 +1,46 @@
+// A message that was told asks an actor, which asks the next, and so on: the thread
+// that runs it holds every one of them at once, more than it has room for at first.
+import std/time
+
+actor Link {
+    var next: Link? = none
+    var got: int = 0
+
+    fn join(link: Link) {
+        next = link
+    }
+
+    fn begin() {
+        got = 1
+        if link := next { got = link.ask(2) }
+    }
+
+    fn ask(n: int) -> int {
+        got = n
+        if link := next { return link.ask(n + 1) }
+        return n
+    }
+
+    fn seen() -> int {
+        return got
+    }
+}
+
+fn main() {
+    count := 200
+    var links: [Link] = []
+    for i in 0..count {
+        links.push(Link.start())
+    }
+    for i in 0..count - 1 {
+        links[i].join(links[i + 1])
+    }
+    links[0].send.begin()
+    for i in 0..500 {
+        if links[0].seen() == count { break }
+        time.sleep(10ms)
+    }
+    print("the first of {count} links got {links[0].seen()}, the last {links[count - 1].seen()}")
+}
+
+//= the first of 200 links got 200, the last 200

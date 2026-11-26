@@ -1,0 +1,26 @@
+// An actor that tells itself a bounded number of times, with a pause each time.
+import std/time
+
+actor Ticker {
+    var ticks: int = 0
+
+    fn tick(me: Ticker) {
+        ticks += 1
+        time.sleep(100ms)
+        if ticks < 20 {
+            me.send.tick(me)
+        }
+    }
+
+    fn count() -> int {
+        return ticks
+    }
+}
+
+fn main() {
+    t := Ticker.start()
+    began := time.now()
+    t.send.tick(t)
+    print("the tell returned after {time.now() - began}")
+    print("ticks so far {t.count()}")
+}

@@ -17,6 +17,7 @@ Each directory is one search, as it left its files:
 | `client-database` | The HTTP client and the PostgreSQL driver against peers that stall, lie or go silent |
 | `lookup-client-database` | A name server that answers wrongly on purpose (`dns.py`), a database that does (`fakepg.py`), redirections to odd places |
 | `review` | Small programs that confirm what a reading of the code suspected |
+| `review3` | The same for the last reading: connections a worker keeps, a full table, a busy supervising process, told messages with no thread to run them |
 
 They were written to be run from a scratch directory, and say so in their paths:
 `KOO_ROOT` stands for the repository, and `PASSWORD` for the password of a throwaway

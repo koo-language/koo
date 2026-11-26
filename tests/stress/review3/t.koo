@@ -1,0 +1,41 @@
+// A server whose actors can be asked slowly, told, and asked how often they were told.
+import std/http
+import std/os
+import std/time
+
+actor Counter {
+    var told: int = 0
+
+    fn nap(millis: int) -> int {
+        time.sleep(1ms * millis)
+        return told
+    }
+
+    fn tell() {
+        told += 1
+    }
+
+    fn seen() -> int {
+        return told
+    }
+}
+
+fn num(req: http.Request, name: string) -> int {
+    return int.parse(req.param(name)) else 0
+}
+
+fn main() ! http.Error {
+    var counters: [Counter] = []
+    for i in 0..256 {
+        counters.push(Counter.start())
+    }
+    var app := http.App.new()
+    app.get("/ping", req -> http.text("pong\n"))
+    app.get("/nap/:i/:ms", req -> http.text("{counters[num(req, "i") % 256].nap(num(req, "ms"))}\n"))
+    app.get("/tell/:i", req -> {
+        counters[num(req, "i") % 256].send.tell()
+        return http.text("told\n")
+    })
+    app.get("/seen/:i", req -> http.text("{counters[num(req, "i") % 256].seen()}\n"))
+    app.serve(port: 39904, workers: int.parse(os.env("WORKERS") else "") else 2)?
+}

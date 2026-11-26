@@ -623,6 +623,9 @@ fn build(args: &[String], mode: Mode, program_args: &[std::ffi::OsString]) -> Ex
                     }
                     None
                 }
+                // 26 is a program that is running, which a linker puts another in the
+                // place of without opening it.
+                Err(err) if err.raw_os_error() == Some(26) => None,
                 Err(err) => Some(err.to_string()),
             }
         };
@@ -774,7 +777,7 @@ fn build(args: &[String], mode: Mode, program_args: &[std::ffi::OsString]) -> Ex
             .arg("--end-group")
             .args(AFTER.map(|part| dir.path.join(part)));
         match link.status() {
-            Ok(status) if status.success() && executable.is_file() => {}
+            Ok(status) if status.success() && executable.exists() => {}
             Ok(_) => {
                 dir.keep = true;
                 eprintln!(

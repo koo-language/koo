@@ -611,11 +611,14 @@ unsafe fn drop_job(job: *mut Job) {
 /// that the slot, which other threads write their letters to, is left alone. Stops when
 /// there are no more, or after `most` if there is other work. A letter for an actor that
 /// is gone is thrown away.
-unsafe fn run_mail(slot: *mut Slot, me: &mut Thread, most: usize) {
+unsafe fn run_mail(slot: *mut Slot, me: *mut Thread, most: usize) {
     unsafe {
-        let at = me.held_len - 1;
-        (*me.held.add(at)).state = core::mem::replace(&mut (*slot).state, core::ptr::null_mut());
-        (*me.held.add(at)).told = true;
+        // The thread's own record is reached afresh each time, and never kept as a
+        // reference: a letter that is run holds actors of its own, and the list of what
+        // the thread holds is moved when it grows.
+        let at = (*me).held_len - 1;
+        (*(*me).held.add(at)).state = core::mem::replace(&mut (*slot).state, core::ptr::null_mut());
+        (*(*me).held.add(at)).told = true;
         let generation = (*slot).generation.load(Acquire);
         let alive = (*slot).word.load(Acquire) & ALIVE != 0;
         let runner = RUNNER.load(Acquire);
@@ -636,8 +639,10 @@ unsafe fn run_mail(slot: *mut Slot, me: &mut Thread, most: usize) {
             (*slot).waiting.fetch_sub(1, AcqRel);
             make_room(slot);
             // An actor that panicked once too often in a letter has no state to go on with.
-            let wanted =
-                alive && runner != 0 && generation_of((*job).id) == generation && !(*me.held.add(at)).state.is_null();
+            let wanted = alive
+                && runner != 0
+                && generation_of((*job).id) == generation
+                && !(*(*me).held.add(at)).state.is_null();
             if wanted {
                 // The program's function owns the letter from here, and lets go of it.
                 let run: extern "C" fn(*mut Job) = core::mem::transmute(runner);
@@ -651,8 +656,8 @@ unsafe fn run_mail(slot: *mut Slot, me: &mut Thread, most: usize) {
             }
         }
         (*slot).inbox = inbox;
-        (*slot).state = (*me.held.add(at)).state;
-        (*me.held.add(at)).state = core::ptr::null_mut();
+        (*slot).state = (*(*me).held.add(at)).state;
+        (*(*me).held.add(at)).state = core::ptr::null_mut();
     }
 }
 
@@ -862,20 +867,8 @@ unsafe fn enqueue(index: u32) {
         QUEUE_LEN.store(len, SeqCst);
         RUNNING.unlock();
         if !pool {
-            // With no thread to run what actors are told, the thread that told runs
-            // what is waiting, this actor's mail and any other's.
-            let me = me();
-            loop {
-                RUNNING.lock();
-                if RUN.len == 0 {
-                    RUNNING.unlock();
-                    return;
-                }
-                let waiting = RUN.pop();
-                QUEUE_LEN.store(RUN.len, SeqCst);
-                RUNNING.unlock();
-                serve(waiting, me);
-            }
+            run_what_waits();
+            return;
         }
         if LOOKING.load(SeqCst) > 0 {
             // A worker that is looking will find it.
@@ -981,6 +974,8 @@ unsafe fn dequeue() -> u32 {
 /// thread and not its other actors (Section 13.5).
 extern "C" fn monitor(_: *mut u8) -> *mut u8 {
     unsafe {
+        // It takes its place among the threads, which is counted on.
+        let _ = me();
         loop {
             MONITOR.lock();
             while !PRESSED.load(SeqCst) {
@@ -1052,8 +1047,58 @@ extern "C" fn work(_: *mut u8) -> *mut u8 {
     }
 }
 
+/// Whether the thread is running what waited for a thread that could not be started.
+static CATCHING_UP: AtomicUsize = AtomicUsize::new(0);
+
+/// Where no thread could be started for what actors are told, runs what is waiting on
+/// the calling thread, if it is one that may: it holds no actor, which a letter might
+/// ask and find held by its own thread, and it is not already here, further up. A
+/// thread that may not leaves the letters where they are, for the next that may: the
+/// process that watches a server comes by ten times a second, and a program comes by
+/// when its `main` has returned. So many at a time and no more, so that an actor that
+/// tells itself without end does not keep the thread for ever.
+#[allow(static_mut_refs)]
+pub unsafe fn run_what_waits() {
+    unsafe {
+        let me: *mut Thread = me();
+        if POOL.load(Acquire) == 2 || (*me).held_len > 0 || CATCHING_UP.load(Acquire) == (*me).index as usize {
+            return;
+        }
+        if CATCHING_UP
+            .compare_exchange(0, (*me).index as usize, AcqRel, Acquire)
+            .is_err()
+        {
+            return;
+        }
+        for _ in 0..4096 {
+            RUNNING.lock();
+            if RUN.len == 0 {
+                RUNNING.unlock();
+                break;
+            }
+            let waiting = RUN.pop();
+            QUEUE_LEN.store(RUN.len, SeqCst);
+            RUNNING.unlock();
+            serve(waiting, me);
+        }
+        CATCHING_UP.store(0, Release);
+    }
+}
+
+/// Runs what waits for a thread, where none could be started and something waits.
+/// Asked where a program would otherwise wait in vain: before it asks an actor, and
+/// before it sleeps.
+#[inline]
+pub unsafe fn waiting_mail() {
+    unsafe {
+        if POOL.load(Relaxed) == 0 && QUEUE_LEN.load(Relaxed) > 0 {
+            run_what_waits();
+        }
+    }
+}
+
 /// Runs the mail of an actor that was waiting for a thread, if nobody has the actor.
-unsafe fn serve(index: u32, me: &mut Thread) {
+unsafe fn serve(index: u32, me: *mut Thread) {
     unsafe {
         let slot = slot_at(index);
         let mut word = (*slot).word.fetch_and(!QUEUED, AcqRel) & !QUEUED;
@@ -1073,10 +1118,10 @@ unsafe fn serve(index: u32, me: &mut Thread) {
         if !mine {
             return;
         }
-        (*slot).holder.store(me.index, Release);
+        (*slot).holder.store((*me).index, Release);
         handed(slot);
         hold(
-            me,
+            &mut *me,
             Held {
                 slot: index,
                 taken: false,
@@ -1085,7 +1130,7 @@ unsafe fn serve(index: u32, me: &mut Thread) {
             },
         );
         run_mail(slot, me, BATCH);
-        me.held_len -= 1;
+        (*me).held_len -= 1;
         unlock(slot, index);
     }
 }
@@ -1095,7 +1140,16 @@ unsafe fn serve(index: u32, me: &mut Thread) {
 unsafe fn settle() {
     unsafe {
         if POOL.load(Acquire) == 0 {
-            return;
+            // No thread ever ran what actors were told: what is left is run here.
+            loop {
+                RUNNING.lock();
+                let left = RUN.len;
+                RUNNING.unlock();
+                if left == 0 {
+                    return;
+                }
+                run_what_waits();
+            }
         }
         loop {
             QUEUE.lock();
@@ -1191,6 +1245,9 @@ pub unsafe extern "C" fn koo_actor_new(kind: *const Header, initial: *mut Header
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn koo_actor_take(id: i64, method: *const Header) -> *mut Header {
     unsafe {
+        // What was told is run before an actor is asked: where there is no thread to
+        // have run it, it is run now.
+        waiting_mail();
         let me = me();
         let index = index_of(id);
         // A letter being run: its actor is this thread's already, and its state is here.
@@ -1952,10 +2009,15 @@ mod remote {
         }
     }
 
+    /// Whether there was no room for another connection, and none that could be let
+    /// go of, when one was last waiting to be taken. It is so until one ends or is done.
+    static CROWDED: AtomicBool = AtomicBool::new(false);
+
     /// Lets go of a connection: closes it and takes it out of the list. With `SERVED`.
     #[allow(static_mut_refs)]
     unsafe fn drop_conn(index: usize) {
         unsafe {
+            CROWDED.store(false, Relaxed);
             // Whoever waits at the other end learns at once, whoever else has the socket.
             shutdown(CONNS[index].fd, 2);
             close(CONNS[index].fd);
@@ -2020,6 +2082,7 @@ mod remote {
     /// started, the calling thread answers a message itself.
     pub unsafe fn pending(milliseconds: i32) -> bool {
         unsafe {
+            super::run_what_waits();
             if LISTENER >= 0 {
                 gates();
                 if ANSWERERS.load(Acquire) == 0 && !another_answerer() {
@@ -2070,7 +2133,9 @@ mod remote {
             });
             let mut count = 1;
             SERVED.lock();
-            fds[0].fd = LISTENER;
+            // (Not while there is no room for another connection and none to let go of:
+            // it would say without end that one is waiting.)
+            fds[0].fd = if CROWDED.load(Relaxed) { -1 } else { LISTENER };
             // A connection that is being answered, or whose message waits its turn, is
             // watched too: its next message may arrive before this thread looks again,
             // and would otherwise lie there until something else woke the thread.
@@ -2095,13 +2160,20 @@ mod remote {
                 // those that wait to be taken wait until one is done.
                 let made_room = |_: ()| -> bool {
                     SERVED.lock();
-                    let idle = CONNS[..CONN_COUNT].iter().position(|conn| {
+                    // The one that has lain unused the longest: one that was taken a
+                    // moment ago has an asker about to write to it.
+                    let mut idle: Option<usize> = None;
+                    for (index, conn) in CONNS[..CONN_COUNT].iter().enumerate() {
                         let mut byte = [0u8; 1];
-                        conn.doing == IDLE
+                        if conn.doing == IDLE
                             && conn.got == 0
+                            && idle.is_none_or(|idle| conn.turn < CONNS[idle].turn)
                             && recv(conn.fd, byte.as_mut_ptr(), 1, MSG_PEEK | MSG_DONTWAIT) < 0
                             && error() == EAGAIN
-                    });
+                        {
+                            idle = Some(index);
+                        }
+                    }
                     if let Some(idle) = idle {
                         drop_conn(idle);
                     }
@@ -2109,6 +2181,7 @@ mod remote {
                     idle.is_some()
                 };
                 if CONN_COUNT >= MOST_CLIENTS && !made_room(()) {
+                    CROWDED.store(true, Relaxed);
                     break;
                 }
                 let mut fd = accept(LISTENER, core::ptr::null_mut(), core::ptr::null_mut());
@@ -2119,7 +2192,12 @@ mod remote {
                 let mut room = false;
                 if fd >= 0 {
                     SERVED.lock();
-                    CONNS[CONN_COUNT] = Conn { fd, ..NO_CONN };
+                    CONNS[CONN_COUNT] = Conn {
+                        fd,
+                        turn: TURNS,
+                        ..NO_CONN
+                    };
+                    TURNS += 1;
                     CONN_COUNT += 1;
                     room = true;
                     SERVED.unlock();
@@ -2345,6 +2423,9 @@ mod remote {
                     } else {
                         CONNS[index].doing = IDLE;
                         CONNS[index].actor = NO_ACTOR;
+                        CONNS[index].turn = TURNS;
+                        TURNS += 1;
+                        CROWDED.store(false, Relaxed);
                     }
                 }
                 let mut next: Option<usize> = None;
@@ -2444,6 +2525,10 @@ mod remote {
         }
     }
 
+    /// What `connection` returns for a process that is there and cannot take a
+    /// connection this moment.
+    const BUSY_THERE: i32 = -2;
+
     /// A connection to another process that nothing else is using: one that was kept,
     /// or a new one when there is none, or when the ones kept are no longer to be
     /// trusted (`fresh`). Returns -1 if the process is not there.
@@ -2466,20 +2551,23 @@ mod remote {
             let now = crate::koo_now_nanos();
             while index < HOME_COUNT {
                 let old = now - KEPT_AT[index] > KEPT_FOR;
-                if HOMES[index].0.text() != name && !old {
+                let mine = HOMES[index].0.text() == name;
+                // One is taken; one that has lain too long, or leads where the last
+                // one led nowhere, is closed; and the rest stay for the next to ask.
+                let taken = mine && !fresh && !old && kept < 0;
+                if !(taken || old || mine && fresh) {
                     index += 1;
                     continue;
                 }
-                let mine = HOMES[index].0.text() == name;
                 let fd = HOMES[index].1;
                 HOME_COUNT -= 1;
                 HOMES[index] = HOMES[HOME_COUNT];
                 KEPT_AT[index] = KEPT_AT[HOME_COUNT];
-                if mine && !fresh && !old && kept < 0 {
+                if taken {
                     kept = fd;
-                    continue;
+                } else {
+                    close(fd);
                 }
-                close(fd);
             }
             KEPT.unlock();
             if kept >= 0 {
@@ -2491,11 +2579,14 @@ mod remote {
             // waiting already, the answer is that there is no room, and it is asked
             // again in a moment, by a handler that is left where it is meanwhile.
             if fd < 0 || !crate::pg::connect_within(fd, &address as *const Address as *const u8, len, 2000) {
+                // The process is there and has no room for another connection this
+                // moment, which Linux says in so many words; or it is not there.
+                let busy = fd >= 0 && cfg!(target_os = "linux") && error() == EAGAIN;
                 if fd >= 0 {
                     close(fd);
                 }
                 OUT.fetch_sub(1, AcqRel);
-                return -1;
+                return if busy { BUSY_THERE } else { -1 };
             }
             fd
         }
@@ -2534,8 +2625,13 @@ mod remote {
             // A long message does not keep the thread while the other process has no
             // room for it: a handler of a server is left where it is meanwhile, and
             // the answers its neighbours wait for are read.
+            // (And is not in the middle of anything while it is left there, as in
+            // `read_waiting`.)
+            me().talking = false;
             let send = |data: &[u8]| crate::pg::send_within(fd, data, 0);
-            send(&head) && send(method) && send(body)
+            let sent = send(&head) && send(method) && send(body);
+            me().talking = true;
+            sent
         }
     }
 
@@ -2592,6 +2688,12 @@ mod remote {
             let (mut attempt, mut refusals) = (0, 0);
             while attempt < 3 && refusals < 100 {
                 let fd = connection(name, attempt > 0);
+                // A process that is there is waited for, however long it has no room:
+                // those whose connections it has taken are waiting no less.
+                if fd == BUSY_THERE {
+                    nap(20_000_000);
+                    continue;
+                }
                 me().talking = true;
                 let mut taken = [0u8; 1];
                 // No word that the message was taken up: the process that has the actor
@@ -2701,7 +2803,6 @@ mod remote {
                 // One that a thread is still answering on is that thread's to close.
                 if conn.doing != BUSY && conn.doing != GONE {
                     close(conn.fd);
-                    free(conn.message);
                 }
             }
             CONN_COUNT = 0;

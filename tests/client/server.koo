@@ -112,7 +112,7 @@ type Echo = { method: string, path: string, body: string, agent: string, kind: s
 
 // A type that writes less of itself for the world than it is: to an actor in another
 // process it goes whole all the same.
-type Tag = { name: string, weight: int }
+type Tag = { name: string, weight: int, _uses: int = 0 }
 
 fn (self: Tag) to_json() -> string {
     return "\"{self.name}\""
@@ -207,8 +207,8 @@ fn main() ! http.Error {
         return http.json(Reading { value: zero / zero })
     })
     app.get("/tag", req -> {
-        back := visits.same_tag(Tag { name: "t", weight: 7 })
-        return http.text("{back.weight} {back.to_json()} {Tag.from_json(back.to_json())?.weight}\n")
+        back := visits.same_tag(Tag { name: "t", weight: 7, _uses: 42 })
+        return http.text("{back.weight} {back.to_json()} {Tag.from_json(back.to_json())?.weight} {back._uses}\n")
     })
     app.get("/bytes", req -> http.text("{visits.same_bytes("a\u{ff}".bytes())}\n"))
     app.get("/ratio", req -> {

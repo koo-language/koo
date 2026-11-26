@@ -1,0 +1,38 @@
+// A chain of actors, each of which tells the next: a message passed down the line.
+import std/os
+import std/time
+
+actor Link {
+    var next: Link? = none
+    var got: int = 0
+
+    fn join(link: Link) {
+        next = link
+    }
+
+    fn pass(n: int) {
+        got = n
+        if link := next { link.send.pass(n + 1) }
+    }
+
+    fn seen() -> int {
+        return got
+    }
+}
+
+fn main() {
+    count := int.parse(os.env("LINKS") else "") else 100000
+    var links: [Link] = []
+    for i in 0..count {
+        links.push(Link.start())
+    }
+    for i in 0..count - 1 {
+        links[i].join(links[i + 1])
+    }
+    links[0].send.pass(1)
+    for i in 0..200 {
+        if links[count - 1].seen() == count { break }
+        time.sleep(10ms)
+    }
+    print("the last of {count} links got {links[count - 1].seen()}")
+}

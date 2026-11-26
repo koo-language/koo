@@ -1,0 +1,41 @@
+// A chain of actors in which a message that was told asks the next, which asks the next.
+import std/os
+import std/time
+
+actor Link {
+    var next: Link? = none
+    var got: int = 0
+
+    fn join(link: Link) {
+        next = link
+    }
+
+    fn begin() {
+        got = 1
+        if link := next { got = link.ask(2) }
+    }
+
+    fn ask(n: int) -> int {
+        got = n
+        if link := next { return link.ask(n + 1) }
+        return n
+    }
+
+    fn seen() -> int {
+        return got
+    }
+}
+
+fn main() {
+    count := int.parse(os.env("LINKS") else "") else 40
+    var links: [Link] = []
+    for i in 0..count {
+        links.push(Link.start())
+    }
+    for i in 0..count - 1 {
+        links[i].join(links[i + 1])
+    }
+    links[0].send.begin()
+    time.sleep(300ms)
+    print("the first of {count} links got {links[0].seen()}, the last {links[count - 1].seen()}")
+}

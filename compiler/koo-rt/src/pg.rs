@@ -380,8 +380,9 @@ unsafe fn ask_name_servers(servers: &[Ip], name: &[u8], kind: u8, until: i64) ->
         query[5] = 1; // one question
         let mut at = 12;
         for label in name.split(|byte| *byte == b'.').filter(|label| !label.is_empty()) {
+            // A name that cannot be asked for is a name with no address.
             if label.len() > 63 || at + label.len() + 17 > query.len() {
-                return None;
+                return Some(None);
             }
             query[at] = label.len() as u8;
             query[at + 1..at + 1 + label.len()].copy_from_slice(label);

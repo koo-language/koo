@@ -1,0 +1,39 @@
+import std/http
+
+type Token = { name: string, _uses: int = 0 }
+
+fn (self: Token) to_json() -> string {
+    return "\{\"name\":{self.name.to_json()},\"uses\":{self._uses}}"
+}
+
+type Seen = { name: string, uses: int }
+
+fn Token.from_json(text: string) -> Token ! JsonError {
+    seen := Seen.from_json(text)?
+    return Token { name: seen.name, _uses: seen.uses }
+}
+
+actor Vault {
+    var last: Token? = none
+
+    fn keep(token: Token) -> Token {
+        last = token
+        return token
+    }
+}
+
+fn main() ! http.Error {
+    vault := Vault.start()
+    var app := http.App.new()
+    app.get("/keep", req -> {
+        token := Token { name: "k", _uses: 42 }
+        again := Token.from_json(token.to_json()) else token
+        back := vault.keep(token)
+        return http.text("by its own JSON: {again._uses}; through the actor: {back._uses}\n")
+    })
+    app.serve(port: 39905, workers: int.parse(req_workers()) else 2)?
+}
+
+fn req_workers() -> string {
+    return "2"
+}

@@ -1166,7 +1166,7 @@ They are the members of two interfaces: `json.Encode` (`to_json`, `write_json`, 
 
 | Koo | JSON | Notes |
 | --- | --- | --- |
-| struct | object | Keys are field names after the rename policy. Fields beginning with `_` are never encoded or decoded. |
+| struct | object | Keys are field names after the rename policy. Fields beginning with `_` are never encoded or decoded. (A value sent to an actor in another process of the same program is not JSON in this sense: it arrives whole, with those fields.) |
 | `T?` | value or absent | Encode omits a `none` field. Decode reads a missing key or `null` as `none`. |
 | field with a default | value | Decode uses the default when the key is missing. A field with neither `?` nor a default is required. |
 | `json.Field<T>` | value, `null` or absent | An enum `Missing`, `Null`, `Value { value: T }`, for PATCH bodies where the three differ. |

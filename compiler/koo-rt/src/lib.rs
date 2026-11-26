@@ -1216,6 +1216,7 @@ pub unsafe extern "C" fn koo_sleep(nanos: i64) {
     if nanos <= 0 {
         return;
     }
+    unsafe { actor::waiting_mail() };
     unsafe { koo_flush() };
     // A handler of a server sleeps without the server's sleeping with it.
     if unsafe { fiber::pause(nanos) } {

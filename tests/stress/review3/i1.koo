@@ -1,0 +1,36 @@
+// A method that is asked tells another actor, whose message asks the first back.
+import std/time
+
+actor Hub {
+    var n: int = 0
+
+    fn total() -> int {
+        return n
+    }
+
+    fn work(log: Log, me: Hub) -> int {
+        log.send.note(me)
+        n += 1
+        return n
+    }
+}
+
+actor Log {
+    var seen: int = -1
+
+    fn note(hub: Hub) {
+        seen = hub.total()
+    }
+
+    fn last() -> int {
+        return seen
+    }
+}
+
+fn main() {
+    hub := Hub.start()
+    log := Log.start()
+    print("work answered {hub.work(log, hub)}")
+    time.sleep(200ms)
+    print("the log saw {log.last()}")
+}

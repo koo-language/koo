@@ -445,17 +445,25 @@ impl<'a> Deriver<'a> {
         let shown: Vec<(usize, &Field)> = fields
             .iter()
             .enumerate()
-            .filter(|(_, field)| !field.name.name.starts_with('_'))
+            .filter(|(_, field)| !field.name.name.starts_with('_') || self.between_processes(field))
             .collect();
         // With a field that may be left out, where the commas go is known only as the
         // value is written.
-        let counted = shown.iter().any(|(_, field)| self.is_optional(&field.ty));
+        let counted = shown
+            .iter()
+            .any(|(_, field)| self.is_optional(&field.ty) || field.name.name.starts_with('_'));
         let mut out = String::new();
         if counted {
             let _ = writeln!(out, "    var count := {}", usize::from(started));
         }
         for (position, (index, field)) in shown.iter().enumerate() {
             let (name, value) = (&self.key(field), value_of(*index, field));
+            // What a type keeps to itself is written only for another process of the
+            // program, which is to have the value whole.
+            let kept = field.name.name.starts_with('_');
+            if kept {
+                out.push_str("    if __json_is_wire() {\n");
+            }
             if counted {
                 let comma = "if count > 0 { out += \",\" }\n        count += 1";
                 if self.is_optional(&field.ty) {
@@ -477,8 +485,20 @@ impl<'a> Deriver<'a> {
                     "    out += \"{comma}\\\"{name}\\\":\"\n    {value}._json_write(var out)\n"
                 );
             }
+            if kept {
+                out.push_str("    }\n");
+            }
         }
         out
+    }
+
+    /// Whether a field that a type keeps to itself, one whose name begins with `_`, goes
+    /// with a value to another process of the program: it does if JSON can hold it and
+    /// the type can be made without it, since outside the program it is left out.
+    fn between_processes(&self, field: &'a Field) -> bool {
+        field.name.name.starts_with('_')
+            && (field.default.is_some() || self.is_optional(&field.ty))
+            && self.holds(&field.ty)
     }
 
     /// The body of a function that reads an object into `made`, a struct or a variant
@@ -488,7 +508,7 @@ impl<'a> Deriver<'a> {
         let shown: Vec<(usize, &'a Field)> = fields
             .iter()
             .enumerate()
-            .filter(|(_, field)| !field.name.name.starts_with('_'))
+            .filter(|(_, field)| !field.name.name.starts_with('_') || self.between_processes(field))
             .collect();
         for (index, field) in &shown {
             let written = self.written(&field.ty);
@@ -509,6 +529,18 @@ impl<'a> Deriver<'a> {
                 self.reader(&field.ty)
             };
             let name = &self.key(field);
+            if field.name.name.starts_with('_') {
+                // Read only from another process of the program: from anywhere else
+                // it is a key like any the type does not have.
+                let _ = write!(
+                    out,
+                    "            \"{name}\" => {{\n                if __json_is_wire() {{\n                    \
+                     value := {read} else e => fail j__in(e, \"/{name}\")\n                    \
+                     got{index} = value\n                }} else {{\n                    \
+                     j__skip(text, var at)?\n                }}\n            }}\n"
+                );
+                continue;
+            }
             let _ = write!(
                 out,
                 "            \"{name}\" => {{\n                \
