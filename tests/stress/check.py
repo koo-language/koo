@@ -343,6 +343,13 @@ def prompt(name):
     check(name, [slowest > 0.5 and f"an ask took {slowest:.2f}s with nothing in its way"])
 
 
+def fresh(name):
+    """Actors of a second kind started, asked and stopped by handlers."""
+    results = fan([(lambda: ask("/fresh")) for _ in range(40)])
+    bad = [r for r in results if r[0] != 200 or r[1].strip() != b"2"]
+    check(name, [bad and f"{len(bad)} of 40 were answered otherwise, the first {bad[0][0]} {bad[0][1][:40]!r}"])
+
+
 def large(name):
     rng = random.Random(7)
     bodies = [bytes(rng.choice(b"abcdefghijklmnopqrstuvwxyz0123456789") for _ in range(4096)) * rng.randint(60, 220) for _ in range(24)]
@@ -638,6 +645,7 @@ burst("600 asks at once, three times over, each answered exactly once", range(0,
 time.sleep(1)
 files_before = files(server.pid)
 prompt("asks one after another are each answered at once")
+fresh("handlers start, ask and stop actors of a second kind")
 large("long messages and long answers arrive whole")
 slow_and_quick("slow actors do not hold up quick ones")
 tells("3000 told messages all arrive")
@@ -660,6 +668,7 @@ WORKERS = 1
 print(f"== {WORKERS} worker: the actors are in the process that answers")
 server = start(WORKERS)
 burst("300 asks at once, each answered exactly once", range(0, 16), 19, 2)
+fresh("handlers start, ask and stop actors of a second kind")
 large("long messages and long answers arrive whole")
 tells("3000 told messages all arrive")
 panics("a panic in an actor costs one request")

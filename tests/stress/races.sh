@@ -29,9 +29,10 @@ for program in $(grep -l "^actor \|parallel\|spawn" tests/run/*.koo); do
         continue
     fi
     timeout 300 "$out/program" > "$out/said.txt" 2>&1 < /dev/null
-    if grep -q "WARNING: ThreadSanitizer" "$out/said.txt"; then
+    # A race, or a sanitizer that gave up, which would otherwise pass for no race found.
+    if grep -q "ThreadSanitizer" "$out/said.txt"; then
         echo "FAIL  $program"
-        grep -A16 "WARNING: ThreadSanitizer" "$out/said.txt" | head -40
+        grep -A16 "ThreadSanitizer" "$out/said.txt" | head -40
         failed=$((failed + 1))
     else
         echo "pass  $program"
@@ -46,10 +47,18 @@ if KOO_RUNTIME="$out/libkoo_rt.a" "$koo" build --sanitize=thread tests/stress/ch
     (ulimit -n 16384 2>/dev/null
      CHECK_NO_DIVE=1 TSAN_OPTIONS="die_after_fork=0 halt_on_error=0 report_signal_unsafe=0" \
         timeout 1500 python3 tests/stress/check.py --binary "$out/check" --stderr "$out/server.txt" > "$out/check.txt" 2>&1)
-    reports=$(grep -c "WARNING: ThreadSanitizer" "$out/server.txt")
-    echo "a server under load: $(grep -c '^pass\|^FAIL' "$out/check.txt") checks made, $reports reports of a race"
+    reports=$(grep -c "ThreadSanitizer: \|ThreadSanitizer$" "$out/server.txt")
+    passed=$(grep -c '^pass' "$out/check.txt")
+    echo "a server under load: $passed checks passed of $(grep -c '^pass\|^FAIL' "$out/check.txt") made, $reports reports from the sanitizer"
     if [ "$reports" != 0 ]; then
-        grep -A16 "WARNING: ThreadSanitizer" "$out/server.txt" | head -60
+        grep -A16 "ThreadSanitizer" "$out/server.txt" | head -60
+        failed=$((failed + 1))
+    fi
+    # A server that did not start, or fell over at once, was not looked at: most of the
+    # checks that are not of times pass under the sanitizer, and are to have passed.
+    if [ "$passed" -lt 8 ]; then
+        echo "FAIL  the server under load was not checked: too few of its checks passed"
+        cat "$out/check.txt" | head -30
         failed=$((failed + 1))
     fi
     pkill -9 -x check 2>/dev/null

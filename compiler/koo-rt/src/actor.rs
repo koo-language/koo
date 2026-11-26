@@ -2688,14 +2688,19 @@ mod remote {
     }
 
     /// Whether a message, `Kind id method`, names its actor by the kind the actor is of.
-    /// One that names no actor, or one that is no longer there, is for the program to
-    /// answer as it does.
+    /// One that names no actor (`Kind 0 .start`), or one that is no longer there, is for
+    /// the program to answer as it does.
     unsafe fn of_its_kind(message: &[u8]) -> bool {
         unsafe {
             let mut parts = message.split(|byte| *byte == b' ');
-            let (Some(kind), Some(id)) = (parts.next(), parts.next()) else {
+            let (Some(kind), Some(id), Some(called)) = (parts.next(), parts.next(), parts.next()) else {
                 return true;
             };
+            // What is asked of a kind and of no actor, to start one, has a number that
+            // names nothing.
+            if called.starts_with(b".") {
+                return true;
+            }
             let Some(id) = core::str::from_utf8(id).ok().and_then(|id| id.parse::<i64>().ok()) else {
                 return true;
             };

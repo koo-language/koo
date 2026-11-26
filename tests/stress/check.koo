@@ -83,6 +83,16 @@ fn main() ! http.Error {
     var app := http.App.new()
     app.get("/ping", req -> http.text("pong\n"))
     app.get("/names", req -> http.text("{names.add("n")} {names.all().len}\n"))
+    // An actor of the second kind started by a handler, asked, and stopped, while the
+    // first actor there is, the one whose number a message to start one carries, is of
+    // the first kind.
+    app.get("/fresh", req -> {
+        fresh := Names.start()
+        fresh.add("a")
+        count := fresh.add("b")
+        fresh.stop()
+        return http.text("{count}\n")
+    })
     // A handler that waits, and lets its worker go on meanwhile.
     app.get("/wait/:ms", req -> {
         time.sleep(1ms * num(req, "ms"))

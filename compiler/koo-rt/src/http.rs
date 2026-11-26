@@ -1743,7 +1743,14 @@ mod imp {
                 let busy = c.handling || (!CURRENT.answered && CURRENT.conn == index);
                 if c.fd >= 0 && !busy && (seconds - c.active > TIMEOUT || (c.began != 0 && seconds - c.began > TIMEOUT))
                 {
-                    shut(index);
+                    // One whose request has waited all that time for a handler to be
+                    // free is told that the server has no room, and not left to guess
+                    // from a connection that closes with nothing said.
+                    if c.queued && c.output.len == c.sent {
+                        refuse(index, 503);
+                    } else {
+                        shut(index);
+                    }
                 }
             }
         }
