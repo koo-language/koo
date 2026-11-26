@@ -8,7 +8,7 @@
 //! The whole of a request has a time it may take. Each wait, for the connection, for
 //! the handshake, for the next piece of the answer, is given what is left of it.
 
-use super::pg::{Buf, UNANSWERED, dial, has_something, send_all};
+use super::pg::{Buf, UNANSWERED, dial, has_something, send_within};
 use super::thread::Lock;
 use super::thread::me;
 use super::tls::{self, AGAIN};
@@ -245,8 +245,10 @@ impl Line {
             if !self.wait_at_most() {
                 return false;
             }
+            // A long request to a server that reads slowly keeps neither the thread nor
+            // more than the time the request has.
             if self.tls.is_null() {
-                send_all(self.fd, data)
+                send_within(self.fd, data, self.deadline)
             } else {
                 tls::write_all(self.tls, data)
             }
@@ -372,6 +374,10 @@ fn address(url: &[u8]) -> Option<(bool, &[u8], u16, &[u8])> {
         (Some(b'['), None) | (_, Some(_)) => return None,
         (_, None) => 0,
     };
+    // Something between the brackets, and after them nothing but a port.
+    if bracket > 0 && (bracket == 1 || place.get(bracket + 1).is_some_and(|after| *after != b':')) {
+        return None;
+    }
     let (host, port) = match place[bracket..]
         .iter()
         .rposition(|byte| *byte == b':')
@@ -609,14 +615,14 @@ unsafe fn answer(line: &mut Line, headless: bool, kept: &mut Reply) -> Result<bo
                 let (name, value) = (&header[..colon], header[colon + 1..].trim_ascii());
                 if name.eq_ignore_ascii_case(b"content-length") {
                     let digits = value.iter().all(u8::is_ascii_digit) && !value.is_empty() && value.len() < 16;
-                    if !digits {
+                    let said = value
+                        .iter()
+                        .fold(0usize, |sum, digit| sum * 10 + (digit - b'0') as usize);
+                    // Digits, and the same number if it is said twice.
+                    if !digits || length.is_some_and(|before| before != said) {
                         return Err(Ended::Broken);
                     }
-                    length = Some(
-                        value
-                            .iter()
-                            .fold(0usize, |sum, digit| sum * 10 + (digit - b'0') as usize),
-                    );
+                    length = Some(said);
                 }
                 if name.eq_ignore_ascii_case(b"connection") && value.eq_ignore_ascii_case(b"close") {
                     goes_on = false;

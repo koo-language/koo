@@ -1088,6 +1088,9 @@ pub unsafe extern "C" fn koo_at_end() -> bool {
 /// The text of a file. On failure the result is empty and `koo_failed` turns true.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn koo_read_file(path: *const Header) -> *mut Header {
+    // Whether this reading failed is asked afterwards, and what failed before it, a
+    // request to another server or a file that could not be written, is not this.
+    unsafe { thread::me().failed = false };
     let mut text = unsafe { koo_str_new(4096) };
     let file = unsafe { open(path, c"rb") };
     if file.is_null() {

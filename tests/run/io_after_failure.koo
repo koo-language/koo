@@ -1,0 +1,26 @@
+// A file is read whatever failed before it: a file that could not be written leaves
+// nothing behind that a later reading takes for its own failure.
+
+import std/io
+import std/os
+
+fn main() ! IoError {
+    dir := os.env("TMPDIR") else "/tmp"
+    path := "{dir}/koo_io_after_failure.txt"
+    io.write_file(path, "eleven here")?
+    match io.write_file("/surely/not/here.txt", "x") {
+        done => print("written, where nothing is")
+        ! e => print("not written")
+    }
+    print(io.read_file(path)?)
+    match io.read_file("/surely/not/here.txt") {
+        text => print(text)
+        ! e => print("not read")
+    }
+    print(io.read_file(path)?.len)
+}
+
+//= not written
+//= eleven here
+//= not read
+//= 11

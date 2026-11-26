@@ -349,7 +349,7 @@ The commands that take a file take a directory as well:
 
 ```sh
 koo run calc        # build the package and run its main
-koo build calc      # leave an executable named calc
+koo build calc      # leave an executable named calc, in the directory calc
 koo test calc       # run its tests (Appendix C)
 ```
 

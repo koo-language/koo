@@ -1,0 +1,35 @@
+// What a round of looking for mistakes found in the database package. Run against a
+// PostgreSQL server whose address is in KOO_TEST_POSTGRES (see `a_database_answers_queries`
+// in compiler/koo/tests/programs.rs).
+
+import std/os
+import std/sql
+import std/sql/postgres
+
+fn main() ! sql.Error {
+    address := os.env("KOO_TEST_POSTGRES") else ""
+    // A NUL in a part of the address would say more to the server than the address shows.
+    cut := address.find("?") else address.len
+    match postgres.connect(address.slice(0, cut) + "%00options%00-c%20statement_timeout%3D77s") {
+        db => print("connected, with what was slipped in")
+        ! e => print("{e.kind}: {e.message}")
+    }
+    db := postgres.connect(address)?
+    // Rows that the program would have to send are refused, and the connection goes on.
+    db.exec("create temporary table if not exists found_copy (n int)")?
+    match db.exec("copy found_copy from stdin") {
+        done => print("copied")
+        ! e => print("{e.kind}")
+    }
+    print(db.query_row("select 41 + 1 as answer")?.int("answer")?)
+    // A time of before the clocks of a place were set by a zone is off by seconds too.
+    old := postgres.connect(address + (if address.contains("?") { "&" } else { "?" }) + "options=-c%20timezone%3DAsia/Kolkata")?
+    print(old.query_row("select timestamptz '1900-01-01 00:00:00+00' as t")?.time("t")?)
+    print(old.query_row("select timestamptz '2026-01-31 12:00:00+00' as t")?.time("t")?)
+}
+
+//= Connection: the address of the database has a NUL in it (`%00`)
+//= Other
+//= 42
+//= 1900-01-01T00:00:00Z
+//= 2026-01-31T12:00:00Z

@@ -615,6 +615,8 @@ The rows of `query` arrive all at once, as a list. For an answer too large to ho
 
 There is nothing here that writes SQL for the program, makes tables from structures, or changes a database from one version of its design to the next. Statements are SQL, written by the programmer and checked by the database.
 
+A program has at most sixteen databases open, and no way to close one: `postgres.connect` is called once for each database, when the program starts, and what it returns is kept. `copy ... from stdin`, which would have the program send rows in a form of their own, is refused with an error, since the package has no way to send them; rows are inserted. And a password is sent as it is written: PostgreSQL itself rewrites a few characters of a password when it stores one, a superscript two as a plain two and the like, and a password with such a character in it is refused, where one of ordinary letters, accented or not, is not.
+
 **Exercise 11-1.** Write a program that keeps a table of notes, each with a title and a text, and takes its orders from its arguments: `add title text`, `show title`, `list`, `remove title`. What should `add` say when the title is taken, and how does the program know that it is?
 
 **Exercise 11-2.** In `transfer`, the row of the account that pays is read with `for update`. Remove those two words, and work out what two transfers from the same account, running at once, can then do. Then keep them removed and make the transaction `Serializable` instead. What changes?

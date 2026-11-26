@@ -226,6 +226,7 @@ fn main() ! http.Error {
         if page := req.query("page") { return http.text("page {page}") }
         return http.redirect("?page=2")
     })
+    app.get("/", req -> http.redirect("/whoami"))
     app.get("/whoami", req -> http.text("{req.header("Authorization") else "nobody"}, {req.header("X-Token") else "no token"}"))
     app.get("/same", req -> http.redirect("/whoami"))
     app.get("/away", req -> http.redirect("http://127.0.0.1:{port}/whoami"))

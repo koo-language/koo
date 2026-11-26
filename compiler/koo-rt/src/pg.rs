@@ -29,6 +29,7 @@ unsafe extern "C" {
     fn setsockopt(fd: i32, level: i32, name: i32, value: *const i32, len: u32) -> i32;
     fn sendto(fd: i32, data: *const u8, len: usize, flags: i32, address: *const u8, address_len: u32) -> isize;
     fn recv(fd: i32, data: *mut u8, len: usize, flags: i32) -> isize;
+    fn recvfrom(fd: i32, data: *mut u8, len: usize, flags: i32, from: *mut u8, from_len: *mut u32) -> isize;
     fn poll(fds: *mut PollFd, count: usize, milliseconds: i32) -> i32;
     fn getentropy(data: *mut u8, len: usize) -> i32;
     fn inet_pton(family: i32, text: *const u8, address: *mut u8) -> i32;
@@ -187,6 +188,9 @@ struct Conn {
     at: usize,
     /// The encryption of the connection, if it has one (`tls.rs`).
     tls: *mut tls::Tls,
+    /// While the connection is being set up: when the server must have answered, on
+    /// the clock that only goes forward. Zero once it is ready.
+    until: i64,
 }
 
 struct Db {
@@ -219,6 +223,7 @@ const NO_CONN: Conn = Conn {
     input: Buf::new(),
     at: 0,
     tls: core::ptr::null_mut(),
+    until: 0,
 };
 
 const NO_DB: Db = Db {
@@ -350,21 +355,29 @@ fn words(line: &[u8]) -> impl Iterator<Item = &[u8]> {
         .filter(|word| !word.is_empty())
 }
 
-/// Asks a name server for the address of a name, of the old kind (`kind` 1) or the new
-/// (28). `query` and `answer` are the two datagrams: the question is the name as
-/// labels, each with its length before it. Returns nothing if the server did not
-/// answer, and otherwise the address, or that there is none.
-unsafe fn ask_name_server(server: Ip, name: &[u8], kind: u8) -> Option<Option<Ip>> {
+/// Asks the name servers for the address of a name, of the old kind (`kind` 1) or the
+/// new (28), all of them at once, and takes the first answer that is one: an address,
+/// or the word that the name has none. A server that refuses, or fails, has not
+/// answered, and the others are waited for; one that is silent holds nothing up. An
+/// answer too long for the one datagram is asked for again over a connection.
+///
+/// Returns nothing if no server answered by `until` (0 for no limit beyond the two
+/// seconds, twice, that a question is given), and otherwise the address, or that there
+/// is none.
+unsafe fn ask_name_servers(servers: &[Ip], name: &[u8], kind: u8, until: i64) -> Option<Option<Ip>> {
     unsafe {
-        let mut query = [0u8; 300];
+        // The question: the name as labels, each with its length before it, and after
+        // it the word that an answer may be as long as 1232 bytes.
+        let mut query = [0u8; 320];
         let mut id = [0u8; 2];
         getentropy(id.as_mut_ptr(), 2);
         query[..2].copy_from_slice(&id);
         query[2] = 1; // the server may ask others
         query[5] = 1; // one question
+        query[11] = 1; // and one thing more, said at the end
         let mut at = 12;
         for label in name.split(|byte| *byte == b'.').filter(|label| !label.is_empty()) {
-            if label.len() > 63 || at + label.len() + 6 > query.len() {
+            if label.len() > 63 || at + label.len() + 17 > query.len() {
                 return None;
             }
             query[at] = label.len() as u8;
@@ -374,43 +387,138 @@ unsafe fn ask_name_server(server: Ip, name: &[u8], kind: u8) -> Option<Option<Ip
         // The end of the name, then: an address, of the Internet.
         query[at + 2] = kind;
         query[at + 4] = 1;
-        let length = at + 5;
-        let family = if matches!(server, Ip::V6(_)) { AF_INET6 } else { AF_INET };
-        let fd = socket(family, SOCK_DGRAM, 0);
-        if fd < 0 {
-            return None;
-        }
-        let (address, address_len) = socket_address(server, 53);
+        at += 5;
+        // No name, the kind 41, and the length this end can take.
+        query[at + 2] = 41;
+        query[at + 3..at + 5].copy_from_slice(&1232u16.to_be_bytes());
+        let length = at + 11;
+        let late = || until != 0 && koo_now_nanos() >= until;
         let mut found = None;
-        for _ in 0..2 {
-            if sendto(fd, query.as_ptr(), length, 0, address.as_ptr(), address_len) < 0 {
-                break;
-            }
-            // A handler of a server lets the server go on while the name server thinks.
-            match fiber::wait(fd, false, koo_now_nanos() + 2_000_000_000) {
-                fiber::Waited::Came => {}
-                fiber::Waited::TimeUp => continue,
-                fiber::Waited::NotHere => {
-                    let mut fds = PollFd {
-                        fd,
-                        events: 1,
-                        revents: 0,
-                    };
-                    if poll(&mut fds, 1, 2000) <= 0 {
-                        continue;
-                    }
-                }
-            }
-            let mut answer = [0u8; 1500];
-            let got = recv(fd, answer.as_mut_ptr(), answer.len(), 0);
-            if got < 12 || answer[..2] != id {
+        // The servers at addresses of one kind share a socket; those of the other kind
+        // are asked after them, if those gave no answer.
+        for new_kind in [false, true] {
+            let mine = |server: &&Ip| matches!(server, Ip::V6(_)) == new_kind;
+            if found.is_some() || late() || !servers.iter().any(|server| mine(&server)) {
                 continue;
             }
-            found = Some(address_in(&answer[..got as usize], kind));
-            break;
+            let fd = socket(if new_kind { AF_INET6 } else { AF_INET }, SOCK_DGRAM, 0);
+            if fd < 0 {
+                continue;
+            }
+            'asking: for _ in 0..2 {
+                let mut asked = 0;
+                for server in servers.iter().filter(mine) {
+                    let (address, address_len) = socket_address(*server, 53);
+                    if sendto(fd, query.as_ptr(), length, 0, address.as_ptr(), address_len) >= 0 {
+                        asked += 1;
+                    }
+                }
+                // A handler of a server lets the server go on while the name servers
+                // think: for two seconds, or for what is left of the caller's time.
+                let patience = koo_now_nanos() + 2_000_000_000;
+                let patience = if until != 0 { patience.min(until) } else { patience };
+                let mut unhelpful = 0;
+                while asked > unhelpful && ready(fd, false, patience) {
+                    let mut answer = [0u8; 1500];
+                    let mut from = [0u8; 28];
+                    let mut from_len = from.len() as u32;
+                    let got = recvfrom(
+                        fd,
+                        answer.as_mut_ptr(),
+                        answer.len(),
+                        0,
+                        from.as_mut_ptr(),
+                        &mut from_len,
+                    );
+                    if got < 12 || answer[..2] != id {
+                        continue;
+                    }
+                    let mut answer = &answer[..got as usize];
+                    // What did not fit is asked for again of the same server, over a
+                    // connection, where it fits.
+                    let mut whole = [0u8; 16384];
+                    if answer[2] & 2 != 0 {
+                        let sender = servers.iter().filter(mine).find(|server| {
+                            let (address, _) = socket_address(**server, 53);
+                            address[4..24] == from[4..24]
+                        });
+                        let got = match sender {
+                            Some(server) => ask_over_a_connection(*server, &query[..length], &mut whole, patience),
+                            None => 0,
+                        };
+                        if got >= 12 && whole[..2] == id {
+                            answer = &whole[..got];
+                        }
+                    }
+                    // 2 is a server that failed, and 5 one that will not say.
+                    let refused = matches!(answer[3] & 15, 2 | 5);
+                    match address_in(answer, kind) {
+                        Some(address) => {
+                            found = Some(Some(address));
+                            break 'asking;
+                        }
+                        None if refused => unhelpful += 1,
+                        None => {
+                            found = Some(None);
+                            break 'asking;
+                        }
+                    }
+                }
+                // Every server that was asked has said that it will not help.
+                if asked == 0 || unhelpful >= asked || late() {
+                    break;
+                }
+            }
+            close(fd);
+        }
+        found
+    }
+}
+
+/// Asks one name server over a connection, as is done for an answer that is too long
+/// for a datagram: the question with its length before it, and the answer likewise.
+/// Returns how long the answer is, or 0.
+unsafe fn ask_over_a_connection(server: Ip, query: &[u8], answer: &mut [u8], until: i64) -> usize {
+    unsafe {
+        let fd = socket(
+            if matches!(server, Ip::V6(_)) { AF_INET6 } else { AF_INET },
+            SOCK_STREAM,
+            0,
+        );
+        if fd < 0 {
+            return 0;
+        }
+        let (target, target_len) = socket_address(server, 53);
+        let left = ((until - koo_now_nanos()) / 1_000_000).max(1);
+        let mut got = 0;
+        let mut framed = [0u8; 322];
+        framed[..2].copy_from_slice(&(query.len() as u16).to_be_bytes());
+        framed[2..2 + query.len()].copy_from_slice(query);
+        if connect_within(fd, &target, target_len, left) && send_within(fd, &framed[..2 + query.len()], until) {
+            // Two bytes of length, and then so many of the answer.
+            let mut have = 0;
+            let mut wanted = 2;
+            let mut size = [0u8; 2];
+            while have < wanted && ready(fd, false, until) {
+                let n = if have < 2 {
+                    recv(fd, size.as_mut_ptr().add(have), 2 - have, 0)
+                } else {
+                    recv(fd, answer.as_mut_ptr().add(have - 2), wanted - have, 0)
+                };
+                if n <= 0 {
+                    break;
+                }
+                have += n as usize;
+                if have == 2 {
+                    wanted = 2 + (u16::from_be_bytes(size) as usize).min(answer.len());
+                }
+            }
+            if have >= 2 && have == wanted {
+                got = have - 2;
+            }
         }
         close(fd);
-        found
+        got
     }
 }
 
@@ -523,7 +631,7 @@ unsafe fn by_the_system(_host: &[u8]) -> Option<Ip> {
 /// the name servers the machine is set up with, trying the name inside each of the
 /// domains it searches, as the system's own resolver does. A host that has an address
 /// of the old kind is reached at that one, and one that has only the new kind at that.
-unsafe fn resolve(host: &[u8]) -> Option<Ip> {
+unsafe fn resolve(host: &[u8], until: i64) -> Option<Ip> {
     unsafe {
         if let Some(address) = literal(host) {
             return Some(address);
@@ -587,12 +695,13 @@ unsafe fn resolve(host: &[u8]) -> Option<Ip> {
         let dots = host.iter().filter(|byte| **byte == b'.').count();
         // A name with few dots is looked for in the searched domains first.
         let alone_first = dots >= dots_wanted || host.ends_with(b".");
-        // The first server that answers is believed, whatever it says.
+        // The servers are asked together, and the first that answers is believed.
+        let late = || until != 0 && koo_now_nanos() >= until;
         let ask = |name: &[u8], kind: u8| {
-            servers[..server_count]
-                .iter()
-                .find_map(|server| ask_name_server(*server, name, kind))
-                .flatten()
+            if late() {
+                return None;
+            }
+            ask_name_servers(&servers[..server_count], name, kind, until).flatten()
         };
         let mut answer = None;
         // An address of the old kind is asked for everywhere first, and one of the new
@@ -611,7 +720,7 @@ unsafe fn resolve(host: &[u8]) -> Option<Ip> {
                     name[host.len()] = b'.';
                     name[host.len() + 1..host.len() + 1 + domain.len()].copy_from_slice(domain);
                     answer = ask(&name[..host.len() + 1 + domain.len()], kind);
-                    if answer.is_some() {
+                    if answer.is_some() || late() {
                         break;
                     }
                 }
@@ -619,7 +728,7 @@ unsafe fn resolve(host: &[u8]) -> Option<Ip> {
             if answer.is_none() && !alone_first {
                 answer = ask(host, kind);
             }
-            if answer.is_some() {
+            if answer.is_some() || late() {
                 break;
             }
         }
@@ -668,11 +777,79 @@ pub(crate) unsafe fn send_all(fd: i32, mut data: &[u8]) -> bool {
     true
 }
 
+/// Waits until a socket can be read from, or written to, or until the time `until` on
+/// the clock that only goes forward (0 for no limit). A handler of a server is left
+/// where it is meanwhile. Returns false if the time ran out.
+pub(crate) unsafe fn ready(fd: i32, write: bool, until: i64) -> bool {
+    unsafe {
+        match fiber::wait(fd, write, until) {
+            fiber::Waited::Came => true,
+            fiber::Waited::TimeUp => false,
+            fiber::Waited::NotHere => {
+                let mut fds = PollFd {
+                    fd,
+                    events: if write { 4 } else { 1 },
+                    revents: 0,
+                };
+                loop {
+                    let left = if until == 0 {
+                        -1
+                    } else {
+                        // In whole milliseconds, and no fewer than are left.
+                        ((until - koo_now_nanos() + 999_999) / 1_000_000).clamp(0, i32::MAX as i64) as i32
+                    };
+                    let found = poll(&mut fds, 1, left);
+                    if found < 0 && *errno_location() == EINTR {
+                        continue;
+                    }
+                    break found > 0;
+                }
+            }
+        }
+    }
+}
+
+/// Writes to a connection as `send_all` does, but without keeping the thread while the
+/// other end has no room: a handler of a server is left where it is until there is
+/// room, and the wait ends at `until` (0 for no limit). Returns whether all went out.
+pub(crate) unsafe fn send_within(fd: i32, mut data: &[u8], until: i64) -> bool {
+    unsafe {
+        const F_GETFL: i32 = 3;
+        const F_SETFL: i32 = 4;
+        let quietly = if cfg!(target_os = "linux") { 0x4000 } else { 0 };
+        let non_blocking = if cfg!(target_os = "macos") { 0x4 } else { 0x800 };
+        let full = if cfg!(target_os = "macos") { 35 } else { 11 };
+        // The socket itself is told not to wait while this goes out: a word to that
+        // effect with each write is not heeded everywhere for a write that is long.
+        let flags = fcntl(fd, F_GETFL);
+        fcntl(fd, F_SETFL, flags | non_blocking);
+        let mut whole = true;
+        while !data.is_empty() {
+            let n = sendto(fd, data.as_ptr(), data.len(), quietly, core::ptr::null(), 0);
+            if n > 0 {
+                data = &data[n as usize..];
+                continue;
+            }
+            let error = *errno_location();
+            if error == EINTR {
+                continue;
+            }
+            // The time is for the whole of it, however much has gone out meanwhile.
+            if error != full || (until != 0 && koo_now_nanos() >= until) || !ready(fd, true, until) {
+                whole = false;
+                break;
+            }
+        }
+        fcntl(fd, F_SETFL, flags);
+        whole
+    }
+}
+
 /// Writes to a connection, through its encryption if it has one.
 unsafe fn send(conn: &Conn, data: &[u8]) -> bool {
     unsafe {
         if conn.tls.is_null() {
-            send_all(conn.fd, data)
+            send_within(conn.fd, data, conn.until)
         } else {
             tls::write_all(conn.tls, data)
         }
@@ -708,8 +885,8 @@ unsafe fn fill(conn: &mut Conn, need: usize) -> bool {
                 core::slice::from_raw_parts_mut(conn.input.ptr.add(conn.input.len), conn.input.cap - conn.input.len);
             // The answer of a database is what a handler of a server waits for most:
             // the server does other work until there is something of it to read.
-            if conn.tls.is_null() || tls::pending(conn.tls) == 0 {
-                fiber::wait_readable(conn.fd, 0);
+            if (conn.tls.is_null() || tls::pending(conn.tls) == 0) && !ready(conn.fd, false, conn.until) {
+                return false;
             }
             let n = if conn.tls.is_null() {
                 read(conn.fd, room.as_mut_ptr(), room.len())
@@ -993,12 +1170,23 @@ pub(crate) const UNANSWERED: i32 = -2;
 /// -1, or `UNANSWERED` if the time ran out, with the reason written into `why`.
 pub(crate) unsafe fn dial(host: &[u8], port: u16, milliseconds: i64, why: &mut Buffer) -> i32 {
     unsafe {
-        let Some(address) = resolve(host) else {
+        let milliseconds = milliseconds.max(1);
+        let until = koo_now_nanos() + milliseconds * 1_000_000;
+        let Some(address) = resolve(host, until) else {
+            // The time may be what ran out, with the name servers silent.
+            if koo_now_nanos() >= until {
+                why.push(b"the address of the host `");
+                why.push(host);
+                let _ = write!(why, "` was not found in {milliseconds} ms");
+                return UNANSWERED;
+            }
             why.push(b"there is no address for the host `");
             why.push(host);
             why.push(b"`");
             return -1;
         };
+        // What is left of the time is for the connection itself.
+        let milliseconds = (until - koo_now_nanos()) / 1_000_000;
         let family = if matches!(address, Ip::V6(_)) {
             AF_INET6
         } else {
@@ -1053,6 +1241,16 @@ pub(crate) unsafe fn dial(host: &[u8], port: u16, milliseconds: i64, why: &mut B
     }
 }
 
+/// Why a connection that was being set up is not ready: the server went, or the time
+/// ran out with the server there and silent.
+unsafe fn unready(conn: &Conn) -> &'static [u8] {
+    if conn.until != 0 && unsafe { koo_now_nanos() } >= conn.until {
+        b"the server took the connection and then did not answer in ten seconds"
+    } else {
+        b"the server closed the connection while it was being set up"
+    }
+}
+
 /// Connects to a database and waits until it is ready for a query.
 unsafe fn establish(conn: &mut Conn, db: &Db) -> bool {
     unsafe {
@@ -1066,6 +1264,9 @@ unsafe fn establish(conn: &mut Conn, db: &Db) -> bool {
         conn.fd = fd;
         conn.at = 0;
         conn.input.len = 0;
+        // A server that takes the connection and then says nothing is given as long to
+        // answer as one is given to take it, and no longer.
+        conn.until = koo_now_nanos() + 10_000_000_000;
         // Encryption is asked for before anything else is said: the server answers
         // with one letter, `S` if it will, and then TLS begins on the same socket.
         let wanted = match db.secure {
@@ -1081,11 +1282,8 @@ unsafe fn establish(conn: &mut Conn, db: &Db) -> bool {
             }
             let mut answer = [0u8; 1];
             let asked = send_all(fd, &[0, 0, 0, 8, 0x04, 0xd2, 0x16, 0x2f]);
-            if !asked || read(fd, answer.as_mut_ptr(), 1) != 1 {
-                failed(
-                    CONNECTION,
-                    &[b"the server closed the connection while it was being set up"],
-                );
+            if !asked || !ready(fd, false, conn.until) || read(fd, answer.as_mut_ptr(), 1) != 1 {
+                failed(CONNECTION, &[unready(conn)]);
                 hang_up(conn, false);
                 return false;
             }
@@ -1150,10 +1348,7 @@ unsafe fn establish(conn: &mut Conn, db: &Db) -> bool {
                 }
                 Some(_) => {}
                 None => {
-                    failed(
-                        CONNECTION,
-                        &[b"the server closed the connection while it was being set up"],
-                    );
+                    failed(CONNECTION, &[unready(conn)]);
                     ready = false;
                 }
             }
@@ -1161,6 +1356,7 @@ unsafe fn establish(conn: &mut Conn, db: &Db) -> bool {
         if !ready {
             hang_up(conn, false);
         }
+        conn.until = 0;
         ready
     }
 }
@@ -1268,7 +1464,9 @@ unsafe fn give_back(conn: &mut Conn, broken: bool) {
             hang_up(conn, false);
         }
         conn.busy = false;
-        POOL.wake_one();
+        // Every pool's waiters sleep at the one gate: all are woken, and those whose
+        // pool this is not sleep again.
+        POOL.wake_all();
         POOL.unlock();
     }
 }
@@ -1510,6 +1708,16 @@ pub unsafe extern "C" fn koo_sql_open(url: *const Header, limit: i64, patience: 
             .unwrap_or(b"");
         unescaped(settings, &mut db.options);
         unescaped(authorities, &mut db.authorities);
+        // A NUL ends a word of what is said to the server when the connection is set
+        // up: one inside a part of the address would begin another word of its own.
+        let whole = [&db.user, &db.password, &db.host, &db.database, &db.options]
+            .iter()
+            .all(|part| !part.bytes().contains(&0));
+        if !whole {
+            db.used = false;
+            failed(CONNECTION, &[b"the address of the database has a NUL in it (`%00`)"]);
+            return -1;
+        }
         db.secure = secure;
         db.patience = patience.max(1);
         db.port = port_number as u16;
@@ -1543,6 +1751,7 @@ unsafe fn exchange(conn: &mut Conn, request: &[u8], out: &mut Outcome) -> Result
         // anything. (A statement that could not be sent whole, above, was not done: it
         // is the last message of it that makes the server keep what it did.)
         let (mut goodbye, mut more) = (false, false);
+        let mut refused_copy = false;
         loop {
             let Some((kind, body)) = message(conn) else {
                 return Err(goodbye && !more);
@@ -1597,7 +1806,30 @@ unsafe fn exchange(conn: &mut Conn, request: &[u8], out: &mut Outcome) -> Result
                 }
                 b'E' => {
                     server_error(body);
+                    // What the server calls a statement that was called off was a
+                    // statement this program could not go through with.
+                    if refused_copy {
+                        outcome().kind = OTHER;
+                    }
                     ok = false;
+                }
+                // `copy ... from stdin`: the server waits for the rows, which a program
+                // has no way to send. It is told that none will come, and answers that
+                // the statement failed.
+                b'G' | b'W' => {
+                    let mut refusal = Buf::new();
+                    let mut fail = Message::begin(&mut refusal, b'f');
+                    fail.text(b"`copy ... from stdin` is not something a Koo program can do: insert the rows");
+                    fail.end();
+                    // The end of the statement was said before the server began to wait
+                    // for rows, and was not heard then: it is said again.
+                    Message::begin(&mut refusal, b'S').end();
+                    let told = send(conn, refusal.bytes());
+                    refusal.release();
+                    refused_copy = true;
+                    if !told {
+                        return Err(false);
+                    }
                 }
                 b'Z' => return Ok(ok),
                 _ => {}

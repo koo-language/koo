@@ -449,6 +449,24 @@ pub unsafe fn watch_stack() {
                 pthread_attr_getstack(attributes.as_ptr() as *const u8, &mut low, &mut size);
                 pthread_attr_destroy(attributes.as_mut_ptr() as *mut u8);
             }
+            // The stack of the thread a program starts on grows as it is used, up to
+            // the limit the process was given, and not every C library says how far
+            // that is: one of them says only how far it has grown so far.
+            unsafe extern "C" {
+                fn getpid() -> i32;
+                fn syscall(number: i64, ...) -> i64;
+                fn getrlimit(resource: i32, limit: *mut [u64; 2]) -> i32;
+            }
+            let own_number = if cfg!(target_arch = "aarch64") { 178 } else { 186 };
+            let mut limit = [0u64; 2];
+            if low != 0
+                && syscall(own_number) == getpid() as i64
+                && getrlimit(3, &mut limit) == 0
+                && limit[0] != u64::MAX
+                && (limit[0] as usize) < low + size
+            {
+                low = low.min(low + size - limit[0] as usize);
+            }
             thread.stack_low = low;
         }
         if thread.stack_low == 0 {
@@ -616,6 +634,33 @@ fn allowed() -> usize {
         };
         if time > 0 && period > 0 {
             most = most.min(((time + period - 1) / period) as usize);
+        }
+        // Where the program sees the control groups of its whole machine, its own is
+        // further in, at the path the system gives for the process: `0::/path`.
+        let mut own = [0u8; 512];
+        let fd = open(c"/proc/self/cgroup".as_ptr() as *const u8, 0);
+        if fd >= 0 {
+            let len = read(fd, own.as_mut_ptr(), own.len()).max(0) as usize;
+            close(fd);
+            let path = own[..len]
+                .split(|byte| *byte == b'\n')
+                .find_map(|line| line.strip_prefix(b"0::"))
+                .filter(|path| path.len() > 1 && path.len() < 400 && !path.contains(&0));
+            if let Some(path) = path {
+                let mut file = [0u8; 448];
+                let (before, after) = (b"/sys/fs/cgroup", b"/cpu.max\0");
+                file[..before.len()].copy_from_slice(before);
+                file[before.len()..before.len() + path.len()].copy_from_slice(path);
+                let end = before.len() + path.len();
+                file[end..end + after.len()].copy_from_slice(after);
+                if let Ok(file) = core::ffi::CStr::from_bytes_until_nul(&file)
+                    && let Some([time, period]) = numbers(file)
+                    && time > 0
+                    && period > 0
+                {
+                    most = most.min(((time + period - 1) / period) as usize);
+                }
+            }
         }
         most
     }

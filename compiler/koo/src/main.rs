@@ -421,9 +421,13 @@ fn build(args: &[String], mode: Mode, program_args: &[std::ffi::OsString]) -> Ex
                 eprintln!("koo {command}: `--target` is followed by a target: `linux-arm64` or `linux-x86-64`");
                 return ExitCode::from(2);
             }
-            "-o" if !run && i + 1 < args.len() => {
+            "-o" if !run && i + 1 < args.len() && !args[i + 1].is_empty() => {
                 i += 1;
                 output = Some(PathBuf::from(&args[i]));
+            }
+            "-o" if !run => {
+                eprintln!("koo {command}: `-o` is followed by the name of the executable");
+                return ExitCode::from(2);
             }
             option if option.starts_with('-') => {
                 eprintln!("koo {command}: unknown option `{option}`");
@@ -437,10 +441,6 @@ fn build(args: &[String], mode: Mode, program_args: &[std::ffi::OsString]) -> Ex
         }
         i += 1;
     }
-    let Some(path) = path else {
-        eprintln!("koo {command}: no file given\n\n{USAGE}");
-        return ExitCode::from(2);
-    };
     let cross = match wanted.as_deref().map(|name| (name, target(name))) {
         None => None,
         Some((_, Some(target))) => Some(target),
@@ -458,6 +458,10 @@ fn build(args: &[String], mode: Mode, program_args: &[std::ffi::OsString]) -> Ex
             );
             return ExitCode::from(2);
         }
+    };
+    let Some(path) = path else {
+        eprintln!("koo {command}: no file given\n\n{USAGE}");
+        return ExitCode::from(2);
     };
     if let Some(target) = cross {
         if run && !target.here {
@@ -581,11 +585,33 @@ fn build(args: &[String], mode: Mode, program_args: &[std::ffi::OsString]) -> Ex
             return ExitCode::FAILURE;
         }
     };
+    // The executable of a package is left in the package's directory, under the
+    // directory's name, which outside it is the directory's own.
     let executable = match (&output, run) {
         (Some(output), _) => output.clone(),
         (None, true) => dir.path.join(stem),
+        (None, false) if source_path.is_dir() => source_path.join(stem),
         (None, false) => PathBuf::from(stem),
     };
+    // Where it is to be left is looked at now: what the linker says of a place it
+    // cannot write to is not about the program.
+    if !run {
+        let parent = executable.parent().filter(|parent| !parent.as_os_str().is_empty());
+        let why = if executable.is_dir() {
+            Some(format!("`{}` is a directory", executable.display()))
+        } else {
+            parent
+                .filter(|parent| !parent.is_dir())
+                .map(|parent| format!("there is no directory `{}`", parent.display()))
+        };
+        if let Some(why) = why {
+            eprintln!(
+                "koo {command}: the executable cannot be left at `{}`: {why}. `-o` names another place.",
+                executable.display()
+            );
+            return ExitCode::FAILURE;
+        }
+    }
     // LLVM does the optimizing and the linking, through the system's clang (Section 13.2).
     // A program for a named target is all linked in, whether or not `--static` says so.
     let fixed = fixed && cross.is_none();

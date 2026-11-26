@@ -2045,8 +2045,9 @@ fn http__fetch(method: string, url: string, body: string = "", headers: [string:
             }
             carried = kept
         }
-        // "See other", and a form that was posted and has moved, are fetched.
-        if reply.status == 303 or ((reply.status == 301 or reply.status == 302) and verb == "POST") {
+        // "See other", and a form that was posted and has moved, are fetched. A request
+        // for the head alone stays one.
+        if (reply.status == 303 and verb != "HEAD") or ((reply.status == 301 or reply.status == 302) and verb == "POST") {
             verb = "GET"
             sent = ""
         }
@@ -2060,7 +2061,13 @@ fn http__fetch(method: string, url: string, body: string = "", headers: [string:
 fn h__origin(url: string) -> string {
     start := (url.find("://") else return url) + 3
     rest := url.slice(start, url.len)
-    end := rest.find("/") else rest.len
+    // The host ends where the path begins, or the query of an address that has no path.
+    var end := rest.len
+    for mark in ["/", "?", "#"] {
+        if at := rest.find(mark) {
+            if at < end { end = at }
+        }
+    }
     return url.slice(0, start + end).to_lower()
 }
 
@@ -2627,14 +2634,21 @@ fn s__time(text: string) -> Time? {
         end += 1
     }
     var zone := text.slice(end, text.len)
+    // A place's time before its clocks were set by a zone is off by seconds too:
+    // `+05:21:10`. Those are taken off after the rest is read.
+    var seconds := 0
     if zone == "" {
         zone = "Z"
     } else if zone.len == 3 {
         zone += ":00"
+    } else if zone.len == 9 {
+        seconds = int.parse(zone.slice(7, 9)) else return none
+        if zone.starts_with("+") { seconds = -seconds }
+        zone = zone.slice(0, 6)
     }
     written := text.slice(0, 10) + "T" + text.slice(11, end) + zone
     match Time.parse(written) {
-        time => return time
+        time => return Time { _ns: time._ns + seconds * 1000000000 }
         ! e => return none
     }
 }

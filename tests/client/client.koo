@@ -79,6 +79,10 @@ fn main() ! http.Error | JsonError {
     }
     show("no brackets", http.get("http://::1:{port}/none"))
     show("half a bracket", http.get("http://[::1:{port}/none"))
+    show("no colon", http.get("http://[::1]8080/"))
+    show("nothing in brackets", http.get("http://[]:8080/"))
+    // An address with a query and no path is sent on like any other.
+    print(http.get(base + "?x=1", redirects: 1)?.body)
 }
 //= Echo { method: "GET", path: "/echo", body: "", agent: "koo", kind: "", token: "" }
 //= Echo { method: "POST", path: "/echo", body: "\{\"id\":7,\"sku\":\"nails\"}", agent: "koo", kind: "application/json", token: "s3cret" }
@@ -117,3 +121,6 @@ fn main() ! http.Error | JsonError {
 //= in brackets: 204 true 0 bytes, no type
 //= no brackets: Address: `http://::1:PORT/none` is not an address that can be asked: one is `http://host/path` or `https://host:port/path?query`
 //= half a bracket: Address: `http://[::1:PORT/none` is not an address that can be asked: one is `http://host/path` or `https://host:port/path?query`
+//= no colon: Address: `http://[::1]8080/` is not an address that can be asked: one is `http://host/path` or `https://host:port/path?query`
+//= nothing in brackets: Address: `http://[]:8080/` is not an address that can be asked: one is `http://host/path` or `https://host:port/path?query`
+//= nobody, no token
