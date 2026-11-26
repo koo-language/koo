@@ -339,11 +339,14 @@ pub unsafe fn after_fork() {
         // What the parent has not handed out of its randomness is the parent's.
         (*mine).random_left = 0;
         REGISTRY.unlock();
+        // The threads of the parent are not here: this one is the first of the
+        // process, and the places of the others are free again.
         for thread in &THREADS[..THREAD_COUNT.load(Relaxed)] {
-            if thread.load(Relaxed) != mine {
-                thread.store(core::ptr::null_mut(), Relaxed);
-            }
+            thread.store(core::ptr::null_mut(), Relaxed);
         }
+        (*mine).index = 1;
+        THREADS[0].store(mine, Release);
+        THREAD_COUNT.store(1, Release);
     }
 }
 
@@ -460,15 +463,29 @@ pub unsafe fn watch_stack() {
                 fn syscall(number: i64, ...) -> i64;
                 fn getrlimit(resource: i32, limit: *mut [u64; 2]) -> i32;
             }
+            unsafe extern "C" {
+                fn getauxval(kind: u64) -> u64;
+                fn strlen(text: *const u8) -> usize;
+            }
             let own_number = if cfg!(target_arch = "aarch64") { 178 } else { 186 };
             let mut limit = [0u64; 2];
             if low != 0
                 && syscall(own_number) == getpid() as i64
                 && getrlimit(3, &mut limit) == 0
                 && limit[0] != u64::MAX
-                && (limit[0] as usize) < low + size
             {
-                low = low.min(low + size - limit[0] as usize);
+                // The limit is counted from the very top of the stack, where the system
+                // put the program's arguments and environment and, last of all, the
+                // name it was run by (what the system knows as 31): above what a C
+                // library may call the top.
+                let name = getauxval(31) as usize;
+                let mut top = low + size;
+                if name != 0 {
+                    top = top.max((name + strlen(name as *const u8) + 1 + 8 + 4095) & !4095);
+                }
+                if (limit[0] as usize) < top {
+                    low = low.min(top - limit[0] as usize);
+                }
             }
             thread.stack_low = low;
         }

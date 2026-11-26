@@ -35,11 +35,23 @@ fn hidden(d: Duration, t: Time, c: Counter) {
     }
 }
 
+enum Maybe<T> {
+    Nothing
+    Just { value: T }
+}
+
+// A default is worked out where the function is called, where `T` names nothing.
+fn pick<T>(first: T, other: Maybe<T> = Maybe<T>.Nothing) -> T {
+    return first
+}
+
 fn main() {
     hidden(5s, Time.from_unix(5), Counter.start())
+    print(pick(1, Maybe<int>.Nothing))
 }
 
 //! error a function cannot be given to an actor when it is started
 //! error `Duration` has no field `_ns`
 //! error `Time` has no field `_ns`
 //! error `Counter` has no field `id`
+//! error a default cannot name a type parameter of its function

@@ -597,12 +597,34 @@ fn build(args: &[String], mode: Mode, program_args: &[std::ffi::OsString]) -> Ex
     // cannot write to is not about the program.
     if !run {
         let parent = executable.parent().filter(|parent| !parent.as_os_str().is_empty());
+        let same = |one: &Path, other: &Path| match (one.canonicalize(), other.canonicalize()) {
+            (Ok(one), Ok(other)) => one == other,
+            _ => false,
+        };
         let why = if executable.is_dir() {
             Some(format!("`{}` is a directory", executable.display()))
+        } else if let Some(parent) = parent.filter(|parent| !parent.is_dir()) {
+            Some(format!("there is no directory `{}`", parent.display()))
+        } else if source_path.is_file() && same(&executable, source_path) {
+            Some("that is the program's own source".to_string())
         } else {
-            parent
-                .filter(|parent| !parent.is_dir())
-                .map(|parent| format!("there is no directory `{}`", parent.display()))
+            // Whether a file can be written there is found out by opening one, which
+            // is taken away again if it was not there before.
+            let there = executable.symlink_metadata().is_ok();
+            match std::fs::OpenOptions::new()
+                .write(true)
+                .create(true)
+                .truncate(false)
+                .open(&executable)
+            {
+                Ok(_) => {
+                    if !there {
+                        let _ = std::fs::remove_file(&executable);
+                    }
+                    None
+                }
+                Err(err) => Some(err.to_string()),
+            }
         };
         if let Some(why) = why {
             eprintln!(
@@ -752,7 +774,7 @@ fn build(args: &[String], mode: Mode, program_args: &[std::ffi::OsString]) -> Ex
             .arg("--end-group")
             .args(AFTER.map(|part| dir.path.join(part)));
         match link.status() {
-            Ok(status) if status.success() => {}
+            Ok(status) if status.success() && executable.is_file() => {}
             Ok(_) => {
                 dir.keep = true;
                 eprintln!(

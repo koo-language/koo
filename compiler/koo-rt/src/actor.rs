@@ -1559,7 +1559,6 @@ mod remote {
         fn bind(fd: i32, address: *const u8, len: u32) -> i32;
         fn listen(fd: i32, backlog: i32) -> i32;
         fn accept(fd: i32, address: *mut u8, len: *mut u32) -> i32;
-        fn connect(fd: i32, address: *const u8, len: u32) -> i32;
         fn close(fd: i32) -> i32;
         fn getpid() -> i32;
         fn poll(fds: *mut PollFd, count: usize, milliseconds: i32) -> i32;
@@ -1678,9 +1677,13 @@ mod remote {
         actor: i64,
         /// Its place among the messages that are held up.
         turn: u64,
-        /// The message, while it is held up.
+        /// The message: while it is held up, and before that while it is still
+        /// arriving, when `got` says how much of it, and of the four bytes before it
+        /// that say its length, is here.
         message: *mut u8,
         len: usize,
+        got: usize,
+        head: [u8; 4],
     }
 
     const NO_CONN: Conn = Conn {
@@ -1690,6 +1693,8 @@ mod remote {
         turn: 0,
         message: core::ptr::null_mut(),
         len: 0,
+        got: 0,
+        head: [0; 4],
     };
 
     /// The connections, and whose turn it is. `SERVED` is held to read or change them:
@@ -1733,6 +1738,11 @@ mod remote {
     // that handlers of a server that wait for answers side by side each have their own.
     static KEPT: Lock = Lock::new();
     static mut HOMES: [(Name, i32); MOST_HOMES] = [(NO_NAME, -1); MOST_HOMES];
+    /// When each was put by, on the clock that only goes forward: one that nothing
+    /// has used for ten seconds is closed, so that the process at the other end is
+    /// not left holding, for every worker, as many as the worker once needed at once.
+    static mut KEPT_AT: [i64; MOST_HOMES] = [0; MOST_HOMES];
+    const KEPT_FOR: i64 = 10_000_000_000;
     static mut HOME_COUNT: usize = 0;
     static mut HOMES_OF: i32 = 0;
     /// How many connections are in use. A handler that asks has one of its own for as
@@ -1755,19 +1765,6 @@ mod remote {
             if n > 0 {
                 data = &data[n as usize..];
             } else if unsafe { error() } != EINTR {
-                return false;
-            }
-        }
-        true
-    }
-
-    unsafe fn read_full(fd: i32, data: &mut [u8]) -> bool {
-        let mut got = 0;
-        while got < data.len() {
-            let n = unsafe { read(fd, data.as_mut_ptr().add(got), data.len() - got) };
-            if n > 0 {
-                got += n as usize;
-            } else if n == 0 || unsafe { error() } != EINTR {
                 return false;
             }
         }
@@ -1955,7 +1952,11 @@ mod remote {
         unsafe {
             // No more than the table of threads has room for, beside the threads that
             // run what actors are told and those that stand in for them while they wait.
-            let others = WORKERS.load(SeqCst).max(thread::processors()) * 2 + 8;
+            static PROCESSORS: AtomicUsize = AtomicUsize::new(0);
+            if PROCESSORS.load(Relaxed) == 0 {
+                PROCESSORS.store(thread::processors(), Relaxed);
+            }
+            let others = WORKERS.load(SeqCst).max(PROCESSORS.load(Relaxed)) * 2 + 8;
             let most = thread::MOST_THREADS.saturating_sub(others).clamp(1, MOST_ANSWERERS);
             if ANSWERERS.fetch_add(1, AcqRel) < most && thread::start(answer) {
                 return true;
@@ -2124,7 +2125,13 @@ mod remote {
                     // to wait its turn now: whoever answers that actor then goes from
                     // one message to the next without another thread being woken.
                     let mut whole = [0u8; 256];
-                    let here = recv(fd, whole.as_mut_ptr(), whole.len(), MSG_PEEK | MSG_DONTWAIT);
+                    // (Not one of which a part was read before: what is here of that is
+                    // the rest of it, and it is read when this thread's turn is over.)
+                    let here = if CONNS[index].got == 0 {
+                        recv(fd, whole.as_mut_ptr(), whole.len(), MSG_PEEK | MSG_DONTWAIT)
+                    } else {
+                        0
+                    };
                     let size = u32::from_le_bytes([whole[0], whole[1], whole[2], whole[3]]) as usize;
                     let method_end = 3 + u16::from_le_bytes([whole[5], whole[6]]) as usize;
                     if here >= 7 && size >= 3 && 4 + size <= here as usize && method_end <= size {
@@ -2153,33 +2160,75 @@ mod remote {
                     SERVED.unlock();
                     continue;
                 }
-                CONNS[index].doing = BUSY;
-                CONNS[index].actor = NO_ACTOR;
+                // What has come of its message is read, and what has not is not waited
+                // for: a sender that stops in the middle of a long message, as a worker
+                // does that has other things to do, holds up nobody but itself. Only
+                // the thread that waits for messages reads a connection that is idle.
+                let (mut got, mut message, mut size, mut head) = (
+                    CONNS[index].got,
+                    CONNS[index].message,
+                    CONNS[index].len,
+                    CONNS[index].head,
+                );
                 SERVED.unlock();
-                let mut size = [0u8; 4];
-                let size_read = read_full(fd, &mut size);
-                let size = u32::from_le_bytes(size) as usize;
-                let message = if size_read && size >= 3 {
-                    malloc(size)
-                } else {
-                    core::ptr::null_mut()
-                };
-                let whole = !message.is_null() && {
-                    let text = core::slice::from_raw_parts_mut(message, size);
-                    read_full(fd, text) && 3 + u16::from_le_bytes([text[1], text[2]]) as usize <= size
-                };
-                SERVED.lock();
-                // The connection is this thread's since it was found, and nothing has
-                // moved it but the leaving of others, so it is looked for again.
-                let index = CONNS[..CONN_COUNT].iter().position(|conn| conn.fd == fd);
-                let (Some(index), true) = (index, whole) else {
-                    free(message);
-                    if let Some(index) = index {
-                        drop_conn(index);
+                let mut gone = false;
+                loop {
+                    if got >= 4 && message.is_null() {
+                        size = u32::from_le_bytes(head) as usize;
+                        message = if size >= 3 { malloc(size) } else { core::ptr::null_mut() };
+                        if message.is_null() {
+                            gone = true;
+                            break;
+                        }
                     }
+                    if got >= 4 && got == 4 + size {
+                        break;
+                    }
+                    let n = if got < 4 {
+                        recv(fd, head.as_mut_ptr().add(got), 4 - got, MSG_DONTWAIT)
+                    } else {
+                        recv(fd, message.add(got - 4), 4 + size - got, MSG_DONTWAIT)
+                    };
+                    if n > 0 {
+                        got += n as usize;
+                        continue;
+                    }
+                    let why = error();
+                    if n < 0 && why == EINTR {
+                        continue;
+                    }
+                    gone = n == 0 || why != EAGAIN;
+                    break;
+                }
+                let all = !gone && got >= 4 && got == 4 + size;
+                let whole = all && 3 + u16::from_le_bytes([*message.add(1), *message.add(2)]) as usize <= size;
+                SERVED.lock();
+                // Nothing has moved the connection but the leaving of others, so it is
+                // looked for again.
+                let Some(index) = CONNS[..CONN_COUNT].iter().position(|conn| conn.fd == fd) else {
+                    free(message);
                     SERVED.unlock();
                     continue;
                 };
+                (
+                    CONNS[index].got,
+                    CONNS[index].message,
+                    CONNS[index].len,
+                    CONNS[index].head,
+                ) = (got, message, size, head);
+                if gone || (all && !whole) {
+                    drop_conn(index);
+                    SERVED.unlock();
+                    continue;
+                }
+                if !whole {
+                    // The rest is read when it comes.
+                    SERVED.unlock();
+                    continue;
+                }
+                (CONNS[index].got, CONNS[index].message) = (0, core::ptr::null_mut());
+                CONNS[index].doing = BUSY;
+                CONNS[index].actor = NO_ACTOR;
                 let text = core::slice::from_raw_parts(message, size);
                 let method_end = 3 + u16::from_le_bytes([text[1], text[2]]) as usize;
                 let actor = kept_actor(text[0], &text[3..method_end]);
@@ -2364,17 +2413,21 @@ mod remote {
             }
             let mut kept = -1;
             let mut index = 0;
+            let now = crate::koo_now_nanos();
             while index < HOME_COUNT {
-                if HOMES[index].0.text() != name {
+                let old = now - KEPT_AT[index] > KEPT_FOR;
+                if HOMES[index].0.text() != name && !old {
                     index += 1;
                     continue;
                 }
+                let mine = HOMES[index].0.text() == name;
                 let fd = HOMES[index].1;
                 HOME_COUNT -= 1;
                 HOMES[index] = HOMES[HOME_COUNT];
-                if !fresh {
+                KEPT_AT[index] = KEPT_AT[HOME_COUNT];
+                if mine && !fresh && !old && kept < 0 {
                     kept = fd;
-                    break;
+                    continue;
                 }
                 close(fd);
             }
@@ -2384,7 +2437,10 @@ mod remote {
             }
             let (address, len) = address(name);
             let fd = socket(AF_UNIX, SOCK_STREAM, 0);
-            if fd < 0 || connect(fd, &address as *const Address as *const u8, len) != 0 {
+            // Without waiting: where as many as the other process lets wait are
+            // waiting already, the answer is that there is no room, and it is asked
+            // again in a moment, by a handler that is left where it is meanwhile.
+            if fd < 0 || !crate::pg::connect_within(fd, &address as *const Address as *const u8, len, 2000) {
                 if fd >= 0 {
                     close(fd);
                 }
@@ -2407,6 +2463,7 @@ mod remote {
                 .count();
             if good && HOMES_OF == getpid() && HOME_COUNT < MOST_HOMES && kept < MOST_KEPT {
                 HOMES[HOME_COUNT] = (Name::of(name), fd);
+                KEPT_AT[HOME_COUNT] = crate::koo_now_nanos();
                 HOME_COUNT += 1;
             } else {
                 close(fd);
@@ -2484,7 +2541,7 @@ mod remote {
             // took the connection and let go of it, three times.
             let (mut attempt, mut refusals) = (0, 0);
             while attempt < 3 && refusals < 100 {
-                let fd = connection(name, attempt > 0 || refusals > 0);
+                let fd = connection(name, attempt > 0);
                 me().talking = true;
                 let mut taken = [0u8; 1];
                 // No word that the message was taken up: the process that has the actor

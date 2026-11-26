@@ -448,6 +448,11 @@ unsafe fn ask_name_servers(servers: &[Ip], name: &[u8], kind: u8, until: i64) ->
                         };
                         if got >= 12 && whole[..2] == id {
                             answer = &whole[..got];
+                        } else if address_in(answer, kind).is_none() {
+                            // The whole of it could not be had, and the part holds no
+                            // address: that server has not answered.
+                            unhelpful += 1;
+                            continue;
                         }
                     }
                     // 2 is a server that failed, and 5 one that will not say.
@@ -494,7 +499,7 @@ unsafe fn ask_over_a_connection(server: Ip, query: &[u8], answer: &mut [u8], unt
         let mut framed = [0u8; 322];
         framed[..2].copy_from_slice(&(query.len() as u16).to_be_bytes());
         framed[2..2 + query.len()].copy_from_slice(query);
-        if connect_within(fd, &target, target_len, left) && send_within(fd, &framed[..2 + query.len()], until) {
+        if connect_within(fd, target.as_ptr(), target_len, left) && send_within(fd, &framed[..2 + query.len()], until) {
             // Two bytes of length, and then so many of the answer.
             let mut have = 0;
             let mut wanted = 2;
@@ -1104,7 +1109,7 @@ unsafe fn authenticate(conn: &mut Conn, db: &Db) -> bool {
 /// handler of a server lets the server do other work until it is made, and anything
 /// else waits for it here. Returns whether it was made; if not, the error is where the
 /// system leaves errors, and is `SLOW` if the time ran out.
-unsafe fn connect_within(fd: i32, target: &[u8; 28], target_len: u32, milliseconds: i64) -> bool {
+pub(crate) unsafe fn connect_within(fd: i32, target: *const u8, target_len: u32, milliseconds: i64) -> bool {
     unsafe {
         const F_GETFL: i32 = 3;
         const F_SETFL: i32 = 4;
@@ -1117,7 +1122,7 @@ unsafe fn connect_within(fd: i32, target: &[u8; 28], target_len: u32, millisecon
         };
         let flags = fcntl(fd, F_GETFL);
         fcntl(fd, F_SETFL, flags | non_blocking);
-        let mut made = connect(fd, target.as_ptr(), target_len) == 0;
+        let mut made = connect(fd, target, target_len) == 0;
         let mut failed_with = *errno_location();
         if !made && failed_with == in_progress {
             let until = koo_now_nanos() + milliseconds * 1_000_000;
@@ -1171,13 +1176,14 @@ pub(crate) const UNANSWERED: i32 = -2;
 pub(crate) unsafe fn dial(host: &[u8], port: u16, milliseconds: i64, why: &mut Buffer) -> i32 {
     unsafe {
         let milliseconds = milliseconds.max(1);
+        let given = milliseconds;
         let until = koo_now_nanos() + milliseconds * 1_000_000;
         let Some(address) = resolve(host, until) else {
             // The time may be what ran out, with the name servers silent.
             if koo_now_nanos() >= until {
                 why.push(b"the address of the host `");
                 why.push(host);
-                let _ = write!(why, "` was not found in {milliseconds} ms");
+                let _ = write!(why, "` was not found in {given} ms");
                 return UNANSWERED;
             }
             why.push(b"there is no address for the host `");
@@ -1195,16 +1201,16 @@ pub(crate) unsafe fn dial(host: &[u8], port: u16, milliseconds: i64, why: &mut B
         let fd = socket(family, SOCK_STREAM, 0);
         let (target, target_len) = socket_address(address, port);
         let milliseconds = milliseconds.max(1);
-        let connected = fd >= 0 && connect_within(fd, &target, target_len, milliseconds);
+        let connected = fd >= 0 && connect_within(fd, target.as_ptr(), target_len, milliseconds);
         if !connected {
             let slow = fd >= 0 && *errno_location() == SLOW;
             why.push(b"cannot connect to ");
             why.push(host);
             let _ = write!(why, ":{port}: ");
-            if slow && milliseconds % 1000 == 0 {
-                let _ = write!(why, "the server did not answer in {} seconds", milliseconds / 1000);
+            if slow && given % 1000 == 0 {
+                let _ = write!(why, "the server did not answer in {} seconds", given / 1000);
             } else if slow {
-                let _ = write!(why, "the server did not answer in {milliseconds} ms");
+                let _ = write!(why, "the server did not answer in {given} ms");
             } else {
                 why.push(system_error());
             }

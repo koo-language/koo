@@ -1507,6 +1507,20 @@ impl<'a> Checker<'a> {
                         "a default must be a constant",
                         "a literal, `none`, `[]`, `[:]` or an enum variant; for anything else take a `T?` and use `else` in the body",
                     );
+                } else if let ast::ExprKind::Field { base, .. } = &default.kind
+                    && let ast::ExprKind::TypeApp { args, .. } = &base.kind
+                    && {
+                        let own: Vec<&str> = self.type_env.keys().map(String::as_str).collect();
+                        args.iter().any(|arg| names_one_of(arg, &own, ""))
+                    }
+                {
+                    // It is worked out where the function is called, where the
+                    // function's own type parameters are not names for anything.
+                    self.error_help(
+                        default.span,
+                        "a default cannot name a type parameter of its function",
+                        "take a `T?` and use `else` in the body",
+                    );
                 } else {
                     default_index = Some(self.param_defaults.len());
                     self.param_defaults.push(default);

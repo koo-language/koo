@@ -216,6 +216,33 @@ fn a_program_is_built_for_another_machine() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// A function that calls itself without end is a panic, and not the end of the process
+/// by a signal, however much the program was given as its environment: where the stack
+/// of a program ends is counted from above its environment, which a C library may not
+/// count in what it calls the stack.
+#[test]
+fn deep_recursion_is_a_panic_whatever_the_environment() {
+    let program = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/run/stack_overflow.koo");
+    for size in [0, 6_000, 20_000, 100_000] {
+        let output = Command::new(env!("CARGO_BIN_EXE_koo"))
+            .arg("run")
+            .arg(&program)
+            .env("KOO_TEST_PADDING", "x".repeat(size))
+            .output()
+            .expect("koo runs");
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert_eq!(
+            output.status.code(),
+            Some(101),
+            "with {size} bytes more of environment: {stderr}"
+        );
+        assert!(
+            stderr.contains("the call stack is exhausted"),
+            "with {size} bytes more of environment: {stderr}"
+        );
+    }
+}
+
 /// A chain of list methods prints the same whether the compiler makes one pass of it or
 /// not (Section 4.5). `programs_run_as_expected` ran the fused form; this runs each
 /// program that has a chain with the fusing turned off.

@@ -11,8 +11,11 @@ fn reserved() {
 fn main() {
     reserved()
     print(Foo__Bar { a: 1 })
+    // Nor between the braces of a string.
+    print("{Log__Level.Info}")
 }
 
 //! error `Foo__Bar` is not a name a program can use
 //! error `Http__Request` is not a name a program can use
 //! error `Foo__Bar` is not a name a program can use
+//! error `Log__Level` is not a name a program can use

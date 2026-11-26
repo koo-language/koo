@@ -22,7 +22,7 @@ use std::collections::HashMap;
 use crate::ast::*;
 use crate::diag::{Diagnostic, LineIndex, Span};
 use crate::lexer::lex_at;
-use crate::token::{Kw, Tok, Token, is_primitive};
+use crate::token::{Kw, StrPiece, Tok, Token, is_primitive};
 
 pub(crate) type PResult<T> = Result<T, ()>;
 
@@ -84,6 +84,27 @@ fn parse(src: &str, fragment: bool, base: u32, library: bool) -> Parsed {
     })
 }
 
+/// The names of types with `__` in them among some tokens, and among the tokens of what
+/// a string has between braces, each of which is said to be the library's.
+fn reserved_names(tokens: &[Token], found: &mut Vec<Diagnostic>) {
+    for token in tokens {
+        match &token.kind {
+            Tok::UpperIdent(name) if name.contains("__") => found.push(
+                Diagnostic::new(token.span, format!("`{name}` is not a name a program can use"))
+                    .with_note("a name with `__` in it is reserved for the standard library (Section 3.1)"),
+            ),
+            Tok::Str(pieces) => {
+                for piece in pieces {
+                    if let StrPiece::Interp { tokens, .. } = piece {
+                        reserved_names(tokens, found);
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
 fn parse_in_place(src: &str, fragment: bool, base: u32, library: bool) -> Parsed {
     let lexed = lex_at(src, base);
     let index = LineIndex::at(src, base);
@@ -94,17 +115,10 @@ fn parse_in_place(src: &str, fragment: bool, base: u32, library: bool) -> Parsed
         .collect();
     // A name of a type with `__` in it is the standard library's: a program can
     // neither declare one nor use one of the library's by that name.
-    let reserved: Vec<Diagnostic> = lexed
-        .tokens
-        .iter()
-        .filter_map(|token| match &token.kind {
-            Tok::UpperIdent(name) if !library && name.contains("__") => Some(
-                Diagnostic::new(token.span, format!("`{name}` is not a name a program can use"))
-                    .with_note("a name with `__` in it is reserved for the standard library (Section 3.1)"),
-            ),
-            _ => None,
-        })
-        .collect();
+    let mut reserved: Vec<Diagnostic> = Vec::new();
+    if !library {
+        reserved_names(&lexed.tokens, &mut reserved);
+    }
     let mut parser = Parser::new(lexed.tokens, fragment);
     parser.diags.extend(reserved);
     parser.library = library;
