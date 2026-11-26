@@ -41,6 +41,17 @@ mod stub {
     pub unsafe fn landing() -> Option<(usize, usize)> {
         None
     }
+    pub unsafe fn given_up() -> bool {
+        false
+    }
+    pub unsafe fn leave_if_given_up() {}
+    pub unsafe fn cut_short() -> bool {
+        false
+    }
+    #[unsafe(no_mangle)]
+    pub unsafe extern "C" fn koo_http_given_up() -> bool {
+        false
+    }
     #[unsafe(no_mangle)]
     pub unsafe extern "C" fn koo_http_reset() {}
     #[unsafe(no_mangle)]
@@ -143,6 +154,7 @@ mod imp {
         fn getsockname(fd: i32, address: *mut u8, len: *mut u32) -> i32;
         fn listen(fd: i32, backlog: i32) -> i32;
         fn accept(fd: i32, address: *mut u8, len: *mut u32) -> i32;
+        fn recv(fd: i32, data: *mut u8, len: usize, flags: i32) -> isize;
         fn fcntl(fd: i32, command: i32, ...) -> i32;
         fn close(fd: i32) -> i32;
         fn signal(number: i32, handler: usize) -> usize;
@@ -167,6 +179,8 @@ mod imp {
     const F_GETFL: i32 = 3;
     const F_SETFL: i32 = 4;
     const EINTR: i32 = 4;
+    const MSG_PEEK: i32 = 2;
+    const MSG_DONTWAIT: i32 = if cfg!(target_os = "macos") { 0x80 } else { 0x40 };
     const SIGINT: i32 = 2;
     const SIGPIPE: i32 = 13;
     const SIGTERM: i32 = 15;
@@ -652,6 +666,9 @@ mod imp {
         handling: bool,
         /// Whether reading was stopped meanwhile, to be started again after the answer.
         paused: bool,
+        /// Whether it was closed while its request was with a handler, and is kept
+        /// until the handler is done.
+        left: bool,
         /// When it last read or wrote, and when the request being read began, in seconds.
         active: i64,
         began: i64,
@@ -917,16 +934,38 @@ mod imp {
         unsafe {
             // Closing the socket takes it out of the queue.
             close(c.fd);
-            c.input.release();
-            c.output.release();
-        }
-        c.fd = -1;
-        c.generation = c.generation.wrapping_add(1);
-        unsafe {
-            FREE.push(index as u32);
             // There is a socket to be had again for another connection.
             NO_SOCKETS = false;
         }
+        c.fd = -1;
+        if c.handling {
+            // Its request is with a handler, which may yet read of the request: its
+            // path, its headers, its body are where the connection kept them. They
+            // stay, and the connection's place in the table with them, until the
+            // handler is done (`answering`). And the handler is told, however it was
+            // that the connection came to be closed: there is nobody to answer.
+            c.left = true;
+            unsafe { give_up(index) };
+            return;
+        }
+        unsafe { let_go(index) };
+    }
+
+    /// Gives back what a connection that is closed still held, and its place in the table.
+    #[allow(static_mut_refs)]
+    unsafe fn let_go(index: usize) {
+        let c = unsafe { conn(index) };
+        unsafe {
+            c.input.release();
+            c.output.release();
+        }
+        c.left = false;
+        c.handling = false;
+        // (Within thirty bits: what the queue is given for a connection has its
+        // generation in the high half, where the words for a handler's wait, for the
+        // listener and for the parent are numbers that no connection's may be.)
+        c.generation = c.generation.wrapping_add(1) & 0x3fff_ffff;
+        unsafe { FREE.push(index as u32) };
     }
 
     /// Takes new connections or leaves them to the other workers, as things stand. A
@@ -1008,6 +1047,7 @@ mod imp {
                 told_continue: false,
                 handling: false,
                 paused: false,
+                left: false,
                 active: now(),
                 began: 0,
             };
@@ -1877,10 +1917,12 @@ mod imp {
                 let c = conn(index);
                 if c.fd >= 0 {
                     close(c.fd);
-                    c.input.release();
-                    c.output.release();
                     c.fd = -1;
                 }
+                // (One that was closed while a handler had its request holds its
+                // input still.)
+                c.input.release();
+                c.output.release();
             }
             CONNS.len = 0;
             FREE.len = 0;
@@ -1998,9 +2040,17 @@ mod imp {
                 return;
             }
             if e.tag & !0xffff_ffff == PLACE {
-                // What a handler waited for has come.
-                let place = e.tag & 0xffff_ffff;
-                if place < PLACE_COUNT && PLACES[place].doing == Doing::Waiting {
+                // What a handler waited for has come: if it is this wait of the
+                // handler's that the word is of. The events of one look at the queue
+                // are gone through while handlers run between them, and one that was
+                // woken another way meanwhile, by its time or by its client's leaving,
+                // may be waiting for something else by now, or only for a time.
+                let (place, serial) = (e.tag & 0xff, (e.tag >> 8) as u32 & 0xff_ffff);
+                if place < PLACE_COUNT
+                    && PLACES[place].doing == Doing::Waiting
+                    && PLACES[place].fd >= 0
+                    && PLACES[place].serial == serial
+                {
                     PLACES[place].doing = Doing::Ready;
                 }
                 return;
@@ -2027,18 +2077,112 @@ mod imp {
                 }
             }
             if e.readable && conn(index).reading && conn(index).handling {
-                // Its request is with a handler that waits: what it sends meanwhile
-                // stays where it is until the answer has gone.
+                // Its request is with a handler that waits. Either the client has sent
+                // more, which stays where it is until the answer has gone; or it has
+                // left, and the handler has nobody to answer.
                 let c = conn(index);
-                c.reading = false;
-                c.paused = true;
-                sys::stop_reading(QUEUE, c.fd, tag(index, c.generation), c.writing);
+                let mut byte = [0u8; 1];
+                let there = recv(c.fd, byte.as_mut_ptr(), 1, MSG_PEEK | MSG_DONTWAIT);
+                let gone = there == 0 || (there < 0 && error() != sys::EAGAIN && error() != EINTR);
+                // (Unless an answer to an earlier request of the connection is still
+                // going out: a client that has said it will send no more is reading
+                // that one yet, and the connection ends when it has gone.)
+                if gone && c.output.len == c.sent {
+                    shut(index);
+                } else {
+                    c.reading = false;
+                    c.paused = true;
+                    sys::stop_reading(QUEUE, c.fd, tag(index, c.generation), c.writing);
+                }
             } else if e.readable && conn(index).reading {
                 read_from(index);
             } else if e.hangup {
                 shut(index);
             }
         }
+    }
+
+    /// The connection of a request that is with a handler has been closed: the handler,
+    /// which waits somewhere, is told that its request was given up, and woken to find
+    /// it out. (A client that only says it will send no more, and waits for its answer,
+    /// cannot be told from one that has gone, and is taken for one: so do the servers
+    /// that are most used.)
+    #[allow(static_mut_refs)]
+    unsafe fn give_up(index: usize) {
+        unsafe {
+            if !SIDE_BY_SIDE {
+                return;
+            }
+            let generation = conn(index).generation;
+            for place in PLACES[..PLACE_COUNT].iter_mut() {
+                let its = matches!(place.doing, Doing::Waiting | Doing::Ready)
+                    && !place.current.answered
+                    && place.current.conn == index
+                    && place.current.generation == generation;
+                if its {
+                    place.given_up = true;
+                    if place.doing == Doing::Waiting {
+                        place.late = true;
+                        place.doing = Doing::Ready;
+                    }
+                }
+            }
+        }
+    }
+
+    /// Whether the request the calling thread is answering was given up, so that what
+    /// its handler does next is for nobody. It is so only where a handler may be left
+    /// for another (`may_leave`): on the server's own thread, in a handler, with no
+    /// actor held, since a method of an actor that has begun is never cut short.
+    #[allow(static_mut_refs)]
+    pub unsafe fn given_up() -> bool {
+        unsafe { may_leave() && PLACES[HERE].given_up }
+    }
+
+    /// Ends the handler of a request that was given up, as a panic would and without a
+    /// word. What the handler held is not given back, as after a panic, so this is for
+    /// where there is nothing else to do: an ask of an actor in another process, which
+    /// has no way to fail. Called only where a panic might be, with nothing of the
+    /// support library's in the middle of being used.
+    pub unsafe fn leave_if_given_up() {
+        unsafe {
+            if given_up() && !thread::me().guard.is_null() {
+                crate::actor::leave();
+            }
+        }
+    }
+
+    /// Asked where a handler is about to begin something that waits: a sleep, a
+    /// statement, a request to another server. If its request was given up it begins
+    /// nothing, and the caller says so in its own way, as it would say that the time
+    /// had run out; the handler then runs on to its end, which with nothing to wait
+    /// for comes soon, and gives back what it held as any handler does. One that goes
+    /// on beginning things all the same, in a loop that tries again, is ended.
+    #[allow(static_mut_refs)]
+    pub unsafe fn cut_short() -> bool {
+        unsafe {
+            if !given_up() {
+                return false;
+            }
+            PLACES[HERE].cut += 1;
+            if PLACES[HERE].cut > MOST_CUT {
+                leave_if_given_up();
+            }
+            true
+        }
+    }
+
+    /// How many things that wait a handler whose request was given up may begin. A
+    /// loop that looks for something a hundred times, with a sleep between, ends by
+    /// itself well inside it, giving back what it held; one that would never end is
+    /// ended, which is better than a thread that turns without end.
+    const MOST_CUT: u32 = 10_000;
+
+    /// Whether the request being answered was given up, for the program's own loop,
+    /// which then keeps what the handler failed with out of the log.
+    #[unsafe(no_mangle)]
+    pub unsafe extern "C" fn koo_http_given_up() -> bool {
+        unsafe { given_up() }
     }
 
     #[allow(static_mut_refs)]
@@ -2070,10 +2214,12 @@ mod imp {
                 let c = conn(index);
                 if c.fd >= 0 {
                     close(c.fd);
-                    c.input.release();
-                    c.output.release();
                     c.fd = -1;
                 }
+                // (One that was closed while a handler had its request holds its
+                // input still.)
+                c.input.release();
+                c.output.release();
             }
             CONNS.release();
             FREE.release();
@@ -2352,6 +2498,16 @@ mod imp {
         fd: i32,
         until: i64,
         late: bool,
+        /// Whether its request was given up: the client that made it has left, and
+        /// there is nobody to answer. A handler whose request was given up waits for
+        /// nothing more (see `given_up`).
+        given_up: bool,
+        /// How many times a handler whose request was given up has gone on to begin
+        /// something that waits: one that does so without end is ended (`cut_short`).
+        cut: u32,
+        /// The number of its wait, which the queue says back with what it waited for:
+        /// word of an earlier wait, come late, is not taken for word of this one.
+        serial: u32,
         /// Its request, while the thread is elsewhere.
         current: Current,
     }
@@ -2364,6 +2520,9 @@ mod imp {
         fd: -1,
         until: 0,
         late: false,
+        given_up: false,
+        cut: 0,
+        serial: 0,
         current: NO_CURRENT,
     };
 
@@ -2477,12 +2636,19 @@ mod imp {
             if !may_leave() {
                 return fiber::Waited::NotHere;
             }
+            // A handler whose request was given up waits for nothing: whatever it
+            // asked for is said not to have come in time, which those who wait know
+            // what to do about, and it ends at the next place where it can.
+            if PLACES[HERE].given_up {
+                return fiber::Waited::TimeUp;
+            }
             let Some(next) = another_place() else {
                 return fiber::Waited::NotHere;
             };
             let here = HERE;
+            PLACES[here].serial = (PLACES[here].serial + 1) & 0xff_ffff;
             if fd >= 0 {
-                sys::watch_once(QUEUE, fd, write, PLACE | here);
+                sys::watch_once(QUEUE, fd, write, PLACE | (PLACES[here].serial as usize) << 8 | here);
             }
             PLACES[here].fd = fd;
             PLACES[here].until = until;
@@ -2507,8 +2673,17 @@ mod imp {
     unsafe fn pause_in_place(length: i64) -> bool {
         unsafe {
             let until = nanos() + length.max(0);
-            // The time is what is waited for, so its coming is no lateness.
-            wait_in_place(-1, false, until) == fiber::Waited::TimeUp
+            // The time is what is waited for, so its coming is no lateness. And nothing
+            // but the time ends the wait: a thread that was told it had not waited
+            // would go and sleep, the whole server with it.
+            loop {
+                match wait_in_place(-1, false, until) {
+                    fiber::Waited::NotHere => return false,
+                    fiber::Waited::TimeUp => return true,
+                    fiber::Waited::Came if nanos() >= until => return true,
+                    fiber::Waited::Came => {}
+                }
+            }
         }
     }
 
@@ -2635,6 +2810,8 @@ mod imp {
                 koo_http_respond(CURRENT.id, 500, core::ptr::null(), core::ptr::null(), core::ptr::null());
             }
             PLACES[HERE].doing = Doing::Driving;
+            PLACES[HERE].given_up = false;
+            PLACES[HERE].cut = 0;
             loop {
                 if ENDING {
                     // Every place's loop ends, the first place's last: it is the one
@@ -2763,6 +2940,9 @@ mod imp {
                 return None;
             }
             let c = conn(CURRENT.conn);
+            if c.generation != CURRENT.generation || c.input.ptr.is_null() {
+                return None;
+            }
             Some(core::slice::from_raw_parts(c.input.ptr, c.input.len))
         }
     }
@@ -3072,6 +3252,13 @@ mod imp {
             // The connection may have ended while its handler waited, and another may
             // have its slot: the answer is for nobody then.
             if conn(index).fd < 0 || conn(index).generation != CURRENT.generation {
+                if conn(index).left && conn(index).generation == CURRENT.generation {
+                    // Closed while the handler had the request: the handler is done,
+                    // and what was kept for it is let go of. 499 is what servers write
+                    // in their logs for a request whose client did not wait.
+                    log(499, 0, true);
+                    let_go(index);
+                }
                 CURRENT.answered = true;
                 return None;
             }

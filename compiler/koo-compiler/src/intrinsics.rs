@@ -696,6 +696,11 @@ pub const INTRINSICS: &[Intrinsic] = &[
         ret: I::Unit,
     },
     Intrinsic {
+        name: "http_given_up",
+        params: &[],
+        ret: I::Bool,
+    },
+    Intrinsic {
         name: "http_places",
         params: &[I::Given],
         ret: I::Unit,

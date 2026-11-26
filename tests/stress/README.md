@@ -21,6 +21,11 @@ naming it in `KOO_RUNTIME`, and runs every test program that has actors or threa
 
     sh tests/stress/races.sh target/release/koo
 
+In a container the sanitizer must be let turn off the shuffling of addresses, which
+Docker forbids unless it is told `--security-opt seccomp=unconfined`: without that,
+every program ends at once with `CHECK failed: tsan_platform_linux.cpp`, and the
+script says that all of them have races.
+
 `limits.sh` runs the same server in a container that is allowed forty processes, where
 a thread counts as one, and checks that the process which watches the workers leaves
 room under the limit to start a worker again, and does when one is killed: both where

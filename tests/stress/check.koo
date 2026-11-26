@@ -98,6 +98,12 @@ fn main() ! http.Error {
         time.sleep(1ms * num(req, "ms"))
         return http.text("waited\n")
     })
+    // A handler that reads of its request after it has waited: of a request whose
+    // client may have left meanwhile.
+    app.post("/after/:ms", req -> {
+        time.sleep(1ms * num(req, "ms"))
+        return http.text("{req.param("ms")} {req.path} {req.header("x-check") else "-"} {req.body().len}\n")
+    })
     app.get("/next/:i", req -> http.text("{counters[num(req, "i") % 256].next()}\n"))
     app.get("/seen/:i", req -> http.text("{counters[num(req, "i") % 256].seen()}\n"))
     app.get("/nap/:i/:ms", req -> http.text("{counters[num(req, "i") % 256].nap(num(req, "ms"))}\n"))

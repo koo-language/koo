@@ -70,6 +70,8 @@ const CONSTRAINT: i64 = 2;
 const SYNTAX: i64 = 3;
 const SERIALIZATION: i64 = 4;
 const TIMEOUT: i64 = 5;
+/// What a statement fails with that a handler began after its client had left.
+const GIVEN_UP: &[u8] = b"the request this was for was given up: its client has left";
 
 /// Whether an error's code says that the server is closing the connection, or will not
 /// open one: the classes 08 and 28, a database that is not there, and the shutdowns.
@@ -1544,6 +1546,13 @@ unsafe fn check_out(db: &mut Db) -> Option<&mut Conn> {
                 failed(TIMEOUT, &[&text.data[..text.len]]);
                 return None;
             }
+            // (One whose request was given up does not wait at all, and must not be
+            // let ask again and again without waiting.)
+            if crate::http::given_up() {
+                POOL.unlock();
+                failed(TIMEOUT, &[GIVEN_UP]);
+                return None;
+            }
             // A handler of a server that waits for a connection lets the others go on,
             // one of which has it; anything else sleeps until one is given back.
             POOL.unlock();
@@ -2125,6 +2134,11 @@ pub unsafe extern "C" fn koo_sql_run(
     unsafe {
         koo_flush();
         let out = fresh();
+        // A handler whose request was given up begins nothing more.
+        if crate::http::cut_short() {
+            failed(TIMEOUT, &[GIVEN_UP]);
+            return false;
+        }
         let Some(db) = database(db) else { return false };
         if !params.is_null() && (*params).len > 65535 {
             failed(OTHER, &[b"a statement has at most 65,535 parameters"]);
@@ -2163,6 +2177,10 @@ pub unsafe extern "C" fn koo_sql_begin(db: i64, level: i64) -> i64 {
     unsafe {
         koo_flush();
         fresh();
+        if crate::http::cut_short() {
+            failed(TIMEOUT, &[GIVEN_UP]);
+            return 0;
+        }
         let Some(db) = database(db) else { return 0 };
         let text: &[u8] = match level {
             1 => b"begin isolation level repeatable read",
@@ -2203,6 +2221,16 @@ pub unsafe extern "C" fn koo_sql_end(db: i64, transaction: i64, keep: bool) -> b
             }
             return false;
         };
+        // A transaction of a handler whose request was given up is undone, whichever
+        // was asked: by closing its connection, which the database takes for that, and
+        // not by asking, whose answer the handler would not be let wait for. So what
+        // was done for a client that left is not half kept and half unknown.
+        if crate::http::given_up() {
+            conn.transaction = 0;
+            give_back(conn, true);
+            failed(TIMEOUT, &[GIVEN_UP]);
+            return false;
+        }
         let mut request = request(if keep { b"commit" } else { b"rollback" }, core::ptr::null(), b"");
         let ended = exchange(conn, request.bytes(), out);
         request.release();

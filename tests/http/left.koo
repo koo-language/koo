@@ -1,0 +1,37 @@
+// A server whose handlers ask a database slowly, for clients that leave before they are
+// answered (`a_client_that_leaves_gives_back_its_connection` in the tests). Its pool
+// has two connections, so that two handlers that kept theirs would keep everyone out.
+import std/http
+import std/os
+import std/sql
+import std/sql/postgres
+
+fn main() ! sql.Error | http.Error {
+    db := postgres.connect(os.env("DATABASE_URL") else "", pool: 2)?
+    db.exec("create table if not exists left_notes (n int)")?
+    var app := http.App.new()
+    // Holds a connection of the pool for as long as it is told.
+    app.get("/slow/:seconds", req -> {
+        seconds := float.parse(req.param("seconds")) else 1.0
+        db.exec("select pg_sleep({seconds})")?
+        return http.text("slept\n")
+    })
+    // The same inside a transaction, which is undone if its handler is ended.
+    app.get("/kept/:n", req -> {
+        n := int.parse(req.param("n")) else 0
+        db.transaction(tx -> {
+            tx.exec("insert into left_notes (n) values ({n})")?
+            tx.exec("select pg_sleep(2)")?
+        })?
+        return http.text("kept\n")
+    })
+    app.get("/count", req -> {
+        row := db.query_row("select count(*)::int as n from left_notes")?
+        return http.text("{row.int("n")?}\n")
+    })
+    app.get("/quick", req -> {
+        db.exec("select 1")?
+        return http.text("quick\n")
+    })
+    app.serve(workers: int.parse(os.env("WORKERS") else "") else 1)?
+}

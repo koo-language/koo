@@ -1593,6 +1593,110 @@ fn the_example_service_serves() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// A client that leaves before it is answered does not keep what its handler held: a
+/// connection of the pool that a slow statement had is given back, a transaction is
+/// undone, and nothing is said in the log, since nothing went wrong. It needs a database.
+#[test]
+fn a_client_that_leaves_gives_back_its_connection() {
+    use std::io::Write;
+    let Some(url) = book_database() else {
+        eprintln!("KOO_TEST_POSTGRES is not set: clients that leave a slow statement are not checked");
+        return;
+    };
+    let _alone = DATABASE.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let dir = std::env::temp_dir().join(format!("koo-left-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    empty_book_database(&dir, &url).unwrap_or_else(|wrong| panic!("{wrong}"));
+    let executable = dir.join("left");
+    let built = Command::new(env!("CARGO_BIN_EXE_koo"))
+        .arg("build")
+        .arg(root.join("tests/http/left.koo"))
+        .arg("-o")
+        .arg(&executable)
+        .output()
+        .expect("koo runs");
+    assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
+    // Asks, and leaves after so long without waiting for the answer.
+    let leave = |port: u16, paths: &[String], after: u64| {
+        let asked: Vec<_> = paths
+            .iter()
+            .map(|path| {
+                let mut stream = std::net::TcpStream::connect(("127.0.0.1", port)).expect("the server accepts");
+                write!(stream, "GET {path} HTTP/1.1\r\nHost: test\r\n\r\n").unwrap();
+                stream
+            })
+            .collect();
+        std::thread::sleep(std::time::Duration::from_millis(after));
+        drop(asked);
+    };
+    for workers in [1, 2] {
+        let port = std::net::TcpListener::bind("127.0.0.1:0")
+            .unwrap()
+            .local_addr()
+            .unwrap()
+            .port();
+        let log = dir.join(format!("log-{workers}.txt"));
+        let child = Command::new(&executable)
+            .env("DATABASE_URL", &url)
+            .env("PORT", port.to_string())
+            .env("WORKERS", workers.to_string())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::fs::File::create(&log).unwrap())
+            .spawn()
+            .expect("the server starts");
+        let server = Server(child);
+        for _ in 0..200 {
+            if std::net::TcpStream::connect(("127.0.0.1", port)).is_ok() {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(25));
+        }
+        assert!(
+            get(port, "/quick").ends_with("\r\n\r\nquick\n"),
+            "with {workers} workers"
+        );
+        // Six statements of four seconds, in a pool of two for each worker, and all
+        // six clients gone: the next to ask is answered at once, and not in four
+        // seconds, or eight.
+        leave(port, &vec!["/slow/4".to_string(); 6], 300);
+        std::thread::sleep(std::time::Duration::from_millis(200));
+        for _ in 0..4 {
+            let started = std::time::Instant::now();
+            let got = get(port, "/quick");
+            assert!(got.ends_with("\r\n\r\nquick\n"), "with {workers} workers: {got}");
+            assert!(
+                started.elapsed() < std::time::Duration::from_millis(1500),
+                "with {workers} workers, a statement after six clients left took {:?}",
+                started.elapsed()
+            );
+        }
+        // A transaction whose client leaves in the middle of it is undone, now and
+        // when its statement would have ended.
+        let count = || {
+            let got = get(port, "/count");
+            got.rsplit("\r\n\r\n").next().unwrap_or("").trim().to_string()
+        };
+        let before = count();
+        assert_eq!(before, format!("{}", workers - 1), "with {workers} workers");
+        leave(port, &[format!("/kept/{workers}"), format!("/kept/{workers}")], 300);
+        std::thread::sleep(std::time::Duration::from_millis(300));
+        assert_eq!(count(), before, "with {workers} workers");
+        std::thread::sleep(std::time::Duration::from_millis(2500));
+        assert_eq!(count(), before, "with {workers} workers");
+        // And one that is waited for is kept.
+        assert!(get(port, &format!("/kept/{workers}")).ends_with("\r\n\r\nkept\n"));
+        assert_eq!(count(), format!("{workers}"), "with {workers} workers");
+        stop(server, port);
+        let written = std::fs::read_to_string(&log).unwrap();
+        assert!(
+            written.is_empty(),
+            "with {workers} workers the server wrote:\n{written}"
+        );
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 /// A handler that waits does not make the rest of its worker wait: forty requests that
 /// each sleep 300 ms are answered by one worker in well under the twelve seconds they
 /// would take one after another. And a connection goes on after a request for a route

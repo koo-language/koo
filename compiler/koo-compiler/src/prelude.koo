@@ -1876,8 +1876,12 @@ fn h__answer(handler: fn(Http__Request) -> Http__Response ! Failure, request: Ht
             __http_respond(id, 400, "application/json", "", body)
         }
         ! e => {
-            // What else went wrong is for the log, not for the client.
-            if __log_json() {
+            // What else went wrong is for the log, not for the client. (Unless the
+            // client has left, and what went wrong is that the handler was not let
+            // wait for anything more: that is nothing wrong.)
+            if __http_given_up() {
+                // Nothing is said.
+            } else if __log_json() {
                 l__write("error", Log__Message {
                     _parts: ["{request.method} {request.path}: {e}"],
                     _shown: [],

@@ -3134,6 +3134,11 @@ mod remote {
                 me().talking = false;
                 let waited = crate::fiber::wait(fd, false, 0);
                 me().talking = true;
+                // No time was given, so only one thing ends the wait with nothing
+                // come: the request this was asked for was given up.
+                if waited == crate::fiber::Waited::TimeUp {
+                    return false;
+                }
                 if waited == crate::fiber::Waited::NotHere {
                     let mut ready = PollFd {
                         fd,
@@ -3165,6 +3170,11 @@ mod remote {
             // took the connection and let go of it, three times.
             let (mut attempt, mut refusals, mut fresh) = (0, 0, false);
             while attempt < 3 && refusals < 100 {
+                // A handler whose request was given up asks nothing more, and stops
+                // waiting for what it has asked: the connection it asked on was let
+                // go of below, and not kept, so that the answer, which the actor still
+                // gives, is nobody's next answer.
+                crate::http::leave_if_given_up();
                 // (After a connection that led nowhere the ones kept are let go of,
                 // once: not again on every try while the process has no room, which
                 // would close what the worker's other handlers have given back since.)
@@ -3206,6 +3216,7 @@ mod remote {
                     free(answer);
                     me().talking = false;
                     give_back(name, fd, false);
+                    crate::http::leave_if_given_up();
                     die(&[b"an actor panicked while it answered `", asked, b"`"]);
                 }
                 let answer_text = core::slice::from_raw_parts(answer, size);
@@ -3222,6 +3233,7 @@ mod remote {
                 give_back(name, fd, true);
                 return text;
             }
+            crate::http::leave_if_given_up();
             die(&[
                 b"`",
                 asked,

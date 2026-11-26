@@ -422,6 +422,13 @@ pub unsafe extern "C" fn koo_http_fetch(
         let kept = reply();
         (kept.status, kept.kind) = (0, 0);
         (kept.headers.len, kept.body.len) = (0, 0);
+        // A handler whose request was given up begins nothing more.
+        if crate::http::cut_short() {
+            return failed(
+                TIMEOUT,
+                &[b"the request this was for was given up: its client has left"],
+            );
+        }
         let Some((secure, host, port, path)) = address(url) else {
             return failed(
                 ADDRESS,

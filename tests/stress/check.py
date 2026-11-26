@@ -435,6 +435,95 @@ def bad_clients(name):
     check(name, problems)
 
 
+def left(name, server):
+    """Clients that leave before they are answered: their handlers end, and do not keep
+    places from requests that somebody waits for; an actor that was asked finishes what
+    it began, and its next answer goes to whoever asks next; and thousands of them
+    beside requests that are waited for cost those requests nothing."""
+
+    def abandon(paths, after):
+        socks = []
+        for path in paths:
+            try:
+                sock = socket.create_connection(("127.0.0.1", PORT), timeout=10)
+                sock.sendall(f"GET {path} HTTP/1.1\r\nHost: check\r\n\r\n".encode())
+                socks.append(sock)
+            except OSError:
+                pass
+        time.sleep(after)
+        for sock in socks:
+            sock.close()
+
+    problems = []
+    # Handlers that read of their requests after their clients have left: the path, a
+    # header and the body are still there to read, though the connection is not.
+    body = b"x" * 3000
+    socks = []
+    for _ in range(60):
+        sock = socket.create_connection(("127.0.0.1", PORT), timeout=10)
+        sock.sendall(b"POST /after/20000 HTTP/1.1\r\nHost: check\r\nX-Check: yes\r\nContent-Length: 3000\r\n\r\n" + body)
+        socks.append(sock)
+    time.sleep(0.2)
+    for sock in socks:
+        sock.close()
+    time.sleep(0.3)
+    status, text, took = ask("/after/5", body=b"abc", timeout=10)
+    problems.append((status != 200 or text.strip() != b"5 /after/5 - 3") and f"after 60 clients left handlers that read their requests, a request was answered {status} {text[:60]!r}")
+    problems.append(server.poll() is not None and f"the server ended, with status {server.poll()}")
+    # More handlers that would wait twenty seconds than the server has places for,
+    # each left by its client a moment after it began.
+    for _ in range(2 * WORKERS):
+        abandon(["/wait/20000"] * 90, 0.1)
+    time.sleep(0.3)
+    status, _, took = ask("/wait/10", timeout=25)
+    problems.append((status != 200 or took > 2) and f"after {180 * WORKERS} clients left, a request that waits 10 ms was answered {status} in {took:.1f}s")
+    if WORKERS > 1:
+        # Asks of actors in another process: the asker stops waiting, the actor does not stop.
+        actors = list(range(100, 140))
+        before = [count_of(a) for a in actors]
+        abandon([f"/nap/{a}/1500" for a in actors], 0.2)
+        status, _, took = ask("/ping", timeout=10)
+        problems.append((status != 200 or took > 1) and f"after 40 askers left, /ping was answered {status} in {took:.1f}s")
+        time.sleep(2)
+        after = [count_of(a) for a in actors]
+        ran = sum(1 for b, a in zip(before, after) if a == b + 1)
+        problems.append(ran != len(actors) and f"{ran} of {len(actors)} methods whose askers left ran to their end, once")
+        mixed = 0
+        for a, counted in zip(actors, after):
+            status, text, _ = ask(f"/next/{a}")
+            if status != 200 or int(text) != counted + 1:
+                mixed += 1
+        problems.append(mixed and f"{mixed} asks after that got an answer that was not their own")
+    # Several thousand more, while others are answered.
+    stop_asking, refused, asked = threading.Event(), [], [0]
+
+    def asker():
+        while not stop_asking.is_set():
+            status, text, took = ask("/ping", timeout=10)
+            asked[0] += 1
+            if status != 200 or took > 3:
+                refused.append((status, round(took, 1)))
+            time.sleep(0.02)
+
+    beside = threading.Thread(target=asker, daemon=True)
+    beside.start()
+    for _ in range(14 * WORKERS):
+        abandon(["/wait/20000"] * 90, 0.03)
+        time.sleep(0.05)
+    stop_asking.set()
+    beside.join()
+    problems.append(refused and f"{len(refused)} of {asked[0]} requests beside {1260 * WORKERS} clients that left were not answered well: {refused[:3]}")
+    status, _, took = ask("/wait/10", timeout=25)
+    problems.append((status != 200 or took > 2) and f"after {1260 * WORKERS} more clients left, a request that waits 10 ms was answered {status} in {took:.1f}s")
+    if WORKERS > 1:
+        for _ in range(100):
+            if len(children(server.pid)) == WORKERS:
+                break
+            time.sleep(0.1)
+        problems.append(len(children(server.pid)) != WORKERS and f"{len(children(server.pid))} workers afterwards, not {WORKERS}")
+    check(name, problems)
+
+
 def kills(name, server):
     """Workers killed outright under load: nothing hangs, nothing is answered twice."""
     actors = list(range(64, 80))
@@ -652,6 +741,7 @@ tells("3000 told messages all arrive")
 panics("a panic or an exhausted stack in an actor costs one request")
 bad_clients("300 clients that say half of something do not hold up the rest")
 shared("300 requests that wait are shared out, and a quick one is answered at once")
+left("clients that leave are not kept places for, and what they asked of actors is done", server)
 kills("workers killed outright: nothing hangs, repeats or forgets", server)
 strangers("300 strangers on the supervising process's socket do no harm", server)
 forgers("a peer that names an actor by another kind, or says too much, does no harm", server)
@@ -673,6 +763,7 @@ large("long messages and long answers arrive whole")
 tells("3000 told messages all arrive")
 panics("a panic in an actor costs one request")
 bad_clients("300 clients that say half of something do not hold up the rest")
+left("clients that leave are not kept places for", server)
 stop(server, "told to stop, the server ends at once with status 0")
 
 if failures:

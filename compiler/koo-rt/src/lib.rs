@@ -1218,6 +1218,10 @@ pub unsafe extern "C" fn koo_sleep(nanos: i64) {
     }
     unsafe { actor::waiting_mail() };
     unsafe { koo_flush() };
+    // A handler whose request was given up, since its client has left, does not sleep.
+    if unsafe { http::cut_short() } {
+        return;
+    }
     // A handler of a server sleeps without the server's sleeping with it.
     if unsafe { fiber::pause(nanos) } {
         return;
