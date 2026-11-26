@@ -52,3 +52,11 @@ jobs:
       - run: cargo fmt --check
       - run: cargo clippy --workspace --all-targets -- -D warnings
       - run: cargo test --workspace
+      # The same programs again, each built as `--target` builds it for the machine it is
+      # on, with everything linked in: that is what is deployed. Without the database
+      # over TLS, which such a program does not speak.
+      - name: the suite, with every program built for the target (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          target=linux-$(uname -m | sed 's/x86_64/x86-64/; s/aarch64/arm64/')
+          env -u KOO_TEST_POSTGRES_TLS KOO_TARGET=$target cargo test -p koo --test programs

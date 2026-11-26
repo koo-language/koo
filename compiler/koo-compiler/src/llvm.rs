@@ -1094,8 +1094,10 @@ pub(super) fn library_name(name: &str) -> Option<String> {
     }
     match name.split_once("__") {
         None => Some(name.to_string()),
+        // A type of a standard package has the package in its name: `Http__Reply.json`
+        // is `http.Reply.json`.
         Some((package, function)) if package.len() > 1 && !function.contains("__") => {
-            Some(format!("{package}.{function}"))
+            Some(format!("{}.{function}", package.to_ascii_lowercase()))
         }
         Some(_) => None,
     }

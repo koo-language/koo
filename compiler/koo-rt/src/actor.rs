@@ -1953,7 +1953,11 @@ mod remote {
     /// Starts another thread that answers, if there may be more. Returns whether it did.
     unsafe fn another_answerer() -> bool {
         unsafe {
-            if ANSWERERS.fetch_add(1, AcqRel) < MOST_ANSWERERS && thread::start(answer) {
+            // No more than the table of threads has room for, beside the threads that
+            // run what actors are told and those that stand in for them while they wait.
+            let others = WORKERS.load(SeqCst).max(thread::processors()) * 2 + 8;
+            let most = thread::MOST_THREADS.saturating_sub(others).clamp(1, MOST_ANSWERERS);
+            if ANSWERERS.fetch_add(1, AcqRel) < most && thread::start(answer) {
                 return true;
             }
             ANSWERERS.fetch_sub(1, AcqRel);
@@ -2038,9 +2042,11 @@ mod remote {
                 events: POLLIN,
                 revents: 0,
             });
-            fds[0].fd = LISTENER;
             let mut count = 1;
             SERVED.lock();
+            // With no room for another connection, none is looked for: those that wait
+            // to be taken wait until one of the others ends.
+            fds[0].fd = if CONN_COUNT < MOST_CLIENTS { LISTENER } else { -1 };
             // A connection that is being answered, or whose message waits its turn, is
             // watched too: its next message may arrive before this thread looks again,
             // and would otherwise lie there until something else woke the thread.
@@ -2059,23 +2065,25 @@ mod remote {
             let mut waiting = fds[0].revents != 0;
             while waiting {
                 let fd = accept(LISTENER, core::ptr::null_mut(), core::ptr::null_mut());
+                let mut room = false;
                 if fd >= 0 {
                     SERVED.lock();
-                    if CONN_COUNT < MOST_CLIENTS {
-                        CONNS[CONN_COUNT] = Conn { fd, ..NO_CONN };
-                        CONN_COUNT += 1;
-                        SERVED.unlock();
-                    } else {
-                        SERVED.unlock();
-                        close(fd);
-                    }
+                    CONNS[CONN_COUNT] = Conn { fd, ..NO_CONN };
+                    CONN_COUNT += 1;
+                    room = CONN_COUNT < MOST_CLIENTS;
+                    SERVED.unlock();
+                } else if error() != EINTR && error() != EAGAIN {
+                    // The process has no more files to open, or the like: a moment is
+                    // let pass, so that the asking again is not without end.
+                    let (wanted, mut left) = ([0i64, 10_000_000], [0i64; 2]);
+                    nanosleep(&wanted, &mut left);
                 }
                 let mut more = PollFd {
                     fd: LISTENER,
                     events: POLLIN,
                     revents: 0,
                 };
-                waiting = fd >= 0 && poll(&mut more, 1, 0) > 0;
+                waiting = room && poll(&mut more, 1, 0) > 0;
             }
             // Each connection in its turn, so that no sender waits behind a busy one.
             let mut early = false;

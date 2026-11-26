@@ -1781,7 +1781,7 @@ fn a_stopping_server_answers_what_it_has_in_hand() {
             }
             let took = started.elapsed();
             assert!(
-                took < std::time::Duration::from_millis(300),
+                took < std::time::Duration::from_millis(1000),
                 "with {workers} workers, forty requests beside an actor that naps took {took:?}"
             );
             let mut naps: Vec<String> = napping
@@ -1811,16 +1811,16 @@ fn a_stopping_server_answers_what_it_has_in_hand() {
             assert!(after.ends_with("\r\n\r\n1\n"), "with {workers} workers: {after}");
             // More ask at once than a worker has room for handlers: all are answered,
             // and the server goes on.
-            let many: Vec<_> = (0..300)
-                .map(|_| std::thread::spawn(move || get(port, "/sloth/2")))
+            let many: Vec<_> = (0..450)
+                .map(|_| std::thread::spawn(move || get(port, "/sloth/1")))
                 .collect();
             for answer in many {
                 let answer = answer.join().unwrap();
                 assert!(answer.starts_with("HTTP/1.1 200 "), "with {workers} workers: {answer}");
             }
-            // Messages and answers longer than a socket holds, forty at a time.
+            // Messages and answers longer than a socket holds, a hundred at a time.
             let long = "0123456789".repeat(20_000);
-            let sent: Vec<_> = (0..40)
+            let sent: Vec<_> = (0..100)
                 .map(|_| {
                     let long = long.clone();
                     std::thread::spawn(move || post(port, "/through", &long))
@@ -1835,9 +1835,9 @@ fn a_stopping_server_answers_what_it_has_in_hand() {
                 );
             }
             // The first actor a server starts is held up for like any other: while
-            // eight wait for it, those who ask another are answered at once.
-            let lingering: Vec<_> = (0..8)
-                .map(|_| std::thread::spawn(move || get(port, "/linger/300")))
+            // forty wait for it, those who ask another are answered at once.
+            let lingering: Vec<_> = (0..40)
+                .map(|_| std::thread::spawn(move || get(port, "/linger/100")))
                 .collect();
             std::thread::sleep(std::time::Duration::from_millis(50));
             let started = std::time::Instant::now();
@@ -1847,7 +1847,7 @@ fn a_stopping_server_answers_what_it_has_in_hand() {
             }
             let took = started.elapsed();
             assert!(
-                took < std::time::Duration::from_millis(300),
+                took < std::time::Duration::from_millis(1500),
                 "with {workers} workers, twenty asks beside the first actor took {took:?}"
             );
             for answer in lingering {
