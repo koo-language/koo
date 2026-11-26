@@ -889,8 +889,15 @@ pub unsafe extern "C" fn koo_init(argc: i32, argv: *const *const u8) {
 /// it may not if it was printing, since what it was printing with is still locked, and
 /// would stay so.
 fn overflowed() -> bool {
-    let free = PRINTING.try_lock();
+    // Whether this thread was printing when its stack ran out: the output buffer is
+    // then as it was left in the middle, and the lock on it will never be let go of.
+    // (That another thread has the lock this moment says nothing of the kind: it is
+    // waited for. Taking the lock for held by this thread whenever it could not be
+    // had at once ended a whole server when two of its actors ran out of stack at the
+    // same moment, each on its own thread.)
+    let free = PRINTER.load(core::sync::atomic::Ordering::Acquire) != thread::this_thread();
     if free {
+        PRINTING.lock();
         let out = unsafe { &mut *core::ptr::addr_of_mut!(STDOUT) };
         write_all(1, &out.data[..out.len]);
         out.len = 0;
@@ -1276,6 +1283,7 @@ unsafe fn threads_after_fork() {
     // What waited to be printed is the parent's to print, and the lock on it may have
     // been a thread's that is not here.
     unsafe { (*core::ptr::addr_of_mut!(STDOUT)).len = 0 };
+    PRINTER.store(0, core::sync::atomic::Ordering::Release);
     PRINTING.unlock();
     unsafe { thread::after_fork() };
 }
@@ -1283,18 +1291,23 @@ unsafe fn threads_after_fork() {
 /// Held while the output buffer is used, so that what two threads print does not mix
 /// inside a line.
 static PRINTING: thread::Lock = thread::Lock::new();
+/// The thread that holds it, or 0: asked where a thread's stack has run out, which
+/// must know whether it was the one printing.
+static PRINTER: core::sync::atomic::AtomicUsize = core::sync::atomic::AtomicUsize::new(0);
 
 /// Takes the output buffer for the calling thread. A program built to be checked for
 /// races is told, since the checker does not watch the support library and would take
 /// two threads' printing for a race.
 unsafe fn printing() {
     PRINTING.lock();
+    PRINTER.store(thread::this_thread(), core::sync::atomic::Ordering::Release);
     unsafe { actor::handed(core::ptr::addr_of_mut!(STDOUT)) };
 }
 
 /// Lets go of the output buffer.
 unsafe fn printed() {
     unsafe { actor::handing(core::ptr::addr_of_mut!(STDOUT)) };
+    PRINTER.store(0, core::sync::atomic::Ordering::Release);
     PRINTING.unlock();
 }
 

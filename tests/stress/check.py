@@ -394,18 +394,18 @@ def tells(name):
     check(name, [sent != 3000 and f"{sent} of 3000 tells were answered", told != sent and f"{told} of {sent} told messages arrived"])
 
 
-def panics(name):
+def panics(name, first=200):
     """Each actor once: one that panics more than five times in a minute is left stopped.
     And no stack runs out in a server of one worker, which ends when one does."""
-    results = fan([(lambda i=i: ask(f"/slip/{200 + i}")) for i in range(16)])
+    results = fan([(lambda i=i: ask(f"/slip/{first + i}")) for i in range(16)])
     problems = [any(r[0] != 500 for r in results) and f"a panic in an actor was answered with {sorted(set(str(r[0]) for r in results))}, not 500"]
     # (Nor where the server is being checked by a sanitizer, which does not know what to
     # make of a stack that runs out: `CHECK_NO_DIVE` says so.)
     if WORKERS > 1 and not os.environ.get("CHECK_NO_DIVE"):
-        results = fan([(lambda i=i: ask(f"/dive/{216 + i}", timeout=60)) for i in range(8)])
+        results = fan([(lambda i=i: ask(f"/dive/{first + 16 + i}", timeout=60)) for i in range(8)])
         problems.append(any(r[0] != 500 for r in results) and f"a stack that ran out in an actor was answered with {sorted(set(str(r[0]) for r in results))}, not 500")
-    results = fan([(lambda a=a: ask(f"/next/{a}")) for a in range(200, 224)])
-    bad = [(200 + i, r[0]) for i, r in enumerate(results) if r[0] != 200]
+    results = fan([(lambda a=a: ask(f"/next/{a}")) for a in range(first, first + 24)])
+    bad = [(first + i, r[0]) for i, r in enumerate(results) if r[0] != 200]
     problems.append(bad and f"actors did not answer after they had panicked: {bad[:4]}")
     problems.append(ask("/ping")[0] != 200 and "the server does not answer after the panics")
     check(name, problems)
@@ -470,9 +470,12 @@ def left(name, server):
     body = b"x" * 3000
     socks = []
     for _ in range(60):
-        sock = socket.create_connection(("127.0.0.1", PORT), timeout=10)
-        sock.sendall(b"POST /after/20000 HTTP/1.1\r\nHost: check\r\nX-Check: yes\r\nContent-Length: 3000\r\n\r\n" + body)
-        socks.append(sock)
+        try:
+            sock = socket.create_connection(("127.0.0.1", PORT), timeout=10)
+            sock.sendall(b"POST /after/20000 HTTP/1.1\r\nHost: check\r\nX-Check: yes\r\nContent-Length: 3000\r\n\r\n" + body)
+            socks.append(sock)
+        except OSError:
+            pass
     time.sleep(0.2)
     for sock in socks:
         sock.close()
@@ -759,6 +762,16 @@ large("long messages and long answers arrive whole")
 slow_and_quick("slow actors do not hold up quick ones")
 tells("3000 told messages all arrive")
 panics("a panic or an exhausted stack in an actor costs one request")
+# (As many times more as `CHECK_PANICS` says, for a fault that shows itself one time in
+# so many.)
+for again in range(int(os.environ.get("CHECK_PANICS", "0"))):
+    if failures:
+        break
+    # Other actors each time, and no actor more than five times in a minute, after
+    # which one that goes on panicking is left stopped.
+    began = time.time()
+    panics(f"and again ({again + 2})", first=(144, 168, 224)[again % 3])
+    time.sleep(max(0.0, 4.5 - (time.time() - began)))
 bad_clients("300 clients that say half of something do not hold up the rest")
 shared("300 requests that wait are shared out, and a quick one is answered at once")
 left("clients that leave are not kept places for, and what they asked of actors is done", server)
@@ -787,7 +800,13 @@ left("clients that leave are not kept places for", server)
 stop(server, "told to stop, the server ends at once with status 0")
 
 if failures:
-    print(f"\n{len(failures)} failed; what the server wrote is in {errors}")
+    print(f"\n{len(failures)} failed; what the server wrote is in {errors}, and ends:")
+    try:
+        with open(errors, errors="replace") as written:
+            for line in written.read().splitlines()[-40:]:
+                print("    " + line[:300])
+    except OSError:
+        pass
     sys.exit(1)
 # Nothing is kept of a run in which nothing failed.
 shutil.rmtree(build, ignore_errors=True)

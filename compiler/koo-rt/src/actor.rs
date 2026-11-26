@@ -110,7 +110,7 @@ const MOST_KINDS: usize = 1024;
 static TABLE: [AtomicPtr<Slot>; CHUNKS] = [const { AtomicPtr::new(core::ptr::null_mut()) }; CHUNKS];
 static SLOT_COUNT: AtomicUsize = AtomicUsize::new(0);
 /// Held to add a slot, a kind, or a note that an actor failed.
-static MAKING: Lock = Lock::new();
+static MAKING: thread::OwnedLock = thread::OwnedLock::new();
 static mut FREE: Table<u32> = Table::new();
 /// The names of the actor types, each as the program's string.
 static KINDS: [AtomicPtr<Header>; MOST_KINDS] = [const { AtomicPtr::new(core::ptr::null_mut()) }; MOST_KINDS];
@@ -1999,11 +1999,9 @@ mod remote {
         if unsafe { me().talking } {
             return false;
         }
-        let free = MAKING.try_lock();
-        if free {
-            MAKING.unlock();
-        }
-        free
+        // (Not: whether anybody is. Another thread that is starting an actor this
+        // moment holds nothing of this thread's.)
+        !MAKING.mine()
     }
 
     // What this process knows of others: connections to them that nothing is using. A

@@ -85,6 +85,45 @@ impl Lock {
     }
 }
 
+/// A lock that knows which thread has it. Where a signal is handled, the thread that
+/// was interrupted must know whether it is the one that holds a lock, which will then
+/// never be let go of; that some other thread holds it for a moment is another thing,
+/// and not to be taken for it.
+pub struct OwnedLock {
+    lock: Lock,
+    owner: AtomicUsize,
+}
+
+impl Default for OwnedLock {
+    fn default() -> OwnedLock {
+        OwnedLock::new()
+    }
+}
+
+impl OwnedLock {
+    pub const fn new() -> OwnedLock {
+        OwnedLock {
+            lock: Lock::new(),
+            owner: AtomicUsize::new(0),
+        }
+    }
+
+    pub fn lock(&self) {
+        self.lock.lock();
+        self.owner.store(this_thread(), Release);
+    }
+
+    pub fn unlock(&self) {
+        self.owner.store(0, Release);
+        self.lock.unlock();
+    }
+
+    /// Whether the calling thread is the one that has it.
+    pub fn mine(&self) -> bool {
+        self.owner.load(Acquire) == this_thread()
+    }
+}
+
 /// Lets go of the processor for a moment, when trying again has not helped.
 pub fn give_way() {
     unsafe { sched_yield() };

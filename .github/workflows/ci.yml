@@ -15,6 +15,10 @@ jobs:
     # if one is not as it should be.
     env:
       KOO_CHECK: "1"
+      # The check of a server under load has eight actors run out of stack at the same
+      # moment, six times over: a fault in what happens then showed itself one time in
+      # three or so, and only on x86-64.
+      CHECK_PANICS: "5"
     steps:
       - uses: actions/checkout@v4
       - name: clang (Linux)
