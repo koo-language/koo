@@ -1745,7 +1745,7 @@ mod remote {
 
     // What this process is to others: where it is reached, and who is talking to it.
     static HOME: AtomicPtr<Header> = AtomicPtr::new(core::ptr::null_mut());
-    static mut LISTENER: i32 = -1;
+    static LISTENER: core::sync::atomic::AtomicI32 = core::sync::atomic::AtomicI32::new(-1);
 
     /// What is being done on a connection from another process: nothing;
     const IDLE: u8 = 0;
@@ -2139,7 +2139,7 @@ mod remote {
                     MAKING.unlock();
                     die(&[b"actors could not be started: ", c_text(strerror(error()))]);
                 }
-                LISTENER = fd;
+                LISTENER.store(fd, Release);
                 // A pipe by which the thread that waits for messages is told to look
                 // again, by one that has changed what it should be looking at.
                 if pipe(WAKE.as_mut_ptr()) == 0 {
@@ -2227,9 +2227,9 @@ mod remote {
     pub unsafe fn after_fork() {
         unsafe {
             PARENT.store(HOME.load(Acquire), Release);
-            if LISTENER >= 0 {
-                close(LISTENER);
-                LISTENER = -1;
+            if LISTENER.load(Acquire) >= 0 {
+                close(LISTENER.load(Acquire));
+                LISTENER.store(-1, Release);
             }
             for end in WAKE {
                 if end >= 0 {
@@ -2329,7 +2329,7 @@ mod remote {
     pub unsafe fn pending(milliseconds: i32) -> bool {
         unsafe {
             super::run_what_waits();
-            if LISTENER >= 0 {
+            if LISTENER.load(Acquire) >= 0 {
                 gates();
                 if ANSWERERS.load(Acquire) == 0 && !another_answerer() {
                     LEADING.lock();
@@ -2387,7 +2387,11 @@ mod remote {
             SERVED.lock();
             // (Not while there is no room for another connection and none to let go of:
             // it would say without end that one is waiting.)
-            fds[0].fd = if CROWDED.load(Relaxed) { -1 } else { LISTENER };
+            fds[0].fd = if CROWDED.load(Relaxed) {
+                -1
+            } else {
+                LISTENER.load(Acquire)
+            };
             // A connection that is being answered, or whose message waits its turn, is
             // watched too: its next message may arrive before this thread looks again,
             // and would otherwise lie there until something else woke the thread.
@@ -2452,10 +2456,10 @@ mod remote {
                     CROWDED.store(true, Relaxed);
                     break;
                 }
-                let mut fd = accept(LISTENER, core::ptr::null_mut(), core::ptr::null_mut());
+                let mut fd = accept(LISTENER.load(Acquire), core::ptr::null_mut(), core::ptr::null_mut());
                 // 23 and 24 are the system's words for no more files.
                 if fd < 0 && matches!(error(), 23 | 24) && made_room(()) {
-                    fd = accept(LISTENER, core::ptr::null_mut(), core::ptr::null_mut());
+                    fd = accept(LISTENER.load(Acquire), core::ptr::null_mut(), core::ptr::null_mut());
                 }
                 let mut room = false;
                 if fd >= 0 {
@@ -2476,7 +2480,7 @@ mod remote {
                     nanosleep(&wanted, &mut left);
                 }
                 let mut more = PollFd {
-                    fd: LISTENER,
+                    fd: LISTENER.load(Acquire),
                     events: POLLIN,
                     revents: 0,
                 };
@@ -3196,9 +3200,9 @@ mod remote {
     #[allow(static_mut_refs)]
     pub unsafe fn at_exit() {
         unsafe {
-            if LISTENER >= 0 {
-                close(LISTENER);
-                LISTENER = -1;
+            if LISTENER.load(Acquire) >= 0 {
+                close(LISTENER.load(Acquire));
+                LISTENER.store(-1, Release);
                 if cfg!(target_os = "macos") && !HOME.load(Acquire).is_null() {
                     let path = c_string(HOME.load(Acquire));
                     unlink(path);

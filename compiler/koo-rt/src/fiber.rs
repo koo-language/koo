@@ -116,9 +116,26 @@ pub unsafe fn free_stack(base: *mut u8) {
     unsafe { munmap(base, STACK) };
 }
 
+use core::sync::atomic::AtomicUsize;
+use core::sync::atomic::Ordering::{Acquire, Release};
+
 /// The server's answers to the two questions, when a server runs handlers side by side.
-pub static mut WAIT: Option<unsafe fn(i32, bool, i64) -> Waited> = None;
-pub static mut PAUSE: Option<unsafe fn(i64) -> bool> = None;
+/// How a server's thread waits for a socket, and how it pauses.
+pub type Wait = unsafe fn(i32, bool, i64) -> Waited;
+pub type Pause = unsafe fn(i64) -> bool;
+
+/// Each is a function's address, or 0 while no server does: any thread asks, and the
+/// server's own thread says, so they are values that threads may share.
+static WAIT: AtomicUsize = AtomicUsize::new(0);
+static PAUSE: AtomicUsize = AtomicUsize::new(0);
+
+/// Says how a thread waits and pauses while a server runs handlers side by side, or,
+/// with nothing, that none does any more.
+pub fn serving(hooks: Option<(Wait, Pause)>) {
+    let (wait, pause) = hooks.map_or((0, 0), |(wait, pause)| (wait as usize, pause as usize));
+    WAIT.store(wait, Release);
+    PAUSE.store(pause, Release);
+}
 
 /// How a wait ended.
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -136,9 +153,9 @@ pub enum Waited {
 /// time `until`, on the clock that only goes forward, in nanoseconds; 0 for no limit.
 pub unsafe fn wait(fd: i32, write: bool, until: i64) -> Waited {
     unsafe {
-        match WAIT {
-            Some(wait) => wait(fd, write, until),
-            None => Waited::NotHere,
+        match WAIT.load(Acquire) {
+            0 => Waited::NotHere,
+            wait => core::mem::transmute::<usize, Wait>(wait)(fd, write, until),
         }
     }
 }
@@ -153,9 +170,9 @@ pub unsafe fn wait_readable(fd: i32, until: i64) -> bool {
 /// Returns whether it did; if not, the caller sleeps as it always did.
 pub unsafe fn pause(nanos: i64) -> bool {
     unsafe {
-        match PAUSE {
-            Some(pause) => pause(nanos),
-            None => false,
+        match PAUSE.load(Acquire) {
+            0 => false,
+            pause => core::mem::transmute::<usize, Pause>(pause)(nanos),
         }
     }
 }

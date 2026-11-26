@@ -9,7 +9,7 @@
 # the library is built again so that the sanitizer sees inside it, which takes a
 # nightly Rust compiler (`rustup toolchain install nightly --profile minimal`), and
 # every test program that has actors or threads is built with that library and run.
-# Any report of a race is a failure.
+# Then the server of `check.py` is. Any report of a race is a failure.
 koo=$(cd "$(dirname "$1")" && pwd)/$(basename "$1")
 cd "$(dirname "$0")/../.." || exit 1
 out=$(mktemp -d)
@@ -37,6 +37,26 @@ for program in $(grep -l "^actor \|parallel\|spawn" tests/run/*.koo); do
         echo "pass  $program"
     fi
 done
-rm -rf "$out"
 echo "$programs programs, $failed with races"
+# And a server under load (`check.py`), whose process that keeps the actors answers on
+# many threads at once. The sanitizer makes it many times slower, so what the check
+# says of times is of no account here, nor is a stack that runs out tried: what counts
+# is whether the sanitizer reports a race.
+if KOO_RUNTIME="$out/libkoo_rt.a" "$koo" build --sanitize=thread tests/stress/check.koo -o "$out/check" > "$out/built.txt" 2>&1; then
+    (ulimit -n 16384 2>/dev/null
+     CHECK_NO_DIVE=1 TSAN_OPTIONS="die_after_fork=0 halt_on_error=0 report_signal_unsafe=0" \
+        timeout 1500 python3 tests/stress/check.py --binary "$out/check" --stderr "$out/server.txt" > "$out/check.txt" 2>&1)
+    reports=$(grep -c "WARNING: ThreadSanitizer" "$out/server.txt")
+    echo "a server under load: $(grep -c '^pass\|^FAIL' "$out/check.txt") checks made, $reports reports of a race"
+    if [ "$reports" != 0 ]; then
+        grep -A16 "WARNING: ThreadSanitizer" "$out/server.txt" | head -60
+        failed=$((failed + 1))
+    fi
+    pkill -9 -x check 2>/dev/null
+else
+    echo "FAIL  tests/stress/check.koo was not built"
+    head -5 "$out/built.txt"
+    failed=$((failed + 1))
+fi
+rm -rf "$out"
 [ "$failed" = 0 ] && [ "$programs" -gt 0 ]

@@ -1894,6 +1894,8 @@ mod imp {
 
     /// The thread that answers requests in this process.
     static mut SERVING: usize = 0;
+    /// The thread that runs handlers side by side, or 0 while none does.
+    static SERVER: core::sync::atomic::AtomicUsize = core::sync::atomic::AtomicUsize::new(0);
 
     /// In a process that is about to end because the stack of a handler ran out: the
     /// request the handler was answering is told, in a word, that the server failed.
@@ -2439,10 +2441,15 @@ mod imp {
     #[allow(static_mut_refs)]
     unsafe fn may_leave() -> bool {
         unsafe {
-            SIDE_BY_SIDE && PLACES[HERE].doing == Doing::Handling && {
-                let mine = thread::me();
-                core::ptr::eq(mine, PLACES[HERE].thread) && mine.held_len == 0
-            }
+            // (Asked by any thread that waits or sleeps: one that is not the server's
+            // looks at nothing of the server's but which thread that is.)
+            SERVER.load(core::sync::atomic::Ordering::Acquire) == thread::this_thread()
+                && SIDE_BY_SIDE
+                && PLACES[HERE].doing == Doing::Handling
+                && {
+                    let mine = thread::me();
+                    core::ptr::eq(mine, PLACES[HERE].thread) && mine.held_len == 0
+                }
         }
     }
 
@@ -2552,8 +2559,8 @@ mod imp {
             HERE = 0;
             ENDING = false;
             SIDE_BY_SIDE = true;
-            fiber::WAIT = Some(wait_in_place);
-            fiber::PAUSE = Some(pause_in_place);
+            SERVER.store(thread::this_thread(), core::sync::atomic::Ordering::Release);
+            fiber::serving(Some((wait_in_place, pause_in_place)));
         }
     }
 
@@ -2561,8 +2568,8 @@ mod imp {
     #[allow(static_mut_refs)]
     unsafe fn end_places() {
         unsafe {
-            fiber::WAIT = None;
-            fiber::PAUSE = None;
+            fiber::serving(None);
+            SERVER.store(0, core::sync::atomic::Ordering::Release);
             SIDE_BY_SIDE = false;
             for place in PLACES[1..PLACE_COUNT].iter() {
                 fiber::free_stack(place.stack);

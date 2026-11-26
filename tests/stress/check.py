@@ -2,6 +2,7 @@
 
     python3 tests/stress/check.py <path to koo> [--target linux-x86-64] [--port 39800]
     python3 tests/stress/check.py --binary <check.koo, built already> [--port 39800]
+                                  [--stderr <a file for what the server writes>]
 
 Builds `check.koo`, starts it, and makes a series of checks against it, each of which
 passes or fails: every request answered exactly once, counters exact, nothing left
@@ -615,6 +616,8 @@ def settled(name, server, files_before):
 
 build = tempfile.mkdtemp(prefix="koo-check-")
 binary, errors = os.path.join(build, "check"), os.path.join(build, "stderr.txt")
+if "--stderr" in sys.argv:
+    errors = os.path.abspath(sys.argv[sys.argv.index("--stderr") + 1])
 if given:
     binary = os.path.abspath(given)
 else:
