@@ -2443,7 +2443,12 @@ mod remote {
                     served_unlock();
                     idle.is_some()
                 };
-                if CONN_COUNT >= MOST_CLIENTS && !made_room(()) {
+                // (The count is read as it is changed, with the lock: the threads that
+                // answer let go of connections while this one looks.)
+                SERVED.lock();
+                let full = CONN_COUNT >= MOST_CLIENTS;
+                served_unlock();
+                if full && !made_room(()) {
                     CROWDED.store(true, Relaxed);
                     break;
                 }

@@ -391,7 +391,9 @@ def panics(name):
     And no stack runs out in a server of one worker, which ends when one does."""
     results = fan([(lambda i=i: ask(f"/slip/{200 + i}")) for i in range(16)])
     problems = [any(r[0] != 500 for r in results) and f"a panic in an actor was answered with {sorted(set(str(r[0]) for r in results))}, not 500"]
-    if WORKERS > 1:
+    # (Nor where the server is being checked by a sanitizer, which does not know what to
+    # make of a stack that runs out: `CHECK_NO_DIVE` says so.)
+    if WORKERS > 1 and not os.environ.get("CHECK_NO_DIVE"):
         results = fan([(lambda i=i: ask(f"/dive/{216 + i}", timeout=60)) for i in range(8)])
         problems.append(any(r[0] != 500 for r in results) and f"a stack that ran out in an actor was answered with {sorted(set(str(r[0]) for r in results))}, not 500")
     results = fan([(lambda a=a: ask(f"/next/{a}")) for a in range(200, 224)])

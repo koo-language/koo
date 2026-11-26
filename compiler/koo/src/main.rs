@@ -575,7 +575,13 @@ fn build(args: &[String], mode: Mode, program_args: &[std::ffi::OsString]) -> Ex
         let ir_path = dir.path.join("program.ll");
         let runtime = dir.path.join("libkoo_rt.a");
         std::fs::write(&ir_path, &ir)?;
-        std::fs::write(&runtime, RUNTIME)?;
+        // The support library is the one this compiler carries, unless it is told of
+        // another: one built to be checked by a sanitizer itself, which is how the
+        // tests of Koo look for races inside it (`tests/stress/README.md`).
+        match std::env::var_os("KOO_RUNTIME").filter(|_| sanitize.is_some()) {
+            Some(other) => std::fs::copy(other, &runtime).map(|_| ())?,
+            None => std::fs::write(&runtime, RUNTIME)?,
+        }
         Ok((dir, ir_path, runtime))
     });
     let (mut dir, ir_path, runtime) = match prepared {

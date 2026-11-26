@@ -77,3 +77,11 @@ jobs:
           ulimit -n 16384 || ulimit -n "$(ulimit -Hn)"
           target=linux-$(uname -m | sed 's/x86_64/x86-64/; s/aarch64/arm64/')
           python3 tests/stress/check.py target/debug/koo --target $target
+      # The support library built so that ThreadSanitizer sees inside it, and every
+      # test program with actors or threads run with it: a race in the library's own
+      # tables is a failure. That build takes a nightly compiler.
+      - name: races inside the support library (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          rustup toolchain install nightly --profile minimal
+          sh tests/stress/races.sh target/debug/koo

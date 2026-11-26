@@ -13,6 +13,14 @@ nothing left open, and a prompt end when the server is told to stop.
 It takes about two minutes, and needs Python 3 and a limit on open files of 8192 or
 more (`ulimit -n`).
 
+`races.sh` looks for races inside the support library, on Linux. A program built with
+`--sanitize=thread` is checked by ThreadSanitizer, but the library it is linked with is
+not, so the sanitizer sees nothing of the tables the library keeps. `races.sh` builds the
+library again so that it does (that takes a nightly Rust compiler), has `koo` link it by
+naming it in `KOO_RUNTIME`, and runs every test program that has actors or threads.
+
+    sh tests/stress/races.sh target/release/koo
+
 ## What found the defects
 
 These are the programs and scripts with which several independent searches for

@@ -723,7 +723,9 @@ mod imp {
     static mut EVENTS: [Event; 64] = [NO_EVENT; 64];
     static mut EVENT_COUNT: usize = 0;
     static mut EVENT_AT: usize = 0;
-    static mut STOP: bool = false;
+    /// Set where a signal is handled, on whichever thread the signal finds, and read by
+    /// the loops: so it is a value that threads may share.
+    static STOP: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
     static mut CHILD: bool = false;
     /// Whether this process only watches over the workers, and answers nothing itself.
     static mut SUPERVISOR: bool = false;
@@ -758,7 +760,7 @@ mod imp {
     static mut DATE_AT: i64 = -1;
 
     extern "C" fn stop(_: i32) {
-        unsafe { STOP = true };
+        STOP.store(true, core::sync::atomic::Ordering::Relaxed);
     }
 
     fn now() -> i64 {
@@ -946,7 +948,7 @@ mod imp {
             } else {
                 CROWDED = handlers >= MOST_PLACES - 24 || open >= MOST_OPEN || !a_place_to_spare();
             }
-            let wanted = !STOP && !NO_SOCKETS && !CROWDED;
+            let wanted = !STOP.load(core::sync::atomic::Ordering::Relaxed) && !NO_SOCKETS && !CROWDED;
             if wanted != ACCEPTING && LISTEN >= 0 {
                 ACCEPTING = wanted;
                 sys::listener_on(QUEUE, LISTEN, wanted);
@@ -1756,7 +1758,7 @@ mod imp {
     unsafe fn supervise() -> i32 {
         unsafe {
             loop {
-                if STOP {
+                if STOP.load(core::sync::atomic::Ordering::Relaxed) {
                     // The workers are told to stop, and answer the requests they have
                     // in hand before they end. A handler may ask an actor meanwhile,
                     // and the actors live here: so they are answered until the last
@@ -1882,7 +1884,7 @@ mod imp {
             }
             start_queue();
             if !sys::watch_parent(QUEUE, PARENT_ID) {
-                STOP = true;
+                STOP.store(true, core::sync::atomic::Ordering::Relaxed);
             }
             // A worker that takes the place of one that died has the program's loop
             // from the process that made it.
@@ -1976,7 +1978,7 @@ mod imp {
     unsafe fn event(e: Event) {
         unsafe {
             if e.parent_gone {
-                STOP = true;
+                STOP.store(true, core::sync::atomic::Ordering::Relaxed);
                 return;
             }
             if e.tag == LISTENER {
@@ -2081,7 +2083,7 @@ mod imp {
                 koo_flush();
                 exit(0);
             }
-            STOP = false;
+            STOP.store(false, core::sync::atomic::Ordering::Relaxed);
             STOPPED_AT = 0;
         }
     }
@@ -2241,7 +2243,7 @@ mod imp {
                     .saturating_sub(16)
                     .max(8);
             }
-            STOP = false;
+            STOP.store(false, core::sync::atomic::Ordering::Relaxed);
             STOPPED_AT = 0;
             CHILD = false;
             CHILD_COUNT = 0;
@@ -2510,7 +2512,7 @@ mod imp {
             crate::thread::me().json_base = 0;
             PANICS += 1;
             if (CHILD && PANICS >= MOST_PANICS) || OUT_OF_STACK {
-                STOP = true;
+                STOP.store(true, core::sync::atomic::Ordering::Relaxed);
             }
         }
     }
@@ -2677,7 +2679,7 @@ mod imp {
                     event(EVENTS[EVENT_AT - 1]);
                     continue;
                 }
-                if STOP {
+                if STOP.load(core::sync::atomic::Ordering::Relaxed) {
                     // No new connection is taken. The handlers that are waiting finish
                     // first; and for a moment longer a request that was already on its
                     // way on a connection that is open is still answered, and told that
@@ -2722,7 +2724,7 @@ mod imp {
                 if late {
                     continue;
                 }
-                if STOP {
+                if STOP.load(core::sync::atomic::Ordering::Relaxed) {
                     soonest = soonest.min(50);
                 }
                 EVENT_COUNT = sys::wait(QUEUE, &mut EVENTS, soonest);
@@ -3050,7 +3052,7 @@ mod imp {
                 CURRENT.answered = true;
                 return None;
             }
-            let keep = CURRENT.keep && !conn(index).closing && !STOP;
+            let keep = CURRENT.keep && !conn(index).closing && !STOP.load(core::sync::atomic::Ordering::Relaxed);
             Some((index, keep))
         }
     }
