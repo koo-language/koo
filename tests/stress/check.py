@@ -9,7 +9,7 @@ passes or fails: every request answered exactly once, counters exact, nothing le
 spinning, open or running afterwards, and a prompt end when the server is told to
 stop. Ends with status 1 if any check failed. Takes about two minutes. Needs only
 Python 3 and, off Linux, `ps`, `pgrep` and `lsof`."""
-import atexit, glob, http.client, struct, os, random, resource, signal, socket, subprocess, sys, tempfile, threading, time
+import atexit, glob, http.client, shutil, struct, os, random, resource, signal, socket, subprocess, sys, tempfile, threading, time
 
 here = os.path.dirname(os.path.abspath(__file__))
 given = sys.argv[sys.argv.index("--binary") + 1] if "--binary" in sys.argv else None
@@ -678,4 +678,6 @@ stop(server, "told to stop, the server ends at once with status 0")
 if failures:
     print(f"\n{len(failures)} failed; what the server wrote is in {errors}")
     sys.exit(1)
+# Nothing is kept of a run in which nothing failed.
+shutil.rmtree(build, ignore_errors=True)
 print("\nall passed")
