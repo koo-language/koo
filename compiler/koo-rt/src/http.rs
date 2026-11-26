@@ -700,6 +700,10 @@ mod imp {
     static mut CONNS: List<Conn> = List::new();
     static mut FREE: List<u32> = List::new();
     static mut READY: List<u32> = List::new();
+    /// How far into `READY` the connections have been taken up: they are taken in the
+    /// order in which they became ready, so that under more load than the worker has
+    /// room for, the one that has waited longest is the next, and none waits for ever.
+    static mut READY_AT: usize = 0;
     static mut ROUTES: List<Route> = List::new();
     static mut ROUTE_TEXT: List<u8> = List::new();
     static mut SCRATCH: List<u8> = List::new();
@@ -1814,6 +1818,7 @@ mod imp {
             CONNS.len = 0;
             FREE.len = 0;
             READY.len = 0;
+            READY_AT = 0;
             CURRENT.answered = true;
             EVENT_COUNT = 0;
             EVENT_AT = 0;
@@ -2001,6 +2006,7 @@ mod imp {
             CONNS.release();
             FREE.release();
             READY.release();
+            READY_AT = 0;
             SCRATCH.release();
             ALLOWED.release();
             if LISTEN >= 0 {
@@ -2556,9 +2562,18 @@ mod imp {
                 // request is begun here, so that a handler that waits can always be
                 // left, and what it waits for, which may be another handler of this
                 // worker, is attended to.
-                while READY.len > 0 && (!SIDE_BY_SIDE || a_place_to_spare()) {
-                    READY.len -= 1;
-                    let index = *READY.ptr.add(READY.len) as usize;
+                while READY.len > READY_AT && (!SIDE_BY_SIDE || a_place_to_spare()) {
+                    let index = *READY.ptr.add(READY_AT) as usize;
+                    READY_AT += 1;
+                    if READY_AT == READY.len {
+                        (READY.len, READY_AT) = (0, 0);
+                    } else if READY_AT >= 4096 {
+                        // What has been taken up is let go of, where the list is never
+                        // empty for long enough to begin again.
+                        let left = READY.len - READY_AT;
+                        core::ptr::copy(READY.ptr.add(READY_AT), READY.ptr, left);
+                        (READY.len, READY_AT) = (left, 0);
+                    }
                     let c = conn(index);
                     c.queued = false;
                     if c.fd < 0 || c.handling {
