@@ -301,7 +301,8 @@ pub unsafe fn spare_block() -> *mut Thread {
     unsafe {
         REGISTRY.lock();
         let index = THREAD_COUNT.load(Relaxed);
-        let block = if index == MOST_THREADS {
+        // Not a place that a thread on its way to the table is counting on.
+        let block = if index + STARTING.load(Relaxed) >= MOST_THREADS {
             core::ptr::null_mut()
         } else {
             calloc(1, core::mem::size_of::<Thread>()) as *mut Thread
@@ -366,10 +367,13 @@ pub unsafe fn start(work: extern "C" fn(*mut u8) -> *mut u8) -> bool {
     unsafe {
         // A thread for which the table has no room is not started: whoever asked for it
         // does without, which every one of them can.
-        if !room() {
+        // (Counted first and looked at after, so that two that ask at once do not both
+        // take the last of the room.)
+        STARTING.fetch_add(1, Relaxed);
+        if THREAD_COUNT.load(Relaxed) + STARTING.load(Relaxed) + 4 > MOST_THREADS {
+            STARTING.fetch_sub(1, Relaxed);
             return false;
         }
-        STARTING.fetch_add(1, Relaxed);
         let mut attributes = [0u64; 16];
         let attributes = attributes.as_mut_ptr() as *mut u8;
         pthread_attr_init(attributes);
