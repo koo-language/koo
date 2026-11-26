@@ -4,6 +4,8 @@ import std/http
 import std/os
 import std/time
 
+error Spent { millis: int }
+
 actor Sloth {
     var naps: int = 0
 
@@ -42,6 +44,16 @@ fn main() ! http.Error {
             turns += 1
         }
         return http.text("spun\n")
+    })
+    // Computes for so long, and then fails, with a failure of its own.
+    app.get("/spent/:ms", req -> {
+        millis := int.parse(req.param("ms")) else 0
+        until := time.uptime() + 1ms * millis
+        var turns := 0
+        while time.uptime() < until {
+            turns += 1
+        }
+        fail Spent { millis }
     })
     app.get("/nap/:ms", req -> http.text("{sloth.nap(int.parse(req.param("ms")) else 0)}\n"))
     app.get("/naps", req -> http.text("{sloth.count()}\n"))

@@ -238,11 +238,11 @@ The `message` says what happened, in the server's words when it is the server th
 
 | | |
 | --- | --- |
-| `Connection` | the database could not be reached, would not let the program in, or went away |
+| `Connection` | the database could not be reached, would not let the program in, or went away; or, in a server, the handler was in the middle of the statement when its request was given up (Section 10.7) |
 | `Constraint` | the statement would have broken a rule of the table: a duplicate key, a missing reference, a NULL where none is allowed |
 | `Syntax` | the statement is wrong: bad SQL, or a table or column that does not exist |
 | `Serialization` | the transaction could not be completed beside another, and may be tried again (Section 11.5) |
-| `Timeout` | the statement ran longer than it was allowed, or waited too long for a lock (Section 11.8) |
+| `Timeout` | the statement ran longer than it was allowed, or waited too long for a lock (Section 11.8); or waited too long for a connection of the pool (Section 11.6); or, in a server, was begun by a handler whose request had been given up, because its client had left or its time was over (Section 10.7) |
 | `NoRows` | `query_row` found no row |
 | `Other` | anything else, including a value in a row that is not of the type asked for |
 

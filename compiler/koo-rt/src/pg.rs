@@ -70,8 +70,8 @@ const CONSTRAINT: i64 = 2;
 const SYNTAX: i64 = 3;
 const SERIALIZATION: i64 = 4;
 const TIMEOUT: i64 = 5;
-/// What a statement fails with that a handler began after its client had left.
-const GIVEN_UP: &[u8] = b"the request this was for was given up: its client has left";
+/// What a statement fails with that a handler began after its request was given up.
+const GIVEN_UP: &[u8] = b"the request this was for was given up: its client has left, or its time is over";
 
 /// Whether an error's code says that the server is closing the connection, or will not
 /// open one: the classes 08 and 28, a database that is not there, and the shutdowns.

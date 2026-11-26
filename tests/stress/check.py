@@ -435,6 +435,11 @@ def bad_clients(name):
     check(name, problems)
 
 
+# How many rounds of ninety clients that leave, for each worker: fewer where the server
+# is many times slower than it is, under a sanitizer, and is looked at for other things.
+MANY = 1 if os.environ.get("CHECK_NO_DIVE") else 14
+
+
 def left(name, server):
     """Clients that leave before they are answered: their handlers end, and do not keep
     places from requests that somebody waits for; an actor that was asked finishes what
@@ -517,14 +522,14 @@ def left(name, server):
 
     beside = threading.Thread(target=asker, daemon=True)
     beside.start()
-    for _ in range(14 * WORKERS):
+    for _ in range(MANY * WORKERS):
         abandon(["/wait/20000"] * 90, 0.03)
         time.sleep(0.05)
     stop_asking.set()
     beside.join()
-    problems.append(refused and f"{len(refused)} of {asked[0]} requests beside {1260 * WORKERS} clients that left were not answered well: {refused[:3]}")
+    problems.append(refused and f"{len(refused)} of {asked[0]} requests beside {90 * MANY * WORKERS} clients that left were not answered well: {refused[:3]}")
     status, _, took = ask("/wait/10", timeout=25)
-    problems.append((status != 200 or took > 2) and f"after {1260 * WORKERS} more clients left, a request that waits 10 ms was answered {status} in {took:.1f}s")
+    problems.append((status != 200 or took > 2) and f"after {90 * MANY * WORKERS} more clients left, a request that waits 10 ms was answered {status} in {took:.1f}s")
     if WORKERS > 1:
         for _ in range(100):
             if len(children(server.pid)) == WORKERS:

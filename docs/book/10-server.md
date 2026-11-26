@@ -549,7 +549,7 @@ we do not sell that
 
 ```
 
-An answer with a status of failure is still an answer. `http.get` fails, with a `http.Error`, only when there is no answer to return, and the error's `kind` says why: `Address`, for a URL that is not one; `Connection`, for a server that could not be found or reached, or whose certificate is not to be trusted; `Timeout`, for one that did not answer in time; and `Protocol`, for an answer that is not HTTP. What to make of a 404 or a 500 is left to the program, which here turns a 404 of the price service into `none`.
+An answer with a status of failure is still an answer. `http.get` fails, with a `http.Error`, only when there is no answer to return, and the error's `kind` says why: `Address`, for a URL that is not one; `Connection`, for a server that could not be found or reached, or whose certificate is not to be trusted; `Timeout`, for one that did not answer in time, or that a handler asks whose own request was given up meanwhile (Section 10.7); and `Protocol`, for an answer that is not HTTP. What to make of a 404 or a 500 is left to the program, which here turns a 404 of the price service into `none`.
 
 A request is given a time to finish in, with `timeout:`, which is thirty seconds unless it is said. The time covers everything, from finding the server to the last byte of its answer. A time of zero or less, which what is left of a budget may be, is a timeout at once, and the request is not made. A service that waits without limit on another is a service that hangs when the other does, so the time should be chosen, and should be short.
 

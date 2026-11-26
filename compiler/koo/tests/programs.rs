@@ -1850,6 +1850,10 @@ fn a_handler_has_its_time() {
         // A handler that computes for longer than that is not interrupted.
         let (answer, _) = timed(port, "/spin/800");
         assert!(answer.ends_with("\r\n\r\nspun\n"), "with {workers} workers: {answer}");
+        // And one that computes for longer and then fails has failed with what it
+        // failed with, to its client and in the log: it was never cut short.
+        let (answer, _) = timed(port, "/spent/800");
+        assert!(answer.starts_with("HTTP/1.1 500 "), "with {workers} workers: {answer}");
         // An actor's method runs to its end whatever becomes of who asked. In one
         // process it runs in the handler, which is then not cut short either; from
         // another process the asker stops waiting when its time is over.
@@ -1896,6 +1900,10 @@ fn a_handler_has_its_time() {
             "with {workers} workers the server wrote:\n{written}"
         );
         assert!(written.contains("GET /poll: the handler was given 500 ms"), "{written}");
+        assert!(
+            written.contains("GET /spent/800: Spent"),
+            "with {workers} workers the server wrote:\n{written}"
+        );
     }
     // A server that is told to give its handlers no limit gives them none.
     let log = dir.join("log-none.txt");

@@ -2231,8 +2231,12 @@ mod imp {
     /// Whether the request being answered was given up, for the program's own loop,
     /// which then keeps what the handler failed with out of the log.
     #[unsafe(no_mangle)]
+    #[allow(static_mut_refs)]
     pub unsafe extern "C" fn koo_http_given_up() -> bool {
-        unsafe { given_up() }
+        // (What has been found already, and nothing found here: a handler that was
+        // never cut short and fails after its time is over fails with what it fails
+        // with, in the log and to its client.)
+        unsafe { may_leave() && PLACES[HERE].given_up }
     }
 
     #[allow(static_mut_refs)]
@@ -2932,7 +2936,7 @@ mod imp {
                         Parsed::Request(number) => {
                             PLACES[HERE].doing = Doing::Handling;
                             if REQUEST_TIME > 0 {
-                                PLACES[HERE].deadline = nanos() + REQUEST_TIME;
+                                PLACES[HERE].deadline = nanos().saturating_add(REQUEST_TIME);
                             }
                             return number;
                         }

@@ -426,7 +426,7 @@ pub unsafe extern "C" fn koo_http_fetch(
         if crate::http::cut_short() {
             return failed(
                 TIMEOUT,
-                &[b"the request this was for was given up: its client has left"],
+                &[b"the request this was for was given up: its client has left, or its time is over"],
             );
         }
         let Some((secure, host, port, path)) = address(url) else {
