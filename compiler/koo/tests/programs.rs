@@ -1697,6 +1697,130 @@ fn a_client_that_leaves_gives_back_its_connection() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// A handler is given so long for a request, thirty seconds unless `serve` is told
+/// otherwise: here half a second. One that waits longer is let wait for nothing more
+/// and its client is answered 503, the log saying which request; one that computes is
+/// not interrupted; an actor's method is never cut short; and the connection goes on.
+#[test]
+fn a_handler_has_its_time() {
+    use std::io::{Read, Write};
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let dir = std::env::temp_dir().join(format!("koo-deadline-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let executable = dir.join("deadline");
+    let built = Command::new(env!("CARGO_BIN_EXE_koo"))
+        .arg("build")
+        .arg(root.join("tests/http/deadline.koo"))
+        .arg("-o")
+        .arg(&executable)
+        .output()
+        .expect("koo runs");
+    assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
+    let start = |workers: usize, limit: &str, log: &Path| {
+        let port = std::net::TcpListener::bind("127.0.0.1:0")
+            .unwrap()
+            .local_addr()
+            .unwrap()
+            .port();
+        let child = Command::new(&executable)
+            .env("PORT", port.to_string())
+            .env("WORKERS", workers.to_string())
+            .env("TIMEOUT_MS", limit)
+            .stdout(std::process::Stdio::null())
+            .stderr(std::fs::File::create(log).unwrap())
+            .spawn()
+            .expect("the server starts");
+        let server = Server(child);
+        for _ in 0..200 {
+            if std::net::TcpStream::connect(("127.0.0.1", port)).is_ok() {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(25));
+        }
+        (server, port)
+    };
+    let timed = |port: u16, path: &str| {
+        let started = std::time::Instant::now();
+        let answer = get(port, path);
+        (answer, started.elapsed().as_millis())
+    };
+    for workers in [1, 2] {
+        let log = dir.join(format!("log-{workers}.txt"));
+        let (server, port) = start(workers, "500", &log);
+        let (answer, _) = timed(port, "/wait/100");
+        assert!(answer.ends_with("\r\n\r\nwaited\n"), "with {workers} workers: {answer}");
+        // A wait of three seconds, and a hundred of a tenth of a second, are both
+        // over in half a second.
+        for path in ["/wait/3000", "/poll"] {
+            let (answer, took) = timed(port, path);
+            assert!(
+                answer.starts_with("HTTP/1.1 503 ") && answer.ends_with("\r\n\r\nService Unavailable\n"),
+                "with {workers} workers, {path}: {answer}"
+            );
+            assert!(
+                (400..2000).contains(&took),
+                "with {workers} workers, {path} took {took} ms"
+            );
+        }
+        // A handler that computes for longer than that is not interrupted.
+        let (answer, _) = timed(port, "/spin/800");
+        assert!(answer.ends_with("\r\n\r\nspun\n"), "with {workers} workers: {answer}");
+        // An actor's method runs to its end whatever becomes of who asked. In one
+        // process it runs in the handler, which is then not cut short either; from
+        // another process the asker stops waiting when its time is over.
+        let (answer, took) = timed(port, "/nap/1500");
+        if workers == 1 {
+            assert!(answer.ends_with("\r\n\r\n1\n"), "{answer}");
+        } else {
+            assert!(answer.starts_with("HTTP/1.1 503 "), "with {workers} workers: {answer}");
+            assert!(took < 1400, "with {workers} workers, an ask took {took} ms");
+            std::thread::sleep(std::time::Duration::from_millis(1600));
+        }
+        let (answer, _) = timed(port, "/naps");
+        assert!(answer.ends_with("\r\n\r\n1\n"), "with {workers} workers: {answer}");
+        // The connection of a request that took too long goes on to the next.
+        let mut stream = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
+        stream
+            .set_read_timeout(Some(std::time::Duration::from_secs(5)))
+            .unwrap();
+        let mut heard = String::new();
+        for (path, until) in [("/wait/3000", "Service Unavailable\n"), ("/wait/10", "waited\n")] {
+            write!(stream, "GET {path} HTTP/1.1\r\nHost: test\r\n\r\n").unwrap();
+            let mut answer = String::new();
+            let mut chunk = [0u8; 4096];
+            while !answer.ends_with(until) {
+                let n = stream.read(&mut chunk).expect("an answer on the same connection");
+                assert!(n > 0, "the connection was closed after {heard}");
+                answer.push_str(&String::from_utf8_lossy(&chunk[..n]));
+            }
+            heard.push_str(answer.split("\r\n").next().unwrap_or(""));
+            heard.push(';');
+        }
+        assert_eq!(
+            heard, "HTTP/1.1 503 Service Unavailable;HTTP/1.1 200 OK;",
+            "with {workers} workers"
+        );
+        stop(server, port);
+        let written = std::fs::read_to_string(&log).unwrap();
+        let expected = if workers == 1 { 3 } else { 4 };
+        assert_eq!(
+            written
+                .matches("the handler was given 500 ms and had not answered")
+                .count(),
+            expected,
+            "with {workers} workers the server wrote:\n{written}"
+        );
+        assert!(written.contains("GET /poll: the handler was given 500 ms"), "{written}");
+    }
+    // A server that is told to give its handlers no limit gives them none.
+    let log = dir.join("log-none.txt");
+    let (server, port) = start(2, "0", &log);
+    let (answer, _) = timed(port, "/wait/900");
+    assert!(answer.ends_with("\r\n\r\nwaited\n"), "{answer}");
+    stop(server, port);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 /// A handler that waits does not make the rest of its worker wait: forty requests that
 /// each sleep 300 ms are answered by one worker in well under the twelve seconds they
 /// would take one after another. And a connection goes on after a request for a route

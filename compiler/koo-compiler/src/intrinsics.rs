@@ -701,6 +701,11 @@ pub const INTRINSICS: &[Intrinsic] = &[
         ret: I::Bool,
     },
     Intrinsic {
+        name: "http_timeout",
+        params: &[I::Int],
+        ret: I::Unit,
+    },
+    Intrinsic {
         name: "http_places",
         params: &[I::Given],
         ret: I::Unit,

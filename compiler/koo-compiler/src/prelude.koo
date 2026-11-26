@@ -1774,7 +1774,7 @@ fn (self: var Http__App) any(path: string, handler: take fn(Http__Request) -> Ht
 /// A request's body may be `max_body` bytes, 1 MB unless more is asked for. With `log`,
 /// a line is written to standard error for each request: its method and path, the
 /// status of the answer, the size of it and the time it took.
-fn (self: Http__App) serve(port: int = -1, workers: int = 0, max_body: int = 1048576, log: bool = false) ! Http__Error {
+fn (self: Http__App) serve(port: int = -1, workers: int = 0, max_body: int = 1048576, log: bool = false, timeout: Duration = 30s) ! Http__Error {
     // Where to listen, and with how many workers, is the environment's to say when the
     // program does not: `PORT`, and `WEB_CONCURRENCY`.
     var at := port
@@ -1815,6 +1815,8 @@ fn (self: Http__App) serve(port: int = -1, workers: int = 0, max_body: int = 104
         __http_route(self.methods[i], self.paths[i])
     }
     logged := if log { 1 } else { 0 }
+    // How long a handler is given for a request; none, or less, is no limit.
+    __http_timeout(timeout._ns)
     if __http_listen(at, processes, max_body, logged) < 0 {
         fail Http__Error { kind: Http__ErrorKind.Listen, message: __last_error() }
     }

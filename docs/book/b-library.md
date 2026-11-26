@@ -385,7 +385,7 @@ fn main() {
 | `var` `app.get(path: string, handler)`, `post`, `put`, `patch`, `delete`, `any` | adds a route for a method, or for all |
 | `var` `app.route(method: string, path: string, handler)` | adds a route for a method given by name |
 | `var` `app.files(path: string, directory: string)` | serves the files of a directory under a path |
-| `app.serve(port: int, workers: int, max_body: int = 1048576, log: bool = false) ! http.Error` | answers requests until the program is told to stop; a `port` that is not given is what the environment variable `PORT` says, or 8080, and `workers` what `WEB_CONCURRENCY` says, or one for each processor |
+| `app.serve(port: int, workers: int, max_body: int = 1048576, log: bool = false, timeout: Duration = 30s) ! http.Error` | answers requests until the program is told to stop; a `port` that is not given is what the environment variable `PORT` says, or 8080, and `workers` what `WEB_CONCURRENCY` says, or one for each processor; a handler that has not answered in `timeout` is let wait for nothing more and its client is answered 503, and a `timeout` of `0s` is no limit |
 
 A handler is a `fn(http.Request) -> http.Response ! Failure`.
 

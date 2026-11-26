@@ -1,0 +1,50 @@
+// A server that gives a handler half a second for a request, or what `TIMEOUT_MS` says
+// (`a_handler_has_its_time` in the tests).
+import std/http
+import std/os
+import std/time
+
+actor Sloth {
+    var naps: int = 0
+
+    fn nap(millis: int) -> int {
+        time.sleep(1ms * millis)
+        naps += 1
+        return naps
+    }
+
+    fn count() -> int {
+        return naps
+    }
+}
+
+fn main() ! http.Error {
+    sloth := Sloth.start()
+    var app := http.App.new()
+    app.get("/wait/:ms", req -> {
+        time.sleep(1ms * (int.parse(req.param("ms")) else 0))
+        return http.text("waited\n")
+    })
+    // Looks a hundred times, a tenth of a second apart.
+    app.get("/poll", req -> {
+        var looks := 0
+        for i in 0..100 {
+            time.sleep(100ms)
+            looks += 1
+        }
+        return http.text("{looks}\n")
+    })
+    // Computes for so long, and waits for nothing.
+    app.get("/spin/:ms", req -> {
+        until := time.uptime() + 1ms * (int.parse(req.param("ms")) else 0)
+        var turns := 0
+        while time.uptime() < until {
+            turns += 1
+        }
+        return http.text("spun\n")
+    })
+    app.get("/nap/:ms", req -> http.text("{sloth.nap(int.parse(req.param("ms")) else 0)}\n"))
+    app.get("/naps", req -> http.text("{sloth.count()}\n"))
+    limit := int.parse(os.env("TIMEOUT_MS") else "") else 500
+    app.serve(workers: int.parse(os.env("WORKERS") else "") else 1, timeout: 1ms * limit)?
+}

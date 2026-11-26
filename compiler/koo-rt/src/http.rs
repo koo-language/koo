@@ -53,6 +53,8 @@ mod stub {
         false
     }
     #[unsafe(no_mangle)]
+    pub unsafe extern "C" fn koo_http_timeout(_: i64) {}
+    #[unsafe(no_mangle)]
     pub unsafe extern "C" fn koo_http_reset() {}
     #[unsafe(no_mangle)]
     pub unsafe extern "C" fn koo_http_route(_: *const Header, _: *const Header) {}
@@ -725,6 +727,9 @@ mod imp {
     static mut MOST_OPEN: usize = usize::MAX;
     static mut MAX_BODY: usize = 1024 * 1024;
     static mut LOG: bool = false;
+    /// How long a handler is given to answer a request, in nanoseconds, or 0 for as
+    /// long as it takes.
+    static mut REQUEST_TIME: i64 = 30_000_000_000;
     static mut CONNS: List<Conn> = List::new();
     static mut FREE: List<u32> = List::new();
     static mut READY: List<u32> = List::new();
@@ -2136,7 +2141,26 @@ mod imp {
     /// actor held, since a method of an actor that has begun is never cut short.
     #[allow(static_mut_refs)]
     pub unsafe fn given_up() -> bool {
-        unsafe { may_leave() && PLACES[HERE].given_up }
+        unsafe {
+            if !may_leave() {
+                return false;
+            }
+            // A request is given up, too, when its handler has had the time that a
+            // request is given: found out here, where the handler would wait or begin
+            // something, and by the loop, for a handler that is waiting already.
+            let place = &mut PLACES[HERE];
+            if !place.given_up && place.deadline != 0 && nanos() >= place.deadline {
+                place.given_up = true;
+                place.timed_out = true;
+            }
+            place.given_up
+        }
+    }
+
+    /// Sets how long a handler is given to answer a request: `serve`'s `timeout:`.
+    #[unsafe(no_mangle)]
+    pub unsafe extern "C" fn koo_http_timeout(nanos: i64) {
+        unsafe { REQUEST_TIME = nanos.max(0) };
     }
 
     /// Ends the handler of a request that was given up, as a panic would and without a
@@ -2502,6 +2526,11 @@ mod imp {
         /// there is nobody to answer. A handler whose request was given up waits for
         /// nothing more (see `given_up`).
         given_up: bool,
+        /// When the time its handler is given for the request is over (0 for never),
+        /// and whether that is why the request was given up: its client is still
+        /// there then, and is told.
+        deadline: i64,
+        timed_out: bool,
         /// How many times a handler whose request was given up has gone on to begin
         /// something that waits: one that does so without end is ended (`cut_short`).
         cut: u32,
@@ -2521,6 +2550,8 @@ mod imp {
         until: 0,
         late: false,
         given_up: false,
+        deadline: 0,
+        timed_out: false,
         cut: 0,
         serial: 0,
         current: NO_CURRENT,
@@ -2639,13 +2670,20 @@ mod imp {
             // A handler whose request was given up waits for nothing: whatever it
             // asked for is said not to have come in time, which those who wait know
             // what to do about, and it ends at the next place where it can.
-            if PLACES[HERE].given_up {
+            if given_up() {
                 return fiber::Waited::TimeUp;
             }
             let Some(next) = another_place() else {
                 return fiber::Waited::NotHere;
             };
             let here = HERE;
+            // No wait of a handler's is longer than the time its request has left.
+            let deadline = PLACES[here].deadline;
+            let until = if deadline != 0 && (until == 0 || deadline < until) {
+                deadline
+            } else {
+                until
+            };
             PLACES[here].serial = (PLACES[here].serial + 1) & 0xff_ffff;
             if fd >= 0 {
                 sys::watch_once(QUEUE, fd, write, PLACE | (PLACES[here].serial as usize) << 8 | here);
@@ -2662,6 +2700,8 @@ mod imp {
                 sys::unwatch(QUEUE, fd, write, !late);
             }
             if late {
+                // (If it was the request's time that ran out, that is found here.)
+                given_up();
                 fiber::Waited::TimeUp
             } else {
                 fiber::Waited::Came
@@ -2811,6 +2851,8 @@ mod imp {
             }
             PLACES[HERE].doing = Doing::Driving;
             PLACES[HERE].given_up = false;
+            PLACES[HERE].deadline = 0;
+            PLACES[HERE].timed_out = false;
             PLACES[HERE].cut = 0;
             loop {
                 if ENDING {
@@ -2863,6 +2905,9 @@ mod imp {
                         Parsed::Request(-1) => no_route(index),
                         Parsed::Request(number) => {
                             PLACES[HERE].doing = Doing::Handling;
+                            if REQUEST_TIME > 0 {
+                                PLACES[HERE].deadline = nanos() + REQUEST_TIME;
+                            }
                             return number;
                         }
                         Parsed::Partial => {
@@ -3263,6 +3308,46 @@ mod imp {
                 return None;
             }
             let keep = CURRENT.keep && !conn(index).closing && !STOP.load(core::sync::atomic::Ordering::Relaxed);
+            if SIDE_BY_SIDE
+                && SERVER.load(core::sync::atomic::Ordering::Acquire) == thread::this_thread()
+                && PLACES[HERE].timed_out
+            {
+                // Its handler had the time a request is given and was let wait for
+                // nothing more: whatever it came to in the end, the client is told
+                // that the server could not answer, and the log says which request.
+                PLACES[HERE].timed_out = false;
+                let body = b"Service Unavailable\n";
+                log(503, body.len(), true);
+                let data = core::slice::from_raw_parts(conn(index).input.ptr, conn(index).input.len);
+                let text = |range: Range| &data[range.start..range.end];
+                let mut seconds = Buffer::new();
+                let _ = write!(seconds, "{}", REQUEST_TIME / 1_000_000);
+                let mut said = Buffer::new();
+                for part in [
+                    text(CURRENT.method),
+                    b" ",
+                    &text(CURRENT.path)[..text(CURRENT.path).len().min(200)],
+                    b": the handler was given ",
+                    &seconds.data[..seconds.len],
+                    b" ms and had not answered; it was let wait for nothing more, and the client was answered 503\n",
+                ] {
+                    said.push(part);
+                }
+                super::super::log::said(b"error", &said.data[..said.len], &said.data[..said.len - 1], &[]);
+                if head(
+                    index,
+                    503,
+                    b"text/plain; charset=utf-8",
+                    b"",
+                    body.len(),
+                    CURRENT.head_only,
+                    keep,
+                ) {
+                    conn(index).output.extend(body);
+                }
+                answered(index);
+                return None;
+            }
             Some((index, keep))
         }
     }
