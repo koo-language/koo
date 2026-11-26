@@ -1,0 +1,19 @@
+// A database found by what the environment says of it, as PostgreSQL's own client finds
+// one: `PGHOST`, `PGPORT`, `PGUSER`, `PGPASSWORD` and `PGDATABASE` are what an address
+// that leaves a part out has for it (`a_database_is_found_by_its_environment` in the
+// tests, which says what the environment is).
+import std/os
+import std/sql/postgres
+
+fn main() {
+    address := os.env("ADDRESS") else "postgres://"
+    match postgres.connect(address) {
+        db => {
+            match db.query_row("select current_user::text as who, current_database()::text as what") {
+                row => print("connected as {row.string("who") else "?"} to {row.string("what") else "?"}")
+                ! e => print("{e.kind}: {e.message}")
+            }
+        }
+        ! e => print("{e.kind}: {e.message}")
+    }
+}

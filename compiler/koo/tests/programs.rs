@@ -1593,6 +1593,101 @@ fn the_example_service_serves() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// A database is found by what the environment says of it, where the address leaves it
+/// out: a place that hands a program its database in pieces, the password among them,
+/// is heard as PostgreSQL's own client hears it. What the address says comes first,
+/// and a password from the environment is taken as it is. It needs a database.
+#[test]
+fn a_database_is_found_by_its_environment() {
+    let Some(url) = test_database() else {
+        eprintln!("KOO_TEST_POSTGRES is not set: a database found by its environment is not checked");
+        return;
+    };
+    let _alone = DATABASE.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    // The parts of `postgres://user:password@host:port/database`.
+    let rest = url.split("://").nth(1).unwrap().split('?').next().unwrap();
+    let (who, place) = rest.rsplit_once('@').expect("an address with a user");
+    let (user, password) = who.split_once(':').unwrap_or((who, ""));
+    let (place, database) = place.split_once('/').unwrap_or((place, user));
+    let (host, port) = place.rsplit_once(':').unwrap_or((place, "5432"));
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let dir = std::env::temp_dir().join(format!("koo-pgenv-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let run = |program: &Path, env: &[(&str, &str)]| {
+        let mut command = Command::new(env!("CARGO_BIN_EXE_koo"));
+        command.arg("run").arg(program);
+        for name in [
+            "PGHOST",
+            "PGPORT",
+            "PGUSER",
+            "PGPASSWORD",
+            "PGDATABASE",
+            "PGSSLMODE",
+            "ADDRESS",
+        ] {
+            command.env_remove(name);
+        }
+        for (name, value) in env {
+            command.env(name, value);
+        }
+        let output = command.output().expect("koo runs");
+        format!(
+            "{}{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        )
+    };
+    let found = root.join("tests/pgenv/found.koo");
+    let pieces = [
+        ("PGHOST", host),
+        ("PGPORT", port),
+        ("PGUSER", user),
+        ("PGPASSWORD", password),
+        ("PGDATABASE", database),
+    ];
+    // Every part from the environment, and an address that says nothing.
+    assert_eq!(run(&found, &pieces), format!("connected as {user} to {database}\n"));
+    // What the address says comes before what the environment says.
+    let mut wrong = vec![("ADDRESS", url.as_str())];
+    wrong.extend([
+        ("PGHOST", "nowhere.invalid"),
+        ("PGPORT", "1"),
+        ("PGUSER", "nobody"),
+        ("PGPASSWORD", "wrong"),
+    ]);
+    assert_eq!(run(&found, &wrong), format!("connected as {user} to {database}\n"));
+    // A port that is none is said, whoever said it.
+    let mut odd = pieces.to_vec();
+    odd[1] = ("PGPORT", "abc");
+    assert_eq!(run(&found, &odd), "Connection: `abc` is not a port\n");
+    // A password is taken as it is: one with every sign in it that an address would
+    // have to write another way, `%41` among them, which in an address is an `A`.
+    let awkward = "p@ss:/w%41rd?&#";
+    let role = dir.join("role.koo");
+    let made = |statement: &str| {
+        std::fs::write(
+            &role,
+            format!(
+                "import std/os\nimport std/sql\nimport std/sql/postgres\n\nfn main() ! sql.Error {{\n    \
+                 db := postgres.connect(os.env(\"DATABASE_URL\") else \"\")?\n    \
+                 db.exec(\"{statement}\")?\n}}\n"
+            ),
+        )
+        .unwrap();
+        let said = run(&role, &[("DATABASE_URL", url.as_str())]);
+        assert_eq!(said, "", "{statement}");
+    };
+    made("drop role if exists koo_env_test");
+    made(&format!("create role koo_env_test login password '{awkward}'"));
+    let mut other = pieces.to_vec();
+    other[2] = ("PGUSER", "koo_env_test");
+    other[3] = ("PGPASSWORD", awkward);
+    let said = run(&found, &other);
+    made("drop role koo_env_test");
+    assert_eq!(said, format!("connected as koo_env_test to {database}\n"));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 /// A client that leaves before it is answered does not keep what its handler held: a
 /// connection of the pool that a slow statement had is given back, a transaction is
 /// undone, and nothing is said in the log, since nothing went wrong. It needs a database.

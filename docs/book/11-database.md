@@ -42,7 +42,7 @@ There are two imports. `std/sql` has the types that every database shares: a poo
 
     postgres://user:password@host:port/database
 
-and returns a `sql.Pool`. A part that is left out has its usual value: the user `postgres`, no password, the host `localhost`, the port 5432, and a database with the user's name. A character that would be mistaken for punctuation, such as an `@` in a password, is written as `%` and its two hexadecimal digits, as in any address.
+and returns a `sql.Pool`. A part that is left out is what the environment says of it, by the names that PostgreSQL's own programs know: `PGUSER`, `PGPASSWORD`, `PGHOST`, `PGPORT` and `PGDATABASE`, and `PGSSLMODE` for the `sslmode` of Section 11.7. Some places that run programs hand a service its database so, in pieces, and not as one address; there the address is `postgres://` and nothing more, and the pieces are found. A part that neither says has its usual value: the user `postgres`, no password, the host `localhost`, the port 5432, and a database with the user's name. A character in an address that would be mistaken for punctuation, such as an `@` in a password, is written as `%` and its two hexadecimal digits, as in any address; a password from the environment is taken as it is.
 
 `connect` makes one connection before it returns, so that an address that leads nowhere is found out at once, where the program starts, and not at the first request an hour later. Everything in this package fails with one error type, `sql.Error`, which Section 11.4 describes; here `main` passes it on.
 

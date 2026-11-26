@@ -40,7 +40,7 @@ The tests run this service against a real database and check what it answers (`t
 
 | Variable | |
 | --- | --- |
-| `DATABASE_URL` | the database: `postgres://user:password@host:5432/name?sslmode=verify-full` |
+| `DATABASE_URL` | the database: `postgres://user:password@host:5432/name?sslmode=verify-full`. Where the database is handed over in pieces, it is `postgres://` and the pieces are `PGHOST`, `PGPORT`, `PGUSER`, `PGPASSWORD` and `PGDATABASE` |
 | `PORT` | where to listen; 8080 if it is not set |
 | `WEB_CONCURRENCY` | how many workers; one for each processor if it is not set |
 | `POOL` | the most connections to the database that one worker holds; 10 if it is not set |

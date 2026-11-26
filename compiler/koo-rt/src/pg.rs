@@ -1753,8 +1753,22 @@ pub unsafe extern "C" fn koo_sql_open(url: *const Header, limit: i64, patience: 
                 .split(|byte| *byte == b'&')
                 .find_map(|option| option.strip_prefix(name)?.strip_prefix(b"="))
         };
+        // What the address leaves out is what the environment says of it, by the names
+        // PostgreSQL's own client knows: `PGHOST`, `PGPORT`, `PGUSER`, `PGPASSWORD`,
+        // `PGDATABASE` and `PGSSLMODE`. A place that hands a program its database in
+        // pieces, and not as one address, is so heard; and a password that comes so is
+        // taken as it is, with nothing in it that an address would have to write
+        // another way.
+        let said = |name: &core::ffi::CStr| -> &'static [u8] {
+            let value = crate::getenv(name.as_ptr() as *const u8);
+            if value.is_null() { b"" } else { c_text(value) }
+        };
         let authorities = setting(b"sslrootcert").unwrap_or(b"");
-        let secure = match setting(b"sslmode") {
+        let mode = match setting(b"sslmode") {
+            None => Some(said(c"PGSSLMODE")).filter(|mode| !mode.is_empty()),
+            mode => mode,
+        };
+        let secure = match mode {
             None | Some(b"prefer") => 1,
             Some(b"disable") => 0,
             // With authorities given, to encrypt is also to ask who is there.
@@ -1789,6 +1803,7 @@ pub unsafe extern "C" fn koo_sql_open(url: *const Header, limit: i64, patience: 
         let bracket = place.iter().rposition(|byte| *byte == b']').unwrap_or(0);
         let (host, port) = match place[bracket..].iter().rposition(|byte| *byte == b':') {
             Some(at) => (&place[..bracket + at], &place[bracket + at + 1..]),
+            None if !said(c"PGPORT").is_empty() => (place, said(c"PGPORT")),
             None => (place, &b"5432"[..]),
         };
         let port_number = port
@@ -1813,14 +1828,21 @@ pub unsafe extern "C" fn koo_sql_open(url: *const Header, limit: i64, patience: 
             return -1;
         };
         let db = &mut DBS[index];
-        unescaped(if user.is_empty() { b"postgres" } else { user }, &mut db.user);
-        unescaped(password, &mut db.password);
-        unescaped(if host.is_empty() { b"localhost" } else { host }, &mut db.host);
+        // Each part from the address, where `%` and two digits stand for a byte; or
+        // from the environment, as it is; or what it is when nobody says.
+        let part = |written: &[u8], named: &core::ffi::CStr, otherwise: &[u8], out: &mut Buf| {
+            if !written.is_empty() {
+                unescaped(written, out);
+            } else {
+                out.len = 0;
+                out.push(if said(named).is_empty() { otherwise } else { said(named) });
+            }
+        };
+        part(user, c"PGUSER", b"postgres", &mut db.user);
+        part(password, c"PGPASSWORD", b"", &mut db.password);
+        part(host, c"PGHOST", b"localhost", &mut db.host);
         let user_again = core::slice::from_raw_parts(db.user.ptr, db.user.len);
-        unescaped(
-            if database.is_empty() { user_again } else { database },
-            &mut db.database,
-        );
+        part(database, c"PGDATABASE", user_again, &mut db.database);
         let settings = options
             .split(|byte| *byte == b'&')
             .find_map(|option| option.strip_prefix(b"options="))
