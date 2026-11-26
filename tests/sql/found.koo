@@ -14,6 +14,11 @@ fn main() ! sql.Error {
         db => print("connected, with what was slipped in")
         ! e => print("{e.kind}: {e.message}")
     }
+    // A port is a number that a port can be, however many digits are written.
+    match postgres.connect("postgres://localhost:4295021625/postgres") {
+        db => print("connected, somewhere")
+        ! e => print("{e.kind}: {e.message}")
+    }
     db := postgres.connect(address)?
     // Rows that the program would have to send are refused, and the connection goes on.
     db.exec("create temporary table if not exists found_copy (n int)")?
@@ -29,6 +34,7 @@ fn main() ! sql.Error {
 }
 
 //= Connection: the address of the database has a NUL in it (`%00`)
+//= Connection: `4295021625` is not a port
 //= Other
 //= 42
 //= 1900-01-01T00:00:00Z

@@ -217,7 +217,10 @@ enum Ended {
     /// The server closed the connection.
     Closed,
     TimeUp,
+    /// What came is not an answer in HTTP.
     Broken,
+    /// The connection was reset, or otherwise failed, while it was read.
+    Lost,
 }
 
 impl Line {
@@ -285,7 +288,7 @@ impl Line {
                 return match got {
                     0 => Err(Ended::Closed),
                     -2 => Err(Ended::TimeUp),
-                    n if n < 0 => Err(Ended::Broken),
+                    n if n < 0 => Err(Ended::Lost),
                     n => {
                         self.heard = true;
                         self.input.len += n as usize;
@@ -562,7 +565,8 @@ pub unsafe extern "C" fn koo_http_fetch(
                 }
                 _ => line.hang_up(),
             }
-            let lost_unheard = !line.heard && matches!(answered, Err(Ended::Closed) | Err(Ended::Broken));
+            let lost_unheard =
+                !line.heard && matches!(answered, Err(Ended::Closed) | Err(Ended::Broken) | Err(Ended::Lost));
             if lost_unheard && kept_one.is_some() && (again || !sent) && koo_now_nanos() < deadline {
                 continue;
             }
@@ -576,7 +580,9 @@ pub unsafe extern "C" fn koo_http_fetch(
                 failed(TIMEOUT, &[host, b" did not answer in the time it was given"])
             }
             (Err(Ended::Closed), _) => failed(CONNECTION, &[host, b" closed the connection before it had answered"]),
-            (Err(Ended::Broken), false) => failed(CONNECTION, &[b"the connection to ", host, b" was lost"]),
+            (Err(Ended::Lost), _) | (Err(Ended::Broken), false) => {
+                failed(CONNECTION, &[b"the connection to ", host, b" was lost"])
+            }
             (Err(Ended::Broken), true) => failed(PROTOCOL, &[b"what ", host, b" answered is not HTTP"]),
         }
     }
@@ -628,7 +634,11 @@ unsafe fn answer(line: &mut Line, headless: bool, kept: &mut Reply) -> Result<bo
                     goes_on = false;
                 }
                 if name.eq_ignore_ascii_case(b"transfer-encoding") {
-                    chunked = value.to_ascii_lowercase_ends_with(b"chunked");
+                    // In chunks, and in no other way, which would not be read rightly.
+                    if !value.eq_ignore_ascii_case(b"chunked") {
+                        return Err(Ended::Broken);
+                    }
+                    chunked = true;
                 }
                 // The name in lower case, so that it is found however it was written.
                 let start = kept.headers.len;
@@ -690,16 +700,6 @@ unsafe fn answer(line: &mut Line, headless: bool, kept: &mut Reply) -> Result<bo
                 },
             };
         }
-    }
-}
-
-trait EndsWith {
-    fn to_ascii_lowercase_ends_with(&self, end: &[u8]) -> bool;
-}
-
-impl EndsWith for [u8] {
-    fn to_ascii_lowercase_ends_with(&self, end: &[u8]) -> bool {
-        self.len() >= end.len() && self[self.len() - end.len()..].eq_ignore_ascii_case(end)
     }
 }
 

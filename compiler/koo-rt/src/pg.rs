@@ -356,10 +356,14 @@ fn words(line: &[u8]) -> impl Iterator<Item = &[u8]> {
 }
 
 /// Asks the name servers for the address of a name, of the old kind (`kind` 1) or the
-/// new (28), all of them at once, and takes the first answer that is one: an address,
-/// or the word that the name has none. A server that refuses, or fails, has not
-/// answered, and the others are waited for; one that is silent holds nothing up. An
-/// answer too long for the one datagram is asked for again over a connection.
+/// new (28), all of them at once on one socket, and takes the first answer that is one:
+/// an address, or the word that the name has none. An answer is one only if it comes
+/// from a server that was asked, says that it is an answer, and repeats the question;
+/// anything else on the socket is not listened to. A server that refuses, fails, or
+/// does not understand has not answered, and the others are waited for; one that is
+/// silent holds nothing up. An answer too long for the one datagram is asked for again
+/// over a connection, and a server that did not understand the question is asked again
+/// without the word about longer answers, which is what an old one stumbles on.
 ///
 /// Returns nothing if no server answered by `until` (0 for no limit beyond the two
 /// seconds, twice, that a question is given), and otherwise the address, or that there
@@ -374,7 +378,6 @@ unsafe fn ask_name_servers(servers: &[Ip], name: &[u8], kind: u8, until: i64) ->
         query[..2].copy_from_slice(&id);
         query[2] = 1; // the server may ask others
         query[5] = 1; // one question
-        query[11] = 1; // and one thing more, said at the end
         let mut at = 12;
         for label in name.split(|byte| *byte == b'.').filter(|label| !label.is_empty()) {
             if label.len() > 63 || at + label.len() + 17 > query.len() {
@@ -387,95 +390,138 @@ unsafe fn ask_name_servers(servers: &[Ip], name: &[u8], kind: u8, until: i64) ->
         // The end of the name, then: an address, of the Internet.
         query[at + 2] = kind;
         query[at + 4] = 1;
-        at += 5;
+        let question = at + 5;
         // No name, the kind 41, and the length this end can take.
-        query[at + 2] = 41;
-        query[at + 3..at + 5].copy_from_slice(&1232u16.to_be_bytes());
-        let length = at + 11;
+        query[question + 2] = 41;
+        query[question + 3..question + 5].copy_from_slice(&1232u16.to_be_bytes());
         let late = || until != 0 && koo_now_nanos() >= until;
-        let mut found = None;
-        // The servers at addresses of one kind share a socket; those of the other kind
-        // are asked after them, if those gave no answer.
-        for new_kind in [false, true] {
-            let mine = |server: &&Ip| matches!(server, Ip::V6(_)) == new_kind;
-            if found.is_some() || late() || !servers.iter().any(|server| mine(&server)) {
-                continue;
+        // One socket for them all: where a server is at an address of the new kind, the
+        // socket is of that kind, and reaches the others at their addresses written so.
+        let mut fd = -1;
+        if servers.iter().any(|server| matches!(server, Ip::V6(_))) {
+            fd = socket(AF_INET6, SOCK_DGRAM, 0);
+            if fd >= 0 {
+                let both = 0i32;
+                let only_new = if cfg!(target_os = "macos") { 27 } else { 26 };
+                setsockopt(fd, 41, only_new, &both, 4);
             }
-            let fd = socket(if new_kind { AF_INET6 } else { AF_INET }, SOCK_DGRAM, 0);
-            if fd < 0 {
-                continue;
-            }
-            'asking: for _ in 0..2 {
-                let mut asked = 0;
-                for server in servers.iter().filter(mine) {
-                    let (address, address_len) = socket_address(*server, 53);
-                    if sendto(fd, query.as_ptr(), length, 0, address.as_ptr(), address_len) >= 0 {
-                        asked += 1;
-                    }
+        }
+        let new_kind = fd >= 0;
+        if fd < 0 {
+            fd = socket(AF_INET, SOCK_DGRAM, 0);
+        }
+        if fd < 0 {
+            return None;
+        }
+        let reached = |server: &Ip| -> Option<([u8; 28], u32)> {
+            match (server, new_kind) {
+                (Ip::V4(old), true) => {
+                    let mut written = [0u8; 16];
+                    (written[10], written[11]) = (0xff, 0xff);
+                    written[12..].copy_from_slice(old);
+                    Some(socket_address(Ip::V6(written), 53))
                 }
-                // A handler of a server lets the server go on while the name servers
-                // think: for two seconds, or for what is left of the caller's time.
-                let patience = koo_now_nanos() + 2_000_000_000;
-                let patience = if until != 0 { patience.min(until) } else { patience };
-                let mut unhelpful = 0;
-                while asked > unhelpful && ready(fd, false, patience) {
-                    let mut answer = [0u8; 1500];
-                    let mut from = [0u8; 28];
-                    let mut from_len = from.len() as u32;
-                    let got = recvfrom(
-                        fd,
-                        answer.as_mut_ptr(),
-                        answer.len(),
-                        0,
-                        from.as_mut_ptr(),
-                        &mut from_len,
-                    );
-                    if got < 12 || answer[..2] != id {
+                (Ip::V6(_), false) => None,
+                (server, _) => Some(socket_address(*server, 53)),
+            }
+        };
+        let most = servers.len().min(32);
+        // The servers that have said they will not help, and of those the ones that did
+        // not understand the question.
+        let (mut unhelpful, mut puzzled) = (0u32, 0u32);
+        let mut found = None;
+        'asking: for round in 0..2 {
+            // The second time without the word about longer answers.
+            let plain = round == 1;
+            query[11] = u8::from(!plain);
+            let length = if plain { question } else { question + 11 };
+            let mut asked = 0u32;
+            for (which, server) in servers[..most].iter().enumerate() {
+                let again = unhelpful & (1 << which) == 0 || puzzled & (1 << which) != 0;
+                if let (true, Some((address, address_len))) = (again, reached(server))
+                    && sendto(fd, query.as_ptr(), length, 0, address.as_ptr(), address_len) >= 0
+                {
+                    asked |= 1 << which;
+                }
+            }
+            (unhelpful, puzzled) = (unhelpful & !asked, 0);
+            // A handler of a server lets the server go on while the name servers think:
+            // for two seconds, or for what is left of the caller's time.
+            let patience = koo_now_nanos() + 2_000_000_000;
+            let patience = if until != 0 { patience.min(until) } else { patience };
+            while asked & !unhelpful != 0 && ready(fd, false, patience) {
+                let mut answer = [0u8; 1500];
+                let mut from = [0u8; 28];
+                let mut from_len = from.len() as u32;
+                let got = recvfrom(
+                    fd,
+                    answer.as_mut_ptr(),
+                    answer.len(),
+                    0,
+                    from.as_mut_ptr(),
+                    &mut from_len,
+                );
+                // From a server that was asked, an answer, to this question.
+                let who = servers[..most].iter().position(|server| {
+                    // The port, and the address, which lies further in where it is longer.
+                    let part = if new_kind { 8..24 } else { 4..8 };
+                    reached(server).is_some_and(|(address, _)| {
+                        address[2..4] == from[2..4] && address[part.clone()] == from[part.clone()]
+                    })
+                });
+                let Some(who) = who.filter(|who| asked & (1 << who) != 0) else {
+                    continue;
+                };
+                if got < question as isize
+                    || answer[..2] != id
+                    || answer[2] & 0x80 == 0
+                    || answer[4..6] != [0, 1]
+                    || !answer[12..question].eq_ignore_ascii_case(&query[12..question])
+                {
+                    continue;
+                }
+                let mut answer = &answer[..got as usize];
+                // What did not fit is asked for again of the same server, over a
+                // connection, where it fits.
+                let mut whole = [0u8; 16384];
+                if answer[2] & 2 != 0 {
+                    let got = ask_over_a_connection(servers[who], &query[..length], &mut whole, patience);
+                    if got >= question && whole[..2] == id {
+                        answer = &whole[..got];
+                    } else if !matches!(address_in(answer, kind), Ok(Some(_))) {
+                        // The whole of it could not be had, and the part holds no
+                        // address: that server has not answered.
+                        unhelpful |= 1 << who;
                         continue;
                     }
-                    let mut answer = &answer[..got as usize];
-                    // What did not fit is asked for again of the same server, over a
-                    // connection, where it fits.
-                    let mut whole = [0u8; 16384];
-                    if answer[2] & 2 != 0 {
-                        let sender = servers.iter().filter(mine).find(|server| {
-                            let (address, _) = socket_address(**server, 53);
-                            address[4..24] == from[4..24]
-                        });
-                        let got = match sender {
-                            Some(server) => ask_over_a_connection(*server, &query[..length], &mut whole, patience),
-                            None => 0,
-                        };
-                        if got >= 12 && whole[..2] == id {
-                            answer = &whole[..got];
-                        } else if address_in(answer, kind).is_none() {
-                            // The whole of it could not be had, and the part holds no
-                            // address: that server has not answered.
-                            unhelpful += 1;
-                            continue;
-                        }
-                    }
-                    // 2 is a server that failed, and 5 one that will not say.
-                    let refused = matches!(answer[3] & 15, 2 | 5);
-                    match address_in(answer, kind) {
-                        Some(address) => {
-                            found = Some(Some(address));
-                            break 'asking;
-                        }
-                        None if refused => unhelpful += 1,
-                        None => {
-                            found = Some(None);
-                            break 'asking;
-                        }
-                    }
                 }
-                // Every server that was asked has said that it will not help.
-                if asked == 0 || unhelpful >= asked || late() {
-                    break;
+                // 0 is an answer, and 3 the word that there is no such name. The rest is
+                // a server that failed, would not say, or did not understand (1 and 4).
+                let said = answer[3] & 15;
+                match address_in(answer, kind) {
+                    Ok(Some(address)) => {
+                        found = Some(Some(address));
+                        break 'asking;
+                    }
+                    Ok(None) if said == 0 || said == 3 => {
+                        found = Some(None);
+                        break 'asking;
+                    }
+                    _ => {
+                        unhelpful |= 1 << who;
+                        if said == 1 || said == 4 {
+                            puzzled |= 1 << who;
+                        }
+                    }
                 }
             }
-            close(fd);
+            // Nobody is left to ask again: every server that was asked has said that it
+            // will not help, and none of them for want of understanding.
+            if asked == 0 || late() || (asked & !unhelpful == 0 && puzzled == 0) {
+                break;
+            }
         }
+        close(fd);
         found
     }
 }
@@ -515,7 +561,11 @@ unsafe fn ask_over_a_connection(server: Ip, query: &[u8], answer: &mut [u8], unt
                 }
                 have += n as usize;
                 if have == 2 {
-                    wanted = 2 + (u16::from_be_bytes(size) as usize).min(answer.len());
+                    // One that is longer than there is room for is not had at all.
+                    if u16::from_be_bytes(size) as usize > answer.len() {
+                        break;
+                    }
+                    wanted = 2 + u16::from_be_bytes(size) as usize;
                 }
             }
             if have >= 2 && have == wanted {
@@ -528,7 +578,12 @@ unsafe fn ask_over_a_connection(server: Ip, query: &[u8], answer: &mut [u8], unt
 }
 
 /// The first address in a name server's answer.
-fn address_in(answer: &[u8], wanted: u8) -> Option<Ip> {
+fn address_in(answer: &[u8], wanted: u8) -> Result<Option<Ip>, ()> {
+    first_address(answer, wanted).ok_or(())
+}
+
+/// As `address_in`, with nothing for an answer that does not hold what it says it does.
+fn first_address(answer: &[u8], wanted: u8) -> Option<Option<Ip>> {
     // A name is labels up to an empty one, or up to a pointer to the rest of it.
     fn after_name(answer: &[u8], mut at: usize) -> Option<usize> {
         loop {
@@ -554,15 +609,21 @@ fn address_in(answer: &[u8], wanted: u8) -> Option<Ip> {
         let kind = u16::from_be_bytes([head[0], head[1]]);
         let length = u16::from_be_bytes([head[8], head[9]]) as usize;
         at += 10;
-        if kind == wanted as u16 && kind == 1 && length == 4 {
-            return Some(Ip::V4(answer.get(at..at + 4)?.try_into().ok()?));
+        // Of the Internet, and of the kind that was asked for.
+        let internet = head[2..4] == [0, 1];
+        if internet && kind == wanted as u16 && kind == 1 && length == 4 {
+            return Some(Some(Ip::V4(answer.get(at..at + 4)?.try_into().ok()?)));
         }
-        if kind == wanted as u16 && kind == 28 && length == 16 {
-            return Some(Ip::V6(answer.get(at..at + 16)?.try_into().ok()?));
+        if internet && kind == wanted as u16 && kind == 28 && length == 16 {
+            return Some(Some(Ip::V6(answer.get(at..at + 16)?.try_into().ok()?)));
         }
         at += length;
+        // What is said to be there is there.
+        if at > answer.len() {
+            return None;
+        }
     }
-    None
+    Some(None)
 }
 
 /// On macOS the system is asked for the address of a host: what it knows of names is
@@ -636,8 +697,9 @@ unsafe fn by_the_system(_host: &[u8]) -> Option<Ip> {
 /// the name servers the machine is set up with, trying the name inside each of the
 /// domains it searches, as the system's own resolver does. A host that has an address
 /// of the old kind is reached at that one, and one that has only the new kind at that.
-unsafe fn resolve(host: &[u8], until: i64) -> Option<Ip> {
+unsafe fn resolve(host: &[u8], until: i64, silent: &mut bool) -> Option<Ip> {
     unsafe {
+        *silent = false;
         if let Some(address) = literal(host) {
             return Some(address);
         }
@@ -702,11 +764,15 @@ unsafe fn resolve(host: &[u8], until: i64) -> Option<Ip> {
         let alone_first = dots >= dots_wanted || host.ends_with(b".");
         // The servers are asked together, and the first that answers is believed.
         let late = || until != 0 && koo_now_nanos() >= until;
+        // Whether any server said anything of any of the names.
+        let heard = core::cell::Cell::new(false);
         let ask = |name: &[u8], kind: u8| {
             if late() {
                 return None;
             }
-            ask_name_servers(&servers[..server_count], name, kind, until).flatten()
+            let said = ask_name_servers(&servers[..server_count], name, kind, until);
+            heard.set(heard.get() || said.is_some());
+            said.flatten()
         };
         let mut answer = None;
         // An address of the old kind is asked for everywhere first, and one of the new
@@ -738,6 +804,7 @@ unsafe fn resolve(host: &[u8], until: i64) -> Option<Ip> {
             }
         }
         settings.release();
+        *silent = answer.is_none() && !heard.get();
         answer
     }
 }
@@ -885,6 +952,11 @@ unsafe fn fill(conn: &mut Conn, need: usize) -> bool {
             conn.input.len = 0;
         }
         while conn.input.len - conn.at < need {
+            // A server that goes on talking while a connection is set up, without
+            // coming to the point, has no more time than one that says nothing.
+            if conn.until != 0 && koo_now_nanos() >= conn.until {
+                return false;
+            }
             conn.input.room(need.max(8192));
             let room =
                 core::slice::from_raw_parts_mut(conn.input.ptr.add(conn.input.len), conn.input.cap - conn.input.len);
@@ -977,10 +1049,7 @@ unsafe fn authenticate(conn: &mut Conn, db: &Db) -> bool {
         let mut out = Buf::new();
         let done = loop {
             let Some((kind, body)) = message(conn) else {
-                failed(
-                    CONNECTION,
-                    &[b"the server closed the connection while it was being set up"],
-                );
+                failed(CONNECTION, &[unready(conn)]);
                 break false;
             };
             if kind == b'E' {
@@ -1054,6 +1123,15 @@ unsafe fn authenticate(conn: &mut Conn, db: &Db) -> bool {
                         failed(CONNECTION, &[b"the server's answer to the password was not understood"]);
                         break false;
                     };
+                    // A server names the work to be done on the password, and may name
+                    // more than anyone would wait for: PostgreSQL asks for 4,096 rounds.
+                    if rounds > 1_000_000 {
+                        failed(
+                            CONNECTION,
+                            &[b"the server asks for more than a million rounds of work on the password, which is refused"],
+                        );
+                        break false;
+                    }
                     let salted = pbkdf2_sha256(password, &salt_bytes[..salt_len], rounds);
                     let client_key = hmac_sha256(&salted, &[b"Client Key"]);
                     let stored_key = sha256(&client_key);
@@ -1178,13 +1256,21 @@ pub(crate) unsafe fn dial(host: &[u8], port: u16, milliseconds: i64, why: &mut B
         let milliseconds = milliseconds.max(1);
         let given = milliseconds;
         let until = koo_now_nanos() + milliseconds * 1_000_000;
-        let Some(address) = resolve(host, until) else {
+        let mut silent = false;
+        let Some(address) = resolve(host, until, &mut silent) else {
             // The time may be what ran out, with the name servers silent.
             if koo_now_nanos() >= until {
                 why.push(b"the address of the host `");
                 why.push(host);
                 let _ = write!(why, "` was not found in {given} ms");
                 return UNANSWERED;
+            }
+            // Or they were silent, or of no help, for as long as they are given.
+            if silent {
+                why.push(b"the name servers did not say what the address of the host `");
+                why.push(host);
+                why.push(b"` is");
+                return -1;
             }
             why.push(b"there is no address for the host `");
             why.push(host);
@@ -1683,7 +1769,7 @@ pub unsafe extern "C" fn koo_sql_open(url: *const Header, limit: i64, patience: 
             .try_fold(0u32, |sum, digit| {
                 digit.is_ascii_digit().then(|| sum * 10 + (*digit - b'0') as u32)
             })
-            .filter(|number| !port.is_empty() && *number > 0 && *number < 65536);
+            .filter(|number| !port.is_empty() && port.len() <= 5 && *number > 0 && *number < 65536);
         let Some(port_number) = port_number else {
             failed(CONNECTION, &[b"`", port, b"` is not a port"]);
             return -1;

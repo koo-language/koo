@@ -2050,6 +2050,12 @@ fn http__fetch(method: string, url: string, body: string = "", headers: [string:
         if (reply.status == 303 and verb != "HEAD") or ((reply.status == 301 or reply.status == 302) and verb == "POST") {
             verb = "GET"
             sent = ""
+            // What said the kind of what was sent goes with what was sent.
+            var kept: [string: string] = [:]
+            for (name, value) in carried {
+                if name.to_lower() != "content-type" { kept[name] = value }
+            }
+            carried = kept
         }
         at = next
         left -= 1
@@ -2081,7 +2087,10 @@ fn h__toward(from: string, to: string) -> string {
     // query, is part of a path.
     if at := target.find("://") {
         head := target.slice(0, at)
-        if head != "" and head.find("/") == none and head.find("?") == none { return target }
+        // What an address is spoken in is the same however it is written: `HTTP://`.
+        if head != "" and head.find("/") == none and head.find("?") == none {
+            return head.to_lower() + target.slice(at, target.len)
+        }
     }
     origin := h__origin(from)
     if target.starts_with("//") { return origin.slice(0, (origin.find("://") else 0) + 1) + target }
@@ -2097,9 +2106,11 @@ fn h__toward(from: string, to: string) -> string {
         target = target.slice(0, end)
     }
     if not target.starts_with("/") {
+        // By bytes: a path may hold characters of more than one, and a `/` is one.
         var last := 0
-        for i in 0..path.len {
-            if path.slice(i, i + 1) == "/" { last = i + 1 }
+        spelled := path.bytes()
+        for i in 0..spelled.len {
+            if int.from(spelled[i]) == 47 { last = i + 1 }
         }
         target = path.slice(0, last) + target
     }

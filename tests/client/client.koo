@@ -83,6 +83,8 @@ fn main() ! http.Error | JsonError {
     show("nothing in brackets", http.get("http://[]:8080/"))
     // An address with a query and no path is sent on like any other.
     print(http.get(base + "?x=1", redirects: 1)?.body)
+    // From a path that holds a character of more than one byte to a path beside it.
+    show("accent", http.get(base + "/accent", redirects: 3))
 }
 //= Echo { method: "GET", path: "/echo", body: "", agent: "koo", kind: "", token: "" }
 //= Echo { method: "POST", path: "/echo", body: "\{\"id\":7,\"sku\":\"nails\"}", agent: "koo", kind: "application/json", token: "s3cret" }
@@ -124,3 +126,4 @@ fn main() ! http.Error | JsonError {
 //= no colon: Address: `http://[::1]8080/` is not an address that can be asked: one is `http://host/path` or `https://host:port/path?query`
 //= nothing in brackets: Address: `http://[]:8080/` is not an address that can be asked: one is `http://host/path` or `https://host:port/path?query`
 //= nobody, no token
+//= accent: 200 true 22 bytes, text/plain; charset=utf-8
