@@ -1,0 +1,65 @@
+// Sixteen actors that each have a conversation at the same moment, in a program that
+// has had none before: the first use of `std/net` by a process, on sixteen threads at
+// once (`threads_begin_talking_at_once` in the tests).
+import std/net
+import std/os
+import std/time
+
+actor Heard {
+    var lines: [string] = []
+
+    fn add(line: string) {
+        lines.push(line)
+    }
+
+    fn all() -> [string] {
+        return lines
+    }
+}
+
+actor Asker {
+    address: string
+    heard: Heard
+
+    fn ask(n: int) {
+        answer := net.connect(address, conn -> {
+            conn.write("echo {n}\n")?
+            return conn.read_line()?
+        })
+        match answer {
+            line => heard.send.add("{n}: {line}")
+            ! e => heard.send.add("{n}: {e.kind}: {e.message}")
+        }
+    }
+}
+
+fn main() {
+    address := os.env("ADDRESS") else "127.0.0.1:1"
+    heard := Heard.start()
+    var askers: [Asker] = []
+    for i in 0..16 {
+        askers.push(Asker.start(address: address, heard: heard))
+    }
+    for i in 0..16 {
+        askers[i].send.ask(i)
+    }
+    var lines: [string] = []
+    for attempt in 0..2000 {
+        lines = heard.all()
+        if lines.len == 16 { break }
+        time.sleep(1ms)
+    }
+    // Each was answered with what it asked, after the number of its connection.
+    var right := 0
+    for line in lines {
+        if (n, answer) := line.cut(": ") {
+            if (on, text) := answer.cut(" ") {
+                if text == n { right += 1 }
+            }
+        }
+    }
+    print("{right} of {lines.len} right")
+    if right != 16 {
+        for line in lines { print(line) }
+    }
+}

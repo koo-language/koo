@@ -2850,6 +2850,129 @@ fn (self: Sql__Pool) transaction<T, E>(body: fn(Sql__Tx) -> T ! E, isolation: Sq
     }
 }
 
+// ---- std/net -----------------------------------------------------------------------------
+//
+// Conversations with other programs over TCP (`koo-rt/src/net.rs`). A program has a
+// connection only inside a function it gives, so that there is none to forget to close.
+
+/// Why a conversation failed: the address is none, the other end could not be reached,
+/// it did not answer in time, it closed the connection (or the conversation is over),
+/// it said more than was asked for, or what it said was not text where text was read.
+enum Net__ErrorKind { Address, Connection, Timeout, Closed, TooLong, NotText }
+
+error Net__Error { kind: Net__ErrorKind, message: string }
+
+fn n__error(kind: int) -> Net__Error {
+    named := match kind {
+        1 => Net__ErrorKind.Address
+        3 => Net__ErrorKind.Timeout
+        4 => Net__ErrorKind.Closed
+        5 => Net__ErrorKind.TooLong
+        6 => Net__ErrorKind.NotText
+        _ => Net__ErrorKind.Connection
+    }
+    return Net__Error { kind: named, message: __last_error() }
+}
+
+/// A connection to another program, for as long as the function it was given to runs.
+type Net__Conn = { _id: int }
+
+/// Whether the connection was made for this conversation, and not kept from an earlier
+/// one: where a protocol begins with a greeting, or with who is asking, that is said
+/// on a connection that is new, and once.
+fn (self: Net__Conn) fresh() -> bool {
+    return __net_fresh(self._id)
+}
+
+/// Writes text, and waits no longer than `timeout` for the other end to take it.
+fn (self: Net__Conn) write(text: string, timeout: Duration = 30s) ! Net__Error {
+    kind := __net_write(self._id, text, timeout._ns)
+    if kind != 0 { fail n__error(kind) }
+}
+
+/// The same, for what is not text.
+fn (self: Net__Conn) write_bytes(data: [byte], timeout: Duration = 30s) ! Net__Error {
+    kind := __net_write_bytes(self._id, data, timeout._ns)
+    if kind != 0 { fail n__error(kind) }
+}
+
+/// Whatever comes next: at least one byte, and at most `most`.
+fn (self: Net__Conn) read(most: int = 65536, timeout: Duration = 30s) -> [byte] ! Net__Error {
+    kind := __net_read(self._id, most, timeout._ns)
+    if kind != 0 { fail n__error(kind) }
+    return __net_taken(self._id)
+}
+
+/// Exactly so many bytes.
+fn (self: Net__Conn) read_exact(count: int, timeout: Duration = 30s) -> [byte] ! Net__Error {
+    kind := __net_read_exact(self._id, count, timeout._ns)
+    if kind != 0 { fail n__error(kind) }
+    return __net_taken(self._id)
+}
+
+/// A line, without the line feed that ends it or a carriage return before that. One
+/// longer than `most` bytes is a failure, of the kind `TooLong`.
+fn (self: Net__Conn) read_line(most: int = 65536, timeout: Duration = 30s) -> string ! Net__Error {
+    kind := __net_read_line(self._id, most, timeout._ns)
+    if kind != 0 { fail n__error(kind) }
+    return __net_taken_text(self._id)
+}
+
+/// The connections a program keeps to one address, `host:port`: as many as `size` at
+/// once, for one of which a conversation waits `wait` at the longest. It is a value,
+/// and says where; the connections themselves are each process's own.
+///
+/// Pools to one address under different names keep their connections apart. Where
+/// what is said first on a connection is relied on by every conversation after, who is
+/// asking or which database is meant, the name says which: a connection is then never
+/// given to a conversation that expects another.
+type Net__Pool = { address: string, size: int, wait: Duration, name: string }
+
+fn net__pool(address: string, size: int = 10, wait: Duration = 30s, name: string = "") -> Net__Pool ! Net__Error {
+    // One connection now, so that an address that leads nowhere is known at once.
+    most := if size < 1 { 1 } else { size }
+    id := __net_take(address, name, most, wait._ns)
+    if id < 0 { fail n__error(-id) }
+    __net_give(id, true)
+    return Net__Pool { address, size: most, wait, name }
+}
+
+/// Runs a function with one of the pool's connections, and gives the connection back
+/// when the function returns. One that the function failed with, or on which anything
+/// went wrong, or on which the other end has more to say, is closed and not kept: what
+/// is said next on a connection that is kept is an answer to what is asked next.
+fn (self: Net__Pool) with<T, E>(body: fn(Net__Conn) -> T ! E) -> T ! E | Net__Error {
+    id := __net_take(self.address, self.name, self.size, self.wait._ns)
+    if id < 0 { fail n__error(-id) }
+    match body(Net__Conn { _id: id }) {
+        value => {
+            __net_give(id, true)
+            return value
+        }
+        ! e => {
+            __net_give(id, false)
+            fail e
+        }
+    }
+}
+
+/// One conversation, on a connection of its own that is closed when the function
+/// returns: `timeout` is how long connecting may take.
+fn net__connect<T, E>(address: string, body: fn(Net__Conn) -> T ! E, timeout: Duration = 10s) -> T ! E | Net__Error {
+    id := __net_take(address, "", 0, timeout._ns)
+    if id < 0 { fail n__error(-id) }
+    match body(Net__Conn { _id: id }) {
+        value => {
+            __net_give(id, false)
+            return value
+        }
+        ! e => {
+            __net_give(id, false)
+            fail e
+        }
+    }
+}
+
 // ---- the library's errors as messages --------------------------------------------------
 //
 // A method of an actor may fail with an error of the library's, and the error may have
@@ -2920,6 +3043,23 @@ fn Http__Error._json_read(text: string, at: var int) -> Http__Error ! JsonError 
         _ => Http__ErrorKind.Connection
     }
     return Http__Error { kind, message: fields[1] }
+}
+
+fn (self: Net__Error) _json_write(out: var string) {
+    out += "\{\"kind\":\"{self.kind}\",\"message\":" + __json_quote(self.message) + "}"
+}
+
+fn Net__Error._json_read(text: string, at: var int) -> Net__Error ! JsonError {
+    fields := j__strings(text, var at, ["kind", "message"])?
+    kind := match fields[0] {
+        "Address" => Net__ErrorKind.Address
+        "Timeout" => Net__ErrorKind.Timeout
+        "Closed" => Net__ErrorKind.Closed
+        "TooLong" => Net__ErrorKind.TooLong
+        "NotText" => Net__ErrorKind.NotText
+        _ => Net__ErrorKind.Connection
+    }
+    return Net__Error { kind, message: fields[1] }
 }
 
 fn (self: Sql__Error) _json_write(out: var string) {

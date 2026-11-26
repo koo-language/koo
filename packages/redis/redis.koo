@@ -1,0 +1,359 @@
+// A client for Redis, and for what speaks as Redis does (Valkey, KeyDB, Dragonfly),
+// written in Koo on `std/net`.
+//
+//     cache := redis_connect(os.env("REDIS_URL") else "redis://localhost:6379")?
+//     cache.set("greeting", "hello", ttl: 60s)?
+//     word := cache.get("greeting")?            // string?
+//     hits := cache.incr("hits")?
+//
+// Until one package of a program can import another, this file is used by copying it
+// into the directory of the program that needs it: a directory is a package, and its
+// files share their names. Every name here begins with `Redis` or `redis_`.
+import std/encoding
+import std/hash
+import std/net
+
+/// Why a command failed: the address is none; the server could not be reached, or
+/// went away; it did not answer in time; it refused the command, and says why; or what
+/// it said is not what a Redis says.
+enum RedisErrorKind { Address, Connection, Timeout, Refused, Protocol }
+
+error RedisError { kind: RedisErrorKind, message: string }
+
+/// What a server answers to a command.
+enum RedisReply {
+    Nothing
+    Text { value: string }
+    Number { value: int }
+    Items { items: [RedisReply] }
+    Refusal { message: string }
+}
+
+/// A server, and how to speak to it. It is a value: the connections are kept by
+/// `std/net`, as many as `pool` at a time for each process of the program.
+type Redis = {
+    pool: net.Pool,
+    user: string,
+    password: string,
+    database: int,
+    timeout: Duration,
+    /// The longest value that is read, in bytes: a server is not taken at its word
+    /// for how much it is about to send.
+    most: int,
+}
+
+/// `redis://[user:password@]host[:port][/database]`, where a password alone is written
+/// `:password@`, and a character of either that an address has a use for, an `@` or a
+/// `:` or a `/`, is written as `%` and its two hexadecimal digits. One command is sent
+/// now, so that an address that leads nowhere, or a password that is wrong, is known at
+/// once.
+fn redis_connect(url: string, pool: int = 10, timeout: Duration = 5s, most: int = 67108864) -> Redis ! RedisError {
+    rest := url.strip_prefix("redis://") else fail RedisError {
+        kind: RedisErrorKind.Address,
+        message: "the address of a Redis begins with `redis://`: `redis://user:password@host:6379/0`",
+    }
+    var who := ""
+    var place := rest
+    if (before, after) := redis_cut_last(rest, "@") {
+        who = before
+        place = after
+    }
+    var user := who
+    var password := ""
+    if (name, secret) := who.cut(":") {
+        user = name
+        password = secret
+    }
+    user = encoding.from_url(user) else fail RedisError {
+        kind: RedisErrorKind.Address,
+        message: "the user in the address of a Redis has a `%` that is not followed by two hexadecimal digits",
+    }
+    password = encoding.from_url(password) else fail RedisError {
+        kind: RedisErrorKind.Address,
+        message: "the password in the address of a Redis has a `%` that is not followed by two hexadecimal digits",
+    }
+    var database := 0
+    var host := place
+    if (before, after) := place.cut("/") {
+        host = before
+        if after != "" {
+            database = int.parse(after) else fail RedisError {
+                kind: RedisErrorKind.Address,
+                message: "`{after}` is not the number of a database",
+            }
+        }
+    }
+    if host == "" { host = "localhost" }
+    // (An address of the new kind is in brackets, and has colons of its own.)
+    if not host.contains(":") or host.ends_with("]") { host = "{host}:6379" }
+    // The connections of this user and this database are kept apart from those of
+    // any other: each is told who is asking and of which database when it is new, and
+    // is what it was told from then on.
+    apart := "redis {database} {user} {encoding.hex(hash.sha256(password.bytes()))}"
+    connections := net.pool(host, size: pool, wait: timeout, name: apart) else e => fail redis_from(e)
+    server := Redis { pool: connections, user, password, database, timeout, most }
+    server.command(["PING"])?
+    return server
+}
+
+/// Sends a command, a word and what it is given, and returns what the server answers.
+/// A command that the server refuses is a failure of the kind `Refused`.
+///
+/// A command is sent on whichever of the connections is free, and the next on
+/// whichever is free then. So a command that changes what a connection means for what
+/// is sent on it afterwards, `MULTI` or `SELECT` or `SUBSCRIBE`, is not sent this way,
+/// and is refused here: whoever had the connection next would be answered as nobody
+/// expects. Several commands that are to be done as one are given to `atomically`.
+fn (self: Redis) command(words: [string]) -> RedisReply ! RedisError {
+    if words.len == 0 {
+        fail RedisError { kind: RedisErrorKind.Refused, message: "a command has a name" }
+    }
+    name := words[0].to_upper()
+    if redis_changes_connection(name) {
+        fail RedisError {
+            kind: RedisErrorKind.Refused,
+            message: "`{name}` changes what a connection means for whoever has it next, and is not sent with `command`",
+        }
+    }
+    answer := self.pool.with(conn -> {
+        redis_greet(self, conn)?
+        return redis_ask(self, conn, words)?
+    })
+    match answer {
+        reply => return redis_refused(reply)?
+        ! e: RedisError => fail e
+        ! e: net.Error => fail redis_from(e)
+    }
+}
+
+/// Does several commands as one: all of them, with no other client's command between
+/// two of them, or, if the server refuses one as it is given, none. Returns what each
+/// answered. (This is `MULTI` and `EXEC`, on one connection.)
+fn (self: Redis) atomically(commands: [[string]]) -> [RedisReply] ! RedisError {
+    for words in commands {
+        if words.len == 0 or redis_changes_connection(words[0].to_upper()) {
+            fail RedisError {
+                kind: RedisErrorKind.Refused,
+                message: "a command that changes what a connection means is not one of several done as one",
+            }
+        }
+    }
+    answer := self.pool.with(conn -> {
+        redis_greet(self, conn)?
+        redis_refused(redis_ask(self, conn, ["MULTI"])?)?
+        var refused := ""
+        for words in commands {
+            match redis_ask(self, conn, words)? {
+                Refusal { message } => {
+                    if refused == "" { refused = message }
+                }
+                other => {}
+            }
+        }
+        if refused != "" {
+            redis_refused(redis_ask(self, conn, ["DISCARD"])?)?
+            return RedisReply.Refusal { message: refused }
+        }
+        return redis_ask(self, conn, ["EXEC"])?
+    })
+    match answer {
+        reply => {
+            match redis_refused(reply)? {
+                Items { items } => return items
+                other => fail redis_odd("EXEC", other)
+            }
+        }
+        ! e: RedisError => fail e
+        ! e: net.Error => fail redis_from(e)
+    }
+}
+
+/// The value of a key, if it has one.
+fn (self: Redis) get(key: string) -> string? ! RedisError {
+    match self.command(["GET", key])? {
+        Text { value } => return value
+        Nothing => return none
+        other => fail redis_odd("GET", other)
+    }
+}
+
+/// Gives a key a value, for ever or for so long.
+fn (self: Redis) set(key: string, value: string, ttl: Duration = 0s) ! RedisError {
+    millis := ttl.millis()
+    if millis > 0 {
+        self.command(["SET", key, value, "PX", "{millis}"])?
+    } else {
+        self.command(["SET", key, value])?
+    }
+}
+
+/// Removes keys, and returns how many there were.
+fn (self: Redis) del(keys: [string]) -> int ! RedisError {
+    var words := ["DEL"]
+    for key in keys { words.push(key) }
+    return redis_number("DEL", self.command(words)?)?
+}
+
+/// Adds to the number a key holds, which is 0 if it holds none, and returns the sum.
+fn (self: Redis) incr(key: string, by: int = 1) -> int ! RedisError {
+    return redis_number("INCRBY", self.command(["INCRBY", key, "{by}"])?)?
+}
+
+/// Says how much longer a key is to be kept. Returns whether there is such a key.
+fn (self: Redis) expire(key: string, ttl: Duration) -> bool ! RedisError {
+    return redis_number("PEXPIRE", self.command(["PEXPIRE", key, "{ttl.millis()}"])?)? == 1
+}
+
+/// Puts values at the end of a list, and returns how long the list then is.
+fn (self: Redis) push(key: string, values: [string]) -> int ! RedisError {
+    var words := ["RPUSH", key]
+    for value in values { words.push(value) }
+    return redis_number("RPUSH", self.command(words)?)?
+}
+
+/// Takes the first value of a list, waiting for one as long as `wait` if the list is
+/// empty; none if none came. (The time a command may take is added to it for the
+/// answer, so that a wait of five seconds is not cut off at five.)
+fn (self: Redis) pop(key: string, wait: Duration = 0s) -> string? ! RedisError {
+    if wait <= 0s {
+        match self.command(["LPOP", key])? {
+            Text { value } => return value
+            Nothing => return none
+            other => fail redis_odd("LPOP", other)
+        }
+    }
+    patient := Redis {
+        pool: self.pool,
+        user: self.user,
+        password: self.password,
+        database: self.database,
+        timeout: self.timeout + wait,
+        most: self.most,
+    }
+    seconds := wait.seconds()
+    match patient.command(["BLPOP", key, "{seconds}"])? {
+        Items { items } => {
+            if items.len == 2 {
+                match items[1] {
+                    Text { value } => return value
+                    other => fail redis_odd("BLPOP", other)
+                }
+            }
+            fail redis_odd("BLPOP", RedisReply.Items { items })
+        }
+        Nothing => return none
+        other => fail redis_odd("BLPOP", other)
+    }
+}
+
+// ---- what the file keeps to itself --------------------------------------------------------
+
+/// What is said first on a connection on which nothing has been said: who is asking,
+/// and of which database.
+fn redis_greet(server: Redis, conn: net.Conn) ! RedisError {
+    if not conn.fresh() { return }
+    if server.password != "" {
+        greeting := if server.user == "" { ["AUTH", server.password] } else { ["AUTH", server.user, server.password] }
+        redis_refused(redis_ask(server, conn, greeting)?)?
+    }
+    if server.database != 0 {
+        redis_refused(redis_ask(server, conn, ["SELECT", "{server.database}"])?)?
+    }
+}
+
+/// Whether a command changes what its connection means for what is sent on it next.
+fn redis_changes_connection(name: string) -> bool {
+    return ["MULTI", "EXEC", "DISCARD", "WATCH", "UNWATCH", "SELECT", "AUTH", "HELLO", "SUBSCRIBE", "PSUBSCRIBE", "SSUBSCRIBE", "UNSUBSCRIBE", "PUNSUBSCRIBE", "SUNSUBSCRIBE", "MONITOR", "QUIT", "RESET", "CLIENT"].contains(name)
+}
+
+/// The parts before and after the last occurrence of a separator.
+fn redis_cut_last(text: string, separator: string) -> (string, string)? {
+    var found: (string, string)? = none
+    var before := ""
+    var rest := text
+    while true {
+        (head, tail) := rest.cut(separator) else { break }
+        before = if found == none { head } else { before + separator + head }
+        found = (before, tail)
+        rest = tail
+    }
+    return found
+}
+
+fn redis_from(e: net.Error) -> RedisError {
+    kind := match e.kind {
+        net.ErrorKind.Address => RedisErrorKind.Address
+        net.ErrorKind.Timeout => RedisErrorKind.Timeout
+        net.ErrorKind.TooLong => RedisErrorKind.Protocol
+        net.ErrorKind.NotText => RedisErrorKind.Protocol
+        _ => RedisErrorKind.Connection
+    }
+    return RedisError { kind, message: e.message }
+}
+
+fn redis_protocol(what: string) -> RedisError {
+    return RedisError { kind: RedisErrorKind.Protocol, message: "the server did not answer as a Redis does: {what}" }
+}
+
+fn redis_odd(command: string, reply: RedisReply) -> RedisError {
+    return redis_protocol("to {command} it answered {reply}")
+}
+
+/// A refusal is a failure; anything else is the answer.
+fn redis_refused(reply: RedisReply) -> RedisReply ! RedisError {
+    match reply {
+        Refusal { message } => fail RedisError { kind: RedisErrorKind.Refused, message }
+        other => return other
+    }
+}
+
+fn redis_number(command: string, reply: RedisReply) -> int ! RedisError {
+    match reply {
+        Number { value } => return value
+        other => fail redis_odd(command, other)
+    }
+}
+
+/// Writes a command and reads its answer.
+fn redis_ask(server: Redis, conn: net.Conn, words: [string]) -> RedisReply ! RedisError {
+    var said := "*{words.len}\r\n"
+    for word in words {
+        said += "${word.len}\r\n{word}\r\n"
+    }
+    conn.write(said, timeout: server.timeout) else e => fail redis_from(e)
+    return redis_read(server, conn, 0)?
+}
+
+/// Reads one answer, which may have answers inside it, though not without end.
+fn redis_read(server: Redis, conn: net.Conn, depth: int) -> RedisReply ! RedisError {
+    line := conn.read_line(timeout: server.timeout) else e => fail redis_from(e)
+    if rest := line.strip_prefix("+") { return RedisReply.Text { value: rest } }
+    if rest := line.strip_prefix("-") { return RedisReply.Refusal { message: rest } }
+    if rest := line.strip_prefix(":") {
+        value := int.parse(rest) else fail redis_protocol("`{rest}` for a number")
+        return RedisReply.Number { value }
+    }
+    if rest := line.strip_prefix("$") {
+        count := int.parse(rest) else fail redis_protocol("`{rest}` for a length")
+        if count < 0 { return RedisReply.Nothing }
+        if count > server.most {
+            fail redis_protocol("a value of {count} bytes, where the longest that is read is {server.most}")
+        }
+        data := conn.read_exact(count + 2, timeout: server.timeout) else e => fail redis_from(e)
+        value := string.from_bytes(data.slice(0, count)) else fail redis_protocol("a value that is not text")
+        return RedisReply.Text { value }
+    }
+    if rest := line.strip_prefix("*") {
+        count := int.parse(rest) else fail redis_protocol("`{rest}` for a count")
+        if count < 0 { return RedisReply.Nothing }
+        if count > 1000000 or depth >= 8 {
+            fail redis_protocol("{count} answers inside an answer, {depth} deep")
+        }
+        var items: [RedisReply] = []
+        for i in 0..count {
+            items.push(redis_read(server, conn, depth + 1)?)
+        }
+        return RedisReply.Items { items }
+    }
+    fail redis_protocol("a line that is none of the five kinds a Redis sends")
+}

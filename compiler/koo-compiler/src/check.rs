@@ -670,6 +670,7 @@ impl<'a> Checker<'a> {
                             | "std/crypto"
                             | "std/random"
                             | "std/log"
+                            | "std/net"
                     ) =>
                 {
                     let key = (self.file_of(import.span), import.binding.clone());
@@ -683,7 +684,7 @@ impl<'a> Checker<'a> {
                     self.error_help(
                         import.span,
                         format!("the package `{path}` is not part of this compiler yet"),
-                        "the standard packages so far are `std/os`, `std/io`, `std/time`, `std/http`, `std/sql`, `std/sql/postgres`, `std/hash`, `std/encoding`, `std/crypto`, `std/random`, `std/log` and `std/test`",
+                        "the standard packages so far are `std/os`, `std/io`, `std/time`, `std/http`, `std/sql`, `std/sql/postgres`, `std/hash`, `std/encoding`, `std/crypto`, `std/random`, `std/log`, `std/net` and `std/test`",
                     );
                 }
                 _ => self.unsupported(import.span, "imports of other packages are"),

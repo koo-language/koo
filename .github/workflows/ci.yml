@@ -35,6 +35,16 @@ jobs:
             sleep 1
           done
           echo "KOO_TEST_POSTGRES=postgres://postgres:koo-ci@localhost:5432/postgres" >> "$GITHUB_ENV"
+      # A Redis, for the client of `packages/redis` and the package it is written on.
+      - name: Redis (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          docker run -d --name koo-redis -p 6379:6379 redis:7-alpine
+          for attempt in $(seq 60); do
+            docker exec koo-redis redis-cli ping | grep -q PONG && break
+            sleep 1
+          done
+          echo "KOO_TEST_REDIS=redis://localhost:6379" >> "$GITHUB_ENV"
       # The same tests again over TLS: a server with a certificate signed by an authority
       # made here, which the tests are told to trust.
       - name: PostgreSQL with TLS (Linux)

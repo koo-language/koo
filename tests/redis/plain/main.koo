@@ -1,0 +1,40 @@
+// The Redis client of `packages/redis`, against a real server whose address is in
+// `REDIS_URL` (`a_redis_is_spoken_to` in the tests copies the client beside this file).
+import std/os
+
+fn main() ! RedisError {
+    cache := redis_connect(os.env("REDIS_URL") else "redis://localhost:6379")?
+    key := "koo-test-{os.env("KOO_TEST_RUN") else "0"}"
+    cache.del([key, "{key}-n", "{key}-list"])?
+    print("{cache.get(key)?}")
+    cache.set(key, "hello, world: \u{e9}\r\n$5")?
+    print("{cache.get(key)?}")
+    print("{cache.incr("{key}-n")?} {cache.incr("{key}-n", by: 41)?}")
+    print("{cache.expire(key, 1h)?} {cache.expire("{key}-none", 1h)?}")
+    print("{cache.push("{key}-list", ["a", "b", "c"])?}")
+    print("{cache.pop("{key}-list")?} {cache.pop("{key}-list", wait: 1s)?} {cache.pop("{key}-list")?} {cache.pop("{key}-list")?}")
+    started := os.env("KOO_TEST_RUN") else "0"
+    print("{cache.pop("{key}-list", wait: 300ms)?}")
+    match cache.command(["NOSUCH", started]) {
+        reply => print("{reply}")
+        ! e => print("{e.kind}")
+    }
+    print("{cache.command(["ECHO", "still in step"])?}")
+    // Another database of the same server, which is said on each new connection.
+    other := redis_connect("{os.env("REDIS_URL") else "redis://localhost:6379"}/1", pool: 2)?
+    other.set("{key}-db", "in the other")?
+    print("{cache.get("{key}-db")?} | {other.get("{key}-db")?} | {other.get("{key}-db")?} | {other.del(["{key}-db"])?}")
+    // A command that changes what a connection means is not sent on whichever is free.
+    match cache.command(["multi"]) {
+        reply => print("{reply}")
+        ! e => print("{e.kind}: {e.message}")
+    }
+    // Several commands as one: all of them, or, if one is refused as it is given, none.
+    print("{cache.atomically([["INCR", "{key}-n"], ["INCR", "{key}-n"]])?}")
+    match cache.atomically([["INCR", "{key}-n"], ["NOSUCH", started]]) {
+        replies => print("{replies}")
+        ! e => print("{e.kind}")
+    }
+    print("{cache.incr("{key}-n")?} {cache.get(key)? != none}")
+    print("{cache.del([key, "{key}-n", "{key}-list"])?}")
+}

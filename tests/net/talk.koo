@@ -1,0 +1,149 @@
+// Conversations over TCP with a server that answers as it is asked to, well or badly
+// (`a_program_talks_over_tcp` in the tests is that server). Each line sent is a word
+// that says how to answer, and a text; an answer that is given begins with the number
+// of the connection it was given on, so that it is seen which connection was used.
+import std/net
+import std/os
+import std/time
+
+fn say(pool: net.Pool, line: string, timeout: Duration = 2s) -> string {
+    answer := pool.with(conn -> {
+        conn.write("{line}\n")?
+        return conn.read_line(timeout: timeout)?
+    })
+    match answer {
+        text => return text
+        ! e => return "{e.kind}"
+    }
+}
+
+fn main() ! net.Error {
+    address := os.env("ADDRESS") else "127.0.0.1:1"
+    pool := net.pool(address, size: 2, wait: 300ms)?
+
+    // Nothing has been said on a connection that was only made, when the pool was;
+    // something has on one that has had a conversation; and a conversation on a
+    // connection of its own is the first on it, whatever pools there are.
+    first := pool.with(conn -> {
+        was := conn.fresh()
+        conn.write("echo f\n")?
+        conn.read_line()?
+        return was
+    })?
+    second := pool.with(conn -> conn.fresh())?
+    alone := net.connect(address, conn -> conn.fresh())?
+    print("fresh: {first} {second} {alone}")
+
+    // A connection that is given back is the next one taken.
+    print("kept: {say(pool, "echo a")} | {say(pool, "echo b")} | {say(pool, "echo c")}")
+
+    // One on which the other end did not answer in time is not kept: its answer, when
+    // it comes, is nobody's.
+    print("late: {say(pool, "late x", timeout: 100ms)} | {say(pool, "echo after")}")
+
+    // Also where the function made nothing of it, and returned as if all were well.
+    quiet := pool.with(conn -> {
+        conn.write("late w\n")?
+        return conn.read_line(timeout: 100ms) else "gave up"
+    })?
+    print("swallowed: {quiet} | {say(pool, "echo after")}")
+
+    // Nor is one on which the other end said more than it was asked: at once, or
+    // when the connection had been given back and was waiting for its next use.
+    print("more: {say(pool, "twice y")} | {say(pool, "echo after")}")
+    print("later: {say(pool, "again q")}")
+    time.sleep(200ms)
+    print("later: {say(pool, "echo next")}")
+
+    // Nor one whose function failed.
+    failed := pool.with(conn -> {
+        conn.write("echo z\n")?
+        conn.read_line()?
+        fail net.Error { kind: net.ErrorKind.Closed, message: "the program's own" }
+    })
+    match failed {
+        nothing => print("failed: no")
+        ! e => print("failed: {e.message} | {say(pool, "echo after")}")
+    }
+
+    // A connection is of use only inside the function it was given to.
+    var kept: [net.Conn] = []
+    pool.with(conn -> {
+        kept.push(conn)
+        conn.write("echo inside\n")?
+        return conn.read_line()?
+    })?
+    match kept[0].write("echo outside\n") {
+        done => print("outside: written")
+        ! e => print("outside: {e.kind}: {e.message}")
+    }
+
+    // What the other end sends is not taken on trust for its length or its kind.
+    long := pool.with(conn -> {
+        conn.write("long 5000\n")?
+        return conn.read_line(most: 1000)?
+    })
+    match long {
+        line => print("long: {line.len}")
+        ! e => print("long: {e.kind}")
+    }
+    odd := pool.with(conn -> {
+        conn.write("bytes \n")?
+        return conn.read_line()?
+    })
+    match odd {
+        line => print("bytes: {line}")
+        ! e => print("bytes: {e.kind}")
+    }
+
+    // An answer that comes a byte at a time is an answer; one that stops half way, or
+    // is cut off, is a failure of its kind.
+    slowly := pool.with(conn -> {
+        conn.write("slow one byte at a time\n")?
+        first := conn.read_exact(4)?
+        rest := conn.read_line()?
+        return "{first.len} then {rest}"
+    })
+    match slowly {
+        text => print("slow: {text}")
+        ! e => print("slow: {e.kind}")
+    }
+    print("stall: {say(pool, "stall half", timeout: 150ms)}")
+    print("cut: {say(pool, "cut half")}")
+
+    // With every connection of the pool in a conversation, another waits its time and
+    // is told so.
+    nested := pool.with(a -> {
+        return pool.with(b -> {
+            return pool.with(c -> {
+                c.write("echo third\n")?
+                return c.read_line()?
+            })?
+        })?
+    })
+    match nested {
+        text => print("full: {text}")
+        ! e => print("full: {e.kind}: {e.message}")
+    }
+
+    // A program may talk to more places, one after another, than it keeps connections
+    // to at once: an address to which there is none is not counted.
+    var refused := 0
+    for port in 2..80 {
+        match net.pool("127.0.0.1:{port}", wait: 200ms) {
+            other => {}
+            ! e => {
+                if e.message.contains("sixty-four") { refused += 1 }
+            }
+        }
+    }
+    print("addresses: {refused} refused for being too many")
+
+    // One conversation on a connection of its own.
+    once := net.connect(address, conn -> {
+        conn.write("echo once\n")?
+        return conn.read_line()?
+    })?
+    print("once: {once}")
+    print("after all: {say(pool, "echo end")}")
+}

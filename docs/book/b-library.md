@@ -433,7 +433,22 @@ A request of another server returns a `http.Reply`:
 
 `http.Error` has the fields `kind: http.ErrorKind` and `message: string`, and `http.ErrorKind` is an enumeration: `Listen`, `Address`, `Connection`, `Timeout`, `Protocol`. Chapter 10 has programs that use these.
 
-## B.14 `std/sql`
+## B.14 `std/net`
+
+| | |
+| --- | --- |
+| `net.connect(address: string, body: fn(net.Conn) -> T ! E, timeout: Duration = 10s) -> T ! E \| net.Error` | one conversation with the program at `host:port`, on a connection that is closed when the function returns; `timeout` is for connecting |
+| `net.pool(address: string, size: int = 10, wait: Duration = 30s, name: string = "") -> net.Pool ! net.Error` | the connections kept to one address, at most `size` at once in each process; one is made at once. Pools of different names keep their connections apart |
+| `pool.with(body: fn(net.Conn) -> T ! E) -> T ! E \| net.Error` | a conversation on one of the pool's connections, which is kept afterwards if nothing went wrong on it and the other end has no more to say |
+| `conn.write(text: string, timeout: Duration = 30s) ! net.Error`, `conn.write_bytes(data: [byte], timeout)` | sends text, or bytes |
+| `conn.read_line(most: int = 65536, timeout: Duration = 30s) -> string ! net.Error` | a line, without the line feed that ends it or a carriage return before that |
+| `conn.read_exact(count: int, timeout: Duration = 30s) -> [byte] ! net.Error` | exactly so many bytes |
+| `conn.read(most: int = 65536, timeout: Duration = 30s) -> [byte] ! net.Error` | whatever comes next, at least one byte |
+| `conn.fresh() -> bool` | whether nothing had been said on the connection when this conversation began |
+
+`net.Error` has the fields `kind: net.ErrorKind` and `message: string`, and `net.ErrorKind` is an enumeration: `Address`, `Connection`, `Timeout`, `Closed`, `TooLong`, `NotText`. A `net.Pool` has the fields `address`, `size`, `wait` and `name`. Section 10.9 has more.
+
+## B.15 `std/sql`
 
 `std/sql/postgres` has one function:
 
@@ -471,7 +486,7 @@ A `sql.Query` is written as a string literal where one is expected: the values i
 
 `sql.Error` has the fields `kind: sql.ErrorKind`, `message: string` and `code: string`, and `sql.ErrorKind` is an enumeration: `Connection`, `Constraint`, `Syntax`, `Serialization`, `Timeout`, `NoRows`, `Other`. Chapter 11 has programs that use these.
 
-## B.15 `std/hash`, `std/encoding` and `std/crypto`
+## B.16 `std/hash`, `std/encoding` and `std/crypto`
 
 | | |
 | --- | --- |
@@ -518,7 +533,7 @@ bd257f2ad597d10ff095571e6180ddd586bcfb73402d07f479721a258b2497c8 true false
 true false
 ```
 
-## B.16 `std/random`
+## B.17 `std/random`
 
 | | |
 | --- | --- |
@@ -545,7 +560,7 @@ true true
 8 36
 ```
 
-## B.17 `std/log`
+## B.18 `std/log`
 
 | | |
 | --- | --- |
@@ -574,7 +589,7 @@ WARN  nearly full
 ERROR full
 ```
 
-## B.18 `std/test`
+## B.19 `std/test`
 
 | | |
 | --- | --- |

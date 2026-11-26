@@ -1604,6 +1604,497 @@ fn the_example_service_serves() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// A server for the tests of `std/net`, which answers each line as the line's first
+/// word says: well, late, twice, without end, with what is not text, a byte at a time,
+/// half and then nothing, half and then closed. Every answer it gives begins with the
+/// number of the connection, counted from 1 as they are accepted.
+///
+/// It counts the connections it has open, so that a test can see that none is left
+/// when its program is done, and no more at any time than the program may have.
+fn tcp_server() -> (
+    std::net::TcpListener,
+    String,
+    std::sync::Arc<std::sync::atomic::AtomicI64>,
+) {
+    use std::sync::atomic::{AtomicI64, Ordering};
+    /// One fewer when the thread that has the connection is done with it, however.
+    struct Open(std::sync::Arc<AtomicI64>);
+    impl Drop for Open {
+        fn drop(&mut self) {
+            self.0.fetch_sub(1, Ordering::SeqCst);
+        }
+    }
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let address = format!("127.0.0.1:{}", listener.local_addr().unwrap().port());
+    let accepting = listener.try_clone().unwrap();
+    let open = std::sync::Arc::new(AtomicI64::new(0));
+    let counted = open.clone();
+    std::thread::spawn(move || {
+        use std::io::{BufRead, Write};
+        for (before, stream) in accepting.incoming().enumerate() {
+            let Ok(mut stream) = stream else { break };
+            let number = before + 1;
+            counted.fetch_add(1, Ordering::SeqCst);
+            let open = Open(counted.clone());
+            std::thread::spawn(move || {
+                let _open = open;
+                let mut lines = std::io::BufReader::new(stream.try_clone().unwrap());
+                let mut line = String::new();
+                loop {
+                    line.clear();
+                    if lines.read_line(&mut line).unwrap_or(0) == 0 {
+                        return;
+                    }
+                    let (how, text) = line.trim_end().split_once(' ').unwrap_or((line.trim_end(), ""));
+                    let answer = format!("{number} {text}\n");
+                    let pause = |millis| std::thread::sleep(std::time::Duration::from_millis(millis));
+                    let sent = match how {
+                        "echo" => stream.write_all(answer.as_bytes()),
+                        "late" => {
+                            pause(400);
+                            stream.write_all(answer.as_bytes())
+                        }
+                        "twice" => stream.write_all(format!("{answer}{answer}").as_bytes()),
+                        "again" => {
+                            let _ = stream.write_all(answer.as_bytes());
+                            pause(60);
+                            stream.write_all(answer.as_bytes())
+                        }
+                        "long" => stream.write_all("x".repeat(text.parse().unwrap_or(1)).as_bytes()),
+                        "bytes" => stream.write_all(b"\xff\xfe not text\n"),
+                        "slow" => answer.bytes().try_for_each(|byte| {
+                            pause(3);
+                            stream.write_all(&[byte])
+                        }),
+                        "stall" => stream.write_all(&answer.as_bytes()[..3]),
+                        "cut" => {
+                            let _ = stream.write_all(&answer.as_bytes()[..3]);
+                            return;
+                        }
+                        _ => return,
+                    };
+                    if sent.is_err() {
+                        return;
+                    }
+                }
+            });
+        }
+    });
+    (listener, address, open)
+}
+
+/// Waits a moment for the connections a server of the tests has open to be so many.
+fn open_connections(open: &std::sync::atomic::AtomicI64, wanted: impl Fn(i64) -> bool) -> i64 {
+    for _ in 0..100 {
+        if wanted(open.load(std::sync::atomic::Ordering::SeqCst)) {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    open.load(std::sync::atomic::Ordering::SeqCst)
+}
+
+/// A program talks to another over TCP, in conversations that each have a connection
+/// only while they last. A connection is kept for the next conversation if nothing
+/// went wrong on it, and not if the other end answered late, said more than it was
+/// asked, or the program's function failed; what the other end sends is not taken on
+/// trust; and a connection is of no use outside the function it was given to.
+#[test]
+fn a_program_talks_over_tcp() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let (_listener, address, open) = tcp_server();
+    let output = Command::new(env!("CARGO_BIN_EXE_koo"))
+        .arg("run")
+        .arg(root.join("tests/net/talk.koo"))
+        .env("ADDRESS", &address)
+        .env("KOO_LEAKS", "1")
+        .output()
+        .expect("koo runs");
+    let said = String::from_utf8_lossy(&output.stdout).to_string();
+    let expected = "\
+fresh: true false true
+kept: 1 a | 1 b | 1 c
+late: Timeout | 3 after
+swallowed: gave up | 4 after
+more: 4 y | 5 after
+later: 5 q
+later: 6 next
+failed: the program's own | 7 after
+outside: Closed: this connection is over: one is used only inside the function it was given to
+long: TooLong
+bytes: NotText
+slow: 4 then e byte at a time
+stall: Timeout
+cut: Closed
+full: Timeout: every connection to `ADDRESS` was in use for as long as was waited
+addresses: 0 refused for being too many
+once: 13 once
+after all: 14 end
+"
+    .replace("ADDRESS", &address);
+    assert!(
+        output.status.success() && said == expected,
+        "{}\n--- expected\n{expected}--- found\n{said}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    // The program is done, and so is every connection it had.
+    assert_eq!(
+        open_connections(&open, |open| open == 0),
+        0,
+        "connections left open by a program that has ended"
+    );
+}
+
+/// The first conversations of a process, sixteen at once on as many threads: each is
+/// answered with its own answer. (Two threads that came at the same moment to tables
+/// that no thread had used each took the other's connections for those of another
+/// process, and closed them: five runs in sixteen hundred.)
+#[test]
+fn threads_begin_talking_at_once() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let dir = std::env::temp_dir().join(format!("koo-first-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let executable = dir.join("first");
+    let built = Command::new(env!("CARGO_BIN_EXE_koo"))
+        .arg("build")
+        .arg(root.join("tests/net/first.koo"))
+        .arg("-o")
+        .arg(&executable)
+        .output()
+        .expect("koo runs");
+    assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
+    let (_listener, address, _open) = tcp_server();
+    for round in 0..150 {
+        let output = Command::new(&executable).env("ADDRESS", &address).output().unwrap();
+        let said = String::from_utf8_lossy(&output.stdout).to_string();
+        assert!(
+            output.status.success() && said == "16 of 16 right\n",
+            "round {round}:\n{said}{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// The same inside a server: the handlers of every worker, and an actor that with
+/// several workers is in another process, each have their conversations on connections
+/// of their own process, also where the pool was made before there were workers; and a
+/// handler whose client leaves in the middle of a conversation leaves nothing behind
+/// that the next conversation would hear.
+#[test]
+fn a_server_talks_over_tcp() {
+    use std::io::Write;
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let dir = std::env::temp_dir().join(format!("koo-net-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let executable = dir.join("served");
+    let built = Command::new(env!("CARGO_BIN_EXE_koo"))
+        .arg("build")
+        .arg(root.join("tests/net/served.koo"))
+        .arg("-o")
+        .arg(&executable)
+        .output()
+        .expect("koo runs");
+    assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
+    let (_listener, address, open) = tcp_server();
+    for workers in [1, 3] {
+        let port = std::net::TcpListener::bind("127.0.0.1:0")
+            .unwrap()
+            .local_addr()
+            .unwrap()
+            .port();
+        let log = dir.join(format!("log-{workers}.txt"));
+        let child = Command::new(&executable)
+            .env("ADDRESS", &address)
+            .env("PORT", port.to_string())
+            .env("WORKERS", workers.to_string())
+            .env("KOO_LEAKS", "1")
+            .stdout(std::process::Stdio::null())
+            .stderr(std::fs::File::create(&log).unwrap())
+            .spawn()
+            .expect("the server starts");
+        let server = Server(child);
+        for _ in 0..200 {
+            if std::net::TcpStream::connect(("127.0.0.1", port)).is_ok() {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(25));
+        }
+        let body = |answer: String| answer.rsplit("\r\n\r\n").next().unwrap_or("").trim().to_string();
+        // Each answer is its asker's own: what was asked comes back, after the number
+        // of the connection it came on.
+        // The connection `main` had its first conversation on, before there were
+        // workers, is the process's that made it: with several workers, the one that
+        // watches over them, where the actor is, and no handler's.
+        let first = body(get(port, "/first"));
+        let parents = first.split(' ').next().unwrap_or("").to_string();
+        assert!(
+            first.ends_with(" first") && !parents.is_empty(),
+            "with {workers} workers: {first}"
+        );
+        let rounds = |tag: &str| {
+            let asked: Vec<_> = (0..90)
+                .map(|i| {
+                    let path = format!("/{}/{tag}{i}", ["main", "own", "actor"][i % 3]);
+                    std::thread::spawn(move || (path.clone(), get(port, &path)))
+                })
+                .collect();
+            for answer in asked {
+                let (path, answer) = answer.join().unwrap();
+                let (said, wanted) = (body(answer), path.rsplit('/').next().unwrap().to_string());
+                assert!(
+                    said.split_once(' ').is_some_and(|(_, text)| text == wanted),
+                    "with {workers} workers, {path} was answered `{said}`"
+                );
+                let on = said.split(' ').next().unwrap_or("");
+                assert!(
+                    workers == 1 || path.starts_with("/actor/") || on != parents,
+                    "with {workers} workers, {path} was answered on connection {on}, which the process that started the workers made"
+                );
+            }
+        };
+        rounds("a");
+        // Clients that leave while their handlers wait for an answer that is late: the
+        // answers come all the same, to connections that nobody will use again.
+        let left: Vec<_> = (0..12)
+            .map(|i| {
+                let mut stream = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
+                write!(stream, "GET /late/gone{i} HTTP/1.1\r\nHost: test\r\n\r\n").unwrap();
+                stream
+            })
+            .collect();
+        std::thread::sleep(std::time::Duration::from_millis(150));
+        drop(left);
+        rounds("b");
+        std::thread::sleep(std::time::Duration::from_millis(500));
+        rounds("c");
+        // No process has more connections than its pool may, with the one more that
+        // an actor in a server of one process is given at need; and those of the
+        // clients that left are closed.
+        let most = (workers as i64 + 1) * 5;
+        let now = open_connections(&open, |open| open <= most);
+        assert!(
+            now <= most,
+            "with {workers} workers, {now} connections are open, and at most {most} may be"
+        );
+        stop(server, port);
+        let written = std::fs::read_to_string(&log).unwrap();
+        assert!(
+            written.is_empty(),
+            "with {workers} workers the server wrote:\n{written}"
+        );
+        // The server is gone, and so is every connection it had.
+        assert_eq!(
+            open_connections(&open, |open| open == 0),
+            0,
+            "with {workers} workers, connections left open"
+        );
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// What the Redis client says first on a connection: who is asking, with a password
+/// that is written in the address as an address writes it, and of which database;
+/// and that on the first connection of the pool, which was made before anything was
+/// asked, as on every later one. The server is one of the test's own, which answers
+/// `OK` to everything and writes down what it was told.
+#[test]
+fn a_redis_is_greeted() {
+    use std::io::{BufRead, Write};
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let dir = std::env::temp_dir().join(format!("koo-greeting-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::copy(root.join("packages/redis/redis.koo"), dir.join("redis.koo")).unwrap();
+    std::fs::copy(root.join("tests/redis/greeting/main.koo"), dir.join("main.koo")).unwrap();
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let told = std::sync::Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
+    let writing = told.clone();
+    std::thread::spawn(move || {
+        for (number, stream) in listener.incoming().enumerate() {
+            let Ok(mut stream) = stream else { break };
+            let writing = writing.clone();
+            std::thread::spawn(move || {
+                let mut lines = std::io::BufReader::new(stream.try_clone().unwrap());
+                let mut line = String::new();
+                let mut next = |line: &mut String| {
+                    line.clear();
+                    lines.read_line(line).unwrap_or(0) > 0
+                };
+                // A command: `*` and how many words, and for each its length and itself.
+                while next(&mut line) {
+                    let words: usize = line.trim().trim_start_matches('*').parse().unwrap_or(0);
+                    let mut command = Vec::new();
+                    for _ in 0..words {
+                        if !next(&mut line) || !next(&mut line) {
+                            return;
+                        }
+                        command.push(line.trim_end().to_string());
+                    }
+                    writing
+                        .lock()
+                        .unwrap()
+                        .push(format!("{}: {}", number + 1, command.join(" ")));
+                    if stream.write_all(b"+OK\r\n").is_err() {
+                        return;
+                    }
+                }
+            });
+        }
+    });
+    let output = Command::new(env!("CARGO_BIN_EXE_koo"))
+        .arg("run")
+        .arg(&dir)
+        .env("REDIS_URL", format!("redis://koo:p%40ss%3Aw%2F@127.0.0.1:{port}/2"))
+        .env("KOO_LEAKS", "1")
+        .output()
+        .expect("koo runs");
+    assert!(
+        output.status.success() && String::from_utf8_lossy(&output.stdout) == "OK\n",
+        "{}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(
+        *told.lock().unwrap(),
+        ["1: AUTH koo p@ss:w/", "1: SELECT 2", "1: PING", "1: GET k"]
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// The Redis client of `packages/redis`, which is written in Koo on `std/net`, against a
+/// real server: by a program, and by the handlers and an actor of a server with one
+/// worker and with several, where every count must come out exact. It needs a Redis,
+/// whose address is in `KOO_TEST_REDIS`.
+#[test]
+fn a_redis_is_spoken_to() {
+    let Some(url) = std::env::var("KOO_TEST_REDIS").ok().filter(|url| !url.is_empty()) else {
+        eprintln!("KOO_TEST_REDIS is not set: the Redis client is only checked by the compiler");
+        return;
+    };
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let dir = std::env::temp_dir().join(format!("koo-redis-{}", std::process::id()));
+    let run = format!("{}", std::process::id());
+    // A program that uses the client has it in its own directory, which is its package.
+    let package = |name: &str| {
+        let at = dir.join(name);
+        std::fs::create_dir_all(&at).unwrap();
+        std::fs::copy(root.join("packages/redis/redis.koo"), at.join("redis.koo")).unwrap();
+        std::fs::copy(
+            root.join("tests/redis").join(name).join("main.koo"),
+            at.join("main.koo"),
+        )
+        .unwrap();
+        at
+    };
+    let output = Command::new(env!("CARGO_BIN_EXE_koo"))
+        .arg("run")
+        .arg(package("plain"))
+        .env("REDIS_URL", &url)
+        .env("KOO_TEST_RUN", &run)
+        .env("KOO_LEAKS", "1")
+        .output()
+        .expect("koo runs");
+    let said = String::from_utf8_lossy(&output.stdout).to_string();
+    let expected = "\
+none
+hello, world: \u{e9}\r
+$5
+1 42
+true false
+3
+a b c none
+none
+Refused
+Text { value: \"still in step\" }
+none | in the other | in the other | 1
+Refused: `MULTI` changes what a connection means for whoever has it next, and is not sent with `command`
+[Number { value: 43 }, Number { value: 44 }]
+Refused
+45 true
+2
+";
+    assert!(
+        output.status.success() && said == expected,
+        "{}\n--- expected\n{expected}--- found\n{said}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let executable = dir.join("served-redis");
+    let built = Command::new(env!("CARGO_BIN_EXE_koo"))
+        .arg("build")
+        .arg(package("served"))
+        .arg("-o")
+        .arg(&executable)
+        .output()
+        .expect("koo runs");
+    assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
+    for workers in [1, 3] {
+        let port = std::net::TcpListener::bind("127.0.0.1:0")
+            .unwrap()
+            .local_addr()
+            .unwrap()
+            .port();
+        let log = dir.join(format!("log-{workers}.txt"));
+        let child = Command::new(&executable)
+            .env("REDIS_URL", &url)
+            .env("PORT", port.to_string())
+            .env("WORKERS", workers.to_string())
+            .env("KOO_LEAKS", "1")
+            .stdout(std::process::Stdio::null())
+            .stderr(std::fs::File::create(&log).unwrap())
+            .spawn()
+            .expect("the server starts");
+        let server = Server(child);
+        for _ in 0..200 {
+            if std::net::TcpStream::connect(("127.0.0.1", port)).is_ok() {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(25));
+        }
+        let body = |answer: String| answer.rsplit("\r\n\r\n").next().unwrap_or("").trim().to_string();
+        let key = format!("koo-served-{run}-{workers}");
+        // A hundred and twenty counts by handlers and sixty by the actor, all at once
+        // and on one key: each of the numbers from 1 to 180 is answered once.
+        let asked: Vec<_> = (0..180)
+            .map(|i| {
+                let path = format!("/{}/{key}", if i % 3 == 2 { "tally" } else { "hit" });
+                std::thread::spawn(move || get(port, &path))
+            })
+            .collect();
+        let mut counts: Vec<i64> = asked
+            .into_iter()
+            .map(|answer| {
+                let answer = body(answer.join().unwrap());
+                answer
+                    .parse()
+                    .unwrap_or_else(|_| panic!("with {workers} workers a count was answered `{answer}`"))
+            })
+            .collect();
+        counts.sort();
+        assert_eq!(counts, (1..=180).collect::<Vec<i64>>(), "with {workers} workers");
+        // And what each of sixty asks to have kept is what it is given back.
+        let kept: Vec<_> = (0..60)
+            .map(|i| std::thread::spawn(move || (i, get(port, &format!("/keep/koo-kept-{port}-{i}/text{i}")))))
+            .collect();
+        for answer in kept {
+            let (i, answer) = answer.join().unwrap();
+            assert_eq!(body(answer), format!("text{i}"), "with {workers} workers");
+        }
+        assert_eq!(body(get(port, &format!("/drop/{key}"))), "1", "with {workers} workers");
+        for i in 0..60 {
+            get(port, &format!("/drop/koo-kept-{port}-{i}"));
+        }
+        stop(server, port);
+        let written = std::fs::read_to_string(&log).unwrap();
+        assert!(
+            written.is_empty(),
+            "with {workers} workers the server wrote:\n{written}"
+        );
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 /// A database is found by what the environment says of it, where the address leaves it
 /// out: a place that hands a program its database in pieces, the password among them,
 /// is heard as PostgreSQL's own client hears it. What the address says comes first,

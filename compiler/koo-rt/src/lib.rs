@@ -41,6 +41,7 @@ pub mod digest;
 pub mod fiber;
 pub mod http;
 pub mod log;
+pub mod net;
 pub mod pg;
 pub mod thread;
 pub mod tls;
@@ -206,6 +207,7 @@ pub unsafe extern "C" fn koo_exit_main() {
         // connections to its databases are closed.
         actor::at_exit();
         pg::at_exit();
+        net::at_exit();
         client::at_exit();
         // The message of the last input or output error is the library's own, and so is a
         // string that was read from JSON and never collected: each thread's.

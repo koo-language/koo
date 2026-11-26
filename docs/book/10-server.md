@@ -561,7 +561,58 @@ Headers go in a map, `headers: ["Authorization": "Bearer {token}"]`, and `http.f
 
 A URL that begins `https` is asked over TLS, and the server's certificate must be one that the system's authorities vouch for and must name the host: there is no way to ask for less. The TLS is the one that the database package uses, with what Section 11.7 says of it.
 
-## 10.9 What Is Not There
+## 10.9 Other Programs Over TCP
+
+Not everything a service talks to speaks HTTP. A cache, a queue, a search engine each have a way of talking of their own, over a connection that carries bytes both ways. The package `std/net` gives a program such connections, and a little more than that, which is what makes them safe to use from a server.
+
+A program has a connection only inside a function it gives. One conversation, on a connection of its own:
+
+    import std/net
+
+    answer := net.connect("cache.internal:6379", conn -> {
+        conn.write("PING\r\n")?
+        return conn.read_line()?
+    })?
+
+`net.connect` makes the connection, calls the function with it, and closes it when the function returns, whether with a value or with a failure. There is so no connection to forget to close, on any path; and the `conn` is of no use once the function is over: kept somewhere and used later, it fails, with the kind `Closed`.
+
+A service has many conversations with the same few places, and does not make a connection for each. It makes a *pool*, once, as it starts:
+
+    cache := net.pool("cache.internal:6379", size: 10)?
+
+and each conversation takes one of the pool's connections for as long as it lasts:
+
+    answer := cache.with(conn -> {
+        conn.write("PING\r\n")?
+        return conn.read_line()?
+    })?
+
+`net.pool` makes one connection at once, so that an address that leads nowhere is known when the service starts and not when the first client asks. `with` takes a connection that is not in use, or makes one if the pool has fewer than `size`, or waits for one to be given back, for as long as the pool's `wait:`, thirty seconds unless it is said; and gives it back when the function returns. (A connection that has to be made is given a second at least, whatever the wait.)
+
+The danger of a pool is that one conversation hears another's answer: an answer that arrives after its asker gave up is read by whoever asks next. `std/net` does not know what is spoken over a connection, so it goes by what it can see, and keeps a connection for the next conversation only if nothing it can see is wrong. A connection is closed, and not kept, if the function failed; if anything on it failed, also where the function made nothing of the failure and returned as if all were well; if the other end has sent more than was read; or if, when it is next taken, the other end has said something meanwhile, or has gone. What it cannot see is a function that asks and returns without waiting for the answer, while the answer is still on its way: a conversation reads the answers to what it asked.
+
+Some protocols begin by saying something that every later conversation on the connection relies on: who is asking, or which of several databases is meant. Two things are there for them. `conn.fresh()` says whether anything has been said on the connection before this conversation, so that the greeting is given once, on a connection that is new. And a pool has a `name:`; pools to one address under different names keep their connections apart, so that a connection that was told one thing is never given to a conversation that expects another:
+
+    orders := net.pool(address, name: "orders")?
+    audit := net.pool(address, name: "audit")?
+
+A connection has five things that can be done with it:
+
+| | |
+| --- | --- |
+| `conn.write(text)`, `conn.write_bytes(data)` | sends text, or bytes |
+| `conn.read_line(most: 65536)` | a line, without its ending; one longer than `most` bytes is a failure |
+| `conn.read_exact(count)` | exactly so many bytes |
+| `conn.read(most: 65536)` | whatever comes next: at least one byte, at most `most` |
+| `conn.fresh()` | whether nothing had been said on the connection when this conversation began |
+
+Each of the first four takes a `timeout:`, thirty seconds unless it is said, and fails with a `net.Error`, whose `kind` is `Address`, `Connection`, `Timeout`, `Closed`, `TooLong` or `NotText`. What the other end says about how much it will send is not taken on trust: a line has a longest length, and the bytes of `read_exact` are kept as they arrive, so that a peer which announces a hundred million bytes and sends none costs nothing but the wait, and one that announces more than 256 MB is refused at once.
+
+A handler that waits in a conversation is left where it is, like one that waits for a database, while its worker answers other requests; and a handler whose client has left, or whose time is over (Section 10.7), is not let wait here either, and its connection is closed. A pool is a value, an address with a name and two numbers, and may be given to an actor or kept in a structure; the connections themselves belong to the process that made them, so that each worker of a server has its own, also to a pool that `main` made before there were workers.
+
+In the directory `packages/redis` of Koo's source there is a client for Redis written this way, in some three hundred and fifty lines of Koo: `redis_connect`, and `get`, `set`, `incr`, `expire`, lists, several commands done as one, and any command by its name. Until one package of a program can import another, it is used by copying the file beside the program's own.
+
+## 10.10 What Is Not There
 
 The server listens at every address of its machine, of both kinds, IPv4 and IPv6, where the machine has both. The client and the database package reach both kinds as well. A host that has an address of the older kind is reached at that one, and a host that has only an IPv6 address at that; and an IPv6 address written out stands in brackets, in the address of a server as in that of a database: `http://[::1]:8080/`, `postgres://[::1]:5432/shop`.
 

@@ -1522,6 +1522,7 @@ pub unsafe extern "C" fn koo_actor_recover() {
         (*me).json_wire = false;
         (*me).json_base = 0;
         crate::pg::abandon();
+        crate::net::abandon();
         let mark = if (*me).guard.is_null() { 0 } else { (*(*me).guard).mark };
         koo_guard_done();
         while (*me).held_len > mark {

@@ -48,6 +48,9 @@ mod stub {
     pub unsafe fn cut_short() -> bool {
         false
     }
+    pub unsafe fn waits_elsewhere(_: usize) -> bool {
+        false
+    }
     #[unsafe(no_mangle)]
     pub unsafe extern "C" fn koo_http_given_up() -> bool {
         false
@@ -2219,6 +2222,24 @@ mod imp {
             PLACES[here].doing = Doing::Waiting;
             go_to(next);
             PLACES[here].doing = Doing::Handling;
+        }
+    }
+
+    /// Whether what holds something is a handler of this very thread that is waiting
+    /// somewhere, while the thread itself cannot be left: asked by a thread that would
+    /// wait for the thing to be given back, by an actor's method that runs in a
+    /// server of one process, say. It would wait for ever, or for as long as it is
+    /// given: the handler that has the thing goes on only when this thread does.
+    #[allow(static_mut_refs)]
+    pub unsafe fn waits_elsewhere(holder: usize) -> bool {
+        unsafe {
+            SERVER.load(core::sync::atomic::Ordering::Acquire) == thread::this_thread()
+                && SIDE_BY_SIDE
+                && !may_leave()
+                && PLACES[..PLACE_COUNT]
+                    .iter()
+                    .enumerate()
+                    .any(|(place, at)| place != HERE && at.thread as usize == holder && at.doing != Doing::Driving)
         }
     }
 

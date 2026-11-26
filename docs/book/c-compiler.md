@@ -159,9 +159,9 @@ The [specification](../../SPEC.md) describes more than the compiler builds. For 
 
 *Concurrency.* Of the concurrency that the specification describes, actors are built, as Chapter 9 describes them, with the limits listed in Section 9.11. Tasks, `spawn`, `scope`, channels and `select` are not.
 
-*Packages.* A program is one package. One package of your own cannot yet import another, and there is no package manager. The standard packages are `std/io`, `std/os`, `std/time`, `std/http`, `std/sql`, `std/sql/postgres`, `std/hash`, `std/encoding`, `std/crypto`, `std/random`, `std/log` and `std/test`.
+*Packages.* A program is one package. One package of your own cannot yet import another, and there is no package manager. The standard packages are `std/io`, `std/os`, `std/time`, `std/http`, `std/sql`, `std/sql/postgres`, `std/hash`, `std/encoding`, `std/crypto`, `std/random`, `std/log`, `std/net` and `std/test`.
 
-*The library.* There are no sockets for a program's own use, only the clients for HTTP and PostgreSQL; no digest but SHA-256; no encryption except of those clients' connections; and no way to read a file except whole. Section 11.8 lists what `std/sql` leaves out.
+*The library.* A program connects to others over TCP (Section 10.9), and cannot yet listen for connections of its own, except as a server of HTTP; nor are there datagrams. There is no digest but SHA-256; no encryption except of those clients' connections; and no way to read a file except whole. Section 11.8 lists what `std/sql` leaves out.
 
 *Targets.* The compiler runs on macOS on arm64, and on Linux on x86-64 and arm64, and builds for the machine it runs on; with `--target` it builds for either Linux from any of the three (Section C.1). It does not build for macOS from Linux, for Windows, or for WebAssembly.
 

@@ -1,0 +1,52 @@
+// A server whose handlers and actors talk over TCP to the server of the tests
+// (`a_server_talks_over_tcp`): through a pool that `main` made before the server started
+// its workers, through one a handler makes, and through one an actor has, which with
+// several workers lives in another process than the handlers.
+import std/http
+import std/net
+import std/os
+
+actor Speaker {
+    pool: net.Pool
+
+    fn say(text: string) -> string {
+        answer := pool.with(conn -> {
+            conn.write("echo {text}\n")?
+            return conn.read_line(timeout: 5s)?
+        })
+        match answer {
+            line => return line
+            ! e => return "{e.kind}"
+        }
+    }
+}
+
+fn say(pool: net.Pool, line: string) -> string {
+    answer := pool.with(conn -> {
+        conn.write("{line}\n")?
+        return conn.read_line(timeout: 5s)?
+    })
+    match answer {
+        text => return text
+        ! e => return "{e.kind}"
+    }
+}
+
+fn main() ! net.Error | http.Error {
+    address := os.env("ADDRESS") else "127.0.0.1:1"
+    pool := net.pool(address, size: 4)?
+    // A conversation before there are workers: its connection is kept, by this process.
+    first := say(pool, "echo first")
+    speaker := Speaker.start(pool: pool)
+    var app := http.App.new()
+    app.get("/first", req -> http.text("{first}\n"))
+    app.get("/main/:text", req -> http.text("{say(pool, "echo {req.param("text")}")}\n"))
+    app.get("/own/:text", req -> {
+        mine := net.pool(address, size: 4) else e => return http.text("{e.kind}\n")
+        return http.text("{say(mine, "echo {req.param("text")}")}\n")
+    })
+    app.get("/actor/:text", req -> http.text("{speaker.say(req.param("text"))}\n"))
+    // An answer that is half a second in coming, for a client that may not wait for it.
+    app.get("/late/:text", req -> http.text("{say(pool, "late {req.param("text")}")}\n"))
+    app.serve(workers: int.parse(os.env("WORKERS") else "") else 1)?
+}

@@ -1,0 +1,8 @@
+// What the Redis client says first on a connection, to a server of the tests that
+// writes down what it is told (`a_redis_is_greeted` in the tests).
+import std/os
+
+fn main() ! RedisError {
+    cache := redis_connect(os.env("REDIS_URL") else "", pool: 2)?
+    print("{cache.get("k")?}")
+}

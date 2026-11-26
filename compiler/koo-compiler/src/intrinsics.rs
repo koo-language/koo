@@ -344,6 +344,58 @@ pub const INTRINSICS: &[Intrinsic] = &[
         params: &[I::Str],
         ret: I::Cell,
     },
+    // Conversations over TCP (`std/net`, `koo-rt/src/net.rs`). A connection is a number,
+    // and what a call returns is 0 or the kind of failure.
+    Intrinsic {
+        name: "net_take",
+        params: &[I::Str, I::Str, I::Int, I::Int],
+        ret: I::Int,
+    },
+    Intrinsic {
+        name: "net_give",
+        params: &[I::Int, I::Bool],
+        ret: I::Unit,
+    },
+    Intrinsic {
+        name: "net_fresh",
+        params: &[I::Int],
+        ret: I::Bool,
+    },
+    Intrinsic {
+        name: "net_write",
+        params: &[I::Int, I::Str, I::Int],
+        ret: I::Int,
+    },
+    Intrinsic {
+        name: "net_write_bytes",
+        params: &[I::Int, I::Bytes, I::Int],
+        ret: I::Int,
+    },
+    Intrinsic {
+        name: "net_read",
+        params: &[I::Int, I::Int, I::Int],
+        ret: I::Int,
+    },
+    Intrinsic {
+        name: "net_read_exact",
+        params: &[I::Int, I::Int, I::Int],
+        ret: I::Int,
+    },
+    Intrinsic {
+        name: "net_read_line",
+        params: &[I::Int, I::Int, I::Int],
+        ret: I::Int,
+    },
+    Intrinsic {
+        name: "net_taken",
+        params: &[I::Int],
+        ret: I::Bytes,
+    },
+    Intrinsic {
+        name: "net_taken_text",
+        params: &[I::Int],
+        ret: I::Str,
+    },
     // Logging (`std/log`, `koo-rt/src/log.rs`).
     Intrinsic {
         name: "log_on",

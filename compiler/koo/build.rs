@@ -17,6 +17,7 @@ fn main() {
         "codec.rs",
         "client.rs",
         "log.rs",
+        "net.rs",
         "pg.rs",
         "thread.rs",
         "tls.rs",

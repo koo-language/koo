@@ -1,0 +1,27 @@
+// A server whose handlers and whose actor use a Redis, each through the client of
+// `packages/redis` (`a_redis_is_spoken_to` in the tests copies the client beside this
+// file). With several workers the actor is in another process than the handlers.
+import std/http
+import std/os
+
+actor Tally {
+    cache: Redis
+
+    fn bump(key: string) -> int ! RedisError {
+        return cache.incr(key)?
+    }
+}
+
+fn main() ! RedisError | http.Error {
+    cache := redis_connect(os.env("REDIS_URL") else "redis://localhost:6379", pool: 4)?
+    tally := Tally.start(cache: cache)
+    var app := http.App.new()
+    app.get("/hit/:key", req -> http.text("{cache.incr(req.param("key"))?}\n"))
+    app.get("/tally/:key", req -> http.text("{tally.bump(req.param("key"))?}\n"))
+    app.get("/keep/:key/:text", req -> {
+        cache.set(req.param("key"), req.param("text"), ttl: 1min)?
+        return http.text("{cache.get(req.param("key"))? else "-"}\n")
+    })
+    app.get("/drop/:key", req -> http.text("{cache.del([req.param("key")])?}\n"))
+    app.serve(workers: int.parse(os.env("WORKERS") else "") else 1)?
+}
