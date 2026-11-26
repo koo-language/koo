@@ -21,6 +21,15 @@ naming it in `KOO_RUNTIME`, and runs every test program that has actors or threa
 
     sh tests/stress/races.sh target/release/koo
 
+`limits.sh` runs the same server in a container that is allowed forty processes, where
+a thread counts as one, and checks that the process which watches the workers leaves
+room under the limit to start a worker again, and does when one is killed: both where
+the server sees its own control group as the top one, and where it sees the groups of
+its whole machine and its own is further in. It needs Docker, and an image with a Rust
+toolchain in it.
+
+    sh tests/stress/limits.sh
+
 ## What found the defects
 
 These are the programs and scripts with which several independent searches for

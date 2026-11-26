@@ -669,20 +669,91 @@ unsafe fn numbers(path: &core::ffi::CStr) -> Option<[i64; 2]> {
     }
 }
 
-/// How many more processes and threads the program's control group may have, on Linux,
-/// where it has a limit on them and says so. A thread counts as a process does.
+/// The path of the program's own control group, as the system gives it for the process:
+/// `0::/path` where there is one tree of groups, and `5:pids:/path` where each thing
+/// that is limited has a tree of its own, of which `of` says which is meant. A program
+/// in a container mostly sees its own group as the top one, and its path is `/`; one
+/// that sees the groups of its whole machine has its own further in.
+#[cfg(target_os = "linux")]
+unsafe fn own_group<'a>(own: &'a mut [u8; 4096], of: &[u8]) -> Option<&'a [u8]> {
+    unsafe extern "C" {
+        fn open(path: *const u8, flags: i32, ...) -> i32;
+        fn read(fd: i32, buffer: *mut u8, count: usize) -> isize;
+        fn close(fd: i32) -> i32;
+    }
+    unsafe {
+        let fd = open(c"/proc/self/cgroup".as_ptr() as *const u8, 0);
+        if fd < 0 {
+            return None;
+        }
+        let len = read(fd, own.as_mut_ptr(), own.len()).max(0) as usize;
+        close(fd);
+        own[..len]
+            .split(|byte| *byte == b'\n')
+            .find_map(|line| {
+                let mut parts = line.splitn(3, |byte| *byte == b':');
+                let (_, what, path) = (parts.next()?, parts.next()?, parts.next()?);
+                let meant = if of.is_empty() {
+                    what.is_empty()
+                } else {
+                    what.split(|byte| *byte == b',').any(|one| one == of)
+                };
+                meant.then_some(path)
+            })
+            .filter(|path| path.first() == Some(&b'/') && path.len() < 300 && !path.contains(&0))
+    }
+}
+
+/// The numbers in the file `name` of the control group at `path`, in the tree `tree`:
+/// `/sys/fs/cgroup` + `tree` + `path` + `/` + `name`.
+#[cfg(target_os = "linux")]
+unsafe fn of_group(tree: &[u8], path: &[u8], name: &[u8]) -> Option<[i64; 2]> {
+    let mut file = [0u8; 448];
+    let mut end = 0;
+    for part in [&b"/sys/fs/cgroup"[..], tree, path, b"/", name] {
+        if end + part.len() >= file.len() {
+            return None;
+        }
+        file[end..end + part.len()].copy_from_slice(part);
+        end += part.len();
+    }
+    let file = core::ffi::CStr::from_bytes_until_nul(&file).ok()?;
+    unsafe { numbers(file) }
+}
+
+/// How many more processes and threads the program may have, on Linux, where a control
+/// group it is in has a limit on them and says so: the least that any of them leaves,
+/// since a limit binds everything inside the group that has it. A thread counts as a
+/// process does.
 #[cfg(target_os = "linux")]
 fn processes_left() -> Option<i64> {
     unsafe {
-        let one = |path| numbers(path).map(|found| found[0]);
-        let (most, now) = match one(c"/sys/fs/cgroup/pids.max") {
-            Some(most) => (most, one(c"/sys/fs/cgroup/pids.current")?),
-            None => (
-                one(c"/sys/fs/cgroup/pids/pids.max")?,
-                one(c"/sys/fs/cgroup/pids/pids.current")?,
-            ),
+        let mut left: Option<i64> = None;
+        let mut group = |tree: &[u8], path: &[u8]| {
+            let one = |name: &[u8]| of_group(tree, path, name).map(|found| found[0]);
+            if let (Some(most), Some(now)) = (one(b"pids.max"), one(b"pids.current"))
+                && most >= 0
+                && now >= 0
+            {
+                left = Some(left.map_or(most - now, |least| least.min(most - now)));
+            }
         };
-        if most < 0 || now < 0 { None } else { Some(most - now) }
+        // The group the program sees as the top one, which in a container is its own.
+        group(b"", b"");
+        group(b"/pids", b"");
+        // And where it sees more than its own, its own and every group that one is in.
+        for (tree, of) in [(&b""[..], &b""[..]), (b"/pids", b"pids")] {
+            let mut own = [0u8; 4096];
+            let Some(mut path) = own_group(&mut own, of) else {
+                continue;
+            };
+            while path.len() > 1 {
+                group(tree, path);
+                let above = path.iter().rposition(|byte| *byte == b'/').unwrap_or(0);
+                path = &path[..above];
+            }
+        }
+        left
     }
 }
 
@@ -705,9 +776,6 @@ pub static RESERVE: AtomicUsize = AtomicUsize::new(0);
 fn allowed() -> usize {
     unsafe extern "C" {
         fn sched_getaffinity(process: i32, size: usize, mask: *mut u8) -> i32;
-        fn open(path: *const u8, flags: i32, ...) -> i32;
-        fn read(fd: i32, buffer: *mut u8, count: usize) -> isize;
-        fn close(fd: i32) -> i32;
     }
     unsafe {
         let mut most = usize::MAX;
@@ -732,30 +800,18 @@ fn allowed() -> usize {
             most = most.min(((time + period - 1) / period) as usize);
         }
         // Where the program sees the control groups of its whole machine, its own is
-        // further in, at the path the system gives for the process: `0::/path`.
-        let mut own = [0u8; 512];
-        let fd = open(c"/proc/self/cgroup".as_ptr() as *const u8, 0);
-        if fd >= 0 {
-            let len = read(fd, own.as_mut_ptr(), own.len()).max(0) as usize;
-            close(fd);
-            let path = own[..len]
-                .split(|byte| *byte == b'\n')
-                .find_map(|line| line.strip_prefix(b"0::"))
-                .filter(|path| path.len() > 1 && path.len() < 400 && !path.contains(&0));
-            if let Some(path) = path {
-                let mut file = [0u8; 448];
-                let (before, after) = (b"/sys/fs/cgroup", b"/cpu.max\0");
-                file[..before.len()].copy_from_slice(before);
-                file[before.len()..before.len() + path.len()].copy_from_slice(path);
-                let end = before.len() + path.len();
-                file[end..end + after.len()].copy_from_slice(after);
-                if let Ok(file) = core::ffi::CStr::from_bytes_until_nul(&file)
-                    && let Some([time, period]) = numbers(file)
+        // further in, and a limit on any group that one is in is a limit on it.
+        let mut own = [0u8; 4096];
+        if let Some(mut path) = own_group(&mut own, b"") {
+            while path.len() > 1 {
+                if let Some([time, period]) = of_group(b"", path, b"cpu.max")
                     && time > 0
                     && period > 0
                 {
                     most = most.min(((time + period - 1) / period) as usize);
                 }
+                let above = path.iter().rposition(|byte| *byte == b'/').unwrap_or(0);
+                path = &path[..above];
             }
         }
         most
