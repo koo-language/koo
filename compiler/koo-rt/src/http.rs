@@ -2309,7 +2309,7 @@ mod imp {
     #[allow(static_mut_refs)]
     unsafe fn a_place_to_spare() -> bool {
         unsafe {
-            (PLACE_COUNT < MOST_PLACES && !ENDING)
+            (PLACE_COUNT < MOST_PLACES && !ENDING && thread::room())
                 || (0..PLACE_COUNT).any(|place| place != HERE && PLACES[place].doing == Doing::Parked)
         }
     }

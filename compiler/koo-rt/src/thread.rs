@@ -242,6 +242,14 @@ static KEY: AtomicUsize = AtomicUsize::new(0);
 static REGISTRY: Lock = Lock::new();
 static THREADS: [AtomicPtr<Thread>; MOST_THREADS] = [const { AtomicPtr::new(core::ptr::null_mut()) }; MOST_THREADS];
 static THREAD_COUNT: AtomicUsize = AtomicUsize::new(0);
+/// Threads that have been started and have not yet taken their place in the table.
+static STARTING: AtomicUsize = AtomicUsize::new(0);
+
+/// Whether the table of threads has room for another, beside those on their way to it
+/// and a few kept for the process's own use.
+pub fn room() -> bool {
+    THREAD_COUNT.load(Relaxed) + STARTING.load(Relaxed) + 4 < MOST_THREADS
+}
 
 /// What the calling thread has of its own.
 #[inline]
@@ -278,6 +286,8 @@ unsafe fn join<'a>() -> &'a mut Thread {
         (*block).index = index as u32 + 1;
         THREADS[index].store(block, Release);
         THREAD_COUNT.store(index + 1, Release);
+        // One of those that were on their way is here, if any was.
+        let _ = STARTING.fetch_update(Relaxed, Relaxed, |starting| starting.checked_sub(1));
         pthread_setspecific(KEY.load(Relaxed) - 1, block as *const u8);
         REGISTRY.unlock();
         &mut *block
@@ -347,12 +357,19 @@ pub unsafe fn after_fork() {
         (*mine).index = 1;
         THREADS[0].store(mine, Release);
         THREAD_COUNT.store(1, Release);
+        STARTING.store(0, Release);
     }
 }
 
 /// Starts a thread that runs `work` for as long as the program does.
 pub unsafe fn start(work: extern "C" fn(*mut u8) -> *mut u8) -> bool {
     unsafe {
+        // A thread for which the table has no room is not started: whoever asked for it
+        // does without, which every one of them can.
+        if !room() {
+            return false;
+        }
+        STARTING.fetch_add(1, Relaxed);
         let mut attributes = [0u64; 16];
         let attributes = attributes.as_mut_ptr() as *mut u8;
         pthread_attr_init(attributes);
@@ -363,6 +380,8 @@ pub unsafe fn start(work: extern "C" fn(*mut u8) -> *mut u8) -> bool {
         pthread_attr_destroy(attributes);
         if made {
             pthread_detach(thread);
+        } else {
+            STARTING.fetch_sub(1, Relaxed);
         }
         made
     }

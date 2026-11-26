@@ -794,11 +794,11 @@ unsafe fn leave_letter(id: i64, job: *mut Job, wait: Option<&[u8]>) -> bool {
 
 /// Starts the workers, the first time there is something for them to do.
 #[cold]
-unsafe fn start_workers() {
+unsafe fn start_workers() -> bool {
     unsafe {
         gates();
         if POOL.compare_exchange(0, 1, AcqRel, Acquire).is_err() {
-            return;
+            return true;
         }
         let wanted = getenv(c"KOO_THREADS".as_ptr() as *const u8);
         let wanted = if wanted.is_null() {
@@ -818,13 +818,17 @@ unsafe fn start_workers() {
             }
         }
         if started == 0 {
-            fatal(b"koo: the threads that run actors could not be started\n");
+            // Not one could be started, as where a container is allowed no more
+            // threads: whoever tells an actor runs what it told, until one can.
+            POOL.store(0, Release);
+            return false;
         }
         WORKERS.store(started, SeqCst);
         // Without a monitor a method that runs for ever keeps a worker, and with enough
         // of them nothing else runs; that is all that is lost if it cannot be started.
         thread::start(monitor);
         POOL.store(2, Release);
+        true
     }
 }
 
@@ -851,14 +855,28 @@ unsafe fn press() {
 #[allow(static_mut_refs)]
 unsafe fn enqueue(index: u32) {
     unsafe {
-        if POOL.load(Acquire) != 2 {
-            start_workers();
-        }
+        let pool = POOL.load(Acquire) == 2 || start_workers();
         RUNNING.lock();
         RUN.push(index);
         let len = RUN.len;
         QUEUE_LEN.store(len, SeqCst);
         RUNNING.unlock();
+        if !pool {
+            // With no thread to run what actors are told, the thread that told runs
+            // what is waiting, this actor's mail and any other's.
+            let me = me();
+            loop {
+                RUNNING.lock();
+                if RUN.len == 0 {
+                    RUNNING.unlock();
+                    return;
+                }
+                let waiting = RUN.pop();
+                QUEUE_LEN.store(RUN.len, SeqCst);
+                RUNNING.unlock();
+                serve(waiting, me);
+            }
+        }
         if LOOKING.load(SeqCst) > 0 {
             // A worker that is looking will find it.
             return;
@@ -1029,39 +1047,46 @@ extern "C" fn work(_: *mut u8) -> *mut u8 {
         landing_stack();
         loop {
             let index = dequeue();
-            let slot = slot_at(index);
-            let mut word = (*slot).word.fetch_and(!QUEUED, AcqRel) & !QUEUED;
-            // Whoever has the actor runs its mail, or sends it back here when it lets go.
-            let mine = loop {
-                if word & LOCKED != 0 {
-                    break false;
-                }
-                match (*slot)
-                    .word
-                    .compare_exchange_weak(word, word | LOCKED, Acquire, Relaxed)
-                {
-                    Ok(_) => break true,
-                    Err(now) => word = now,
-                }
-            };
-            if !mine {
-                continue;
-            }
-            (*slot).holder.store(me.index, Release);
-            handed(slot);
-            hold(
-                me,
-                Held {
-                    slot: index,
-                    taken: false,
-                    told: true,
-                    state: core::ptr::null_mut(),
-                },
-            );
-            run_mail(slot, me, BATCH);
-            me.held_len -= 1;
-            unlock(slot, index);
+            serve(index, me);
         }
+    }
+}
+
+/// Runs the mail of an actor that was waiting for a thread, if nobody has the actor.
+unsafe fn serve(index: u32, me: &mut Thread) {
+    unsafe {
+        let slot = slot_at(index);
+        let mut word = (*slot).word.fetch_and(!QUEUED, AcqRel) & !QUEUED;
+        // Whoever has the actor runs its mail, or sends it back here when it lets go.
+        let mine = loop {
+            if word & LOCKED != 0 {
+                break false;
+            }
+            match (*slot)
+                .word
+                .compare_exchange_weak(word, word | LOCKED, Acquire, Relaxed)
+            {
+                Ok(_) => break true,
+                Err(now) => word = now,
+            }
+        };
+        if !mine {
+            return;
+        }
+        (*slot).holder.store(me.index, Release);
+        handed(slot);
+        hold(
+            me,
+            Held {
+                slot: index,
+                taken: false,
+                told: true,
+                state: core::ptr::null_mut(),
+            },
+        );
+        run_mail(slot, me, BATCH);
+        me.held_len -= 1;
+        unlock(slot, index);
     }
 }
 
@@ -2045,9 +2070,7 @@ mod remote {
             });
             let mut count = 1;
             SERVED.lock();
-            // With no room for another connection, none is looked for: those that wait
-            // to be taken wait until one of the others ends.
-            fds[0].fd = if CONN_COUNT < MOST_CLIENTS { LISTENER } else { -1 };
+            fds[0].fd = LISTENER;
             // A connection that is being answered, or whose message waits its turn, is
             // watched too: its next message may arrive before this thread looks again,
             // and would otherwise lie there until something else woke the thread.
@@ -2065,17 +2088,44 @@ mod remote {
             // a worker whose handlers all ask at once makes as many.
             let mut waiting = fds[0].revents != 0;
             while waiting {
-                let fd = accept(LISTENER, core::ptr::null_mut(), core::ptr::null_mut());
+                // Where there is no room for another connection, in the table or among
+                // the files the process may have open, one that nothing is using gives
+                // way: a worker keeps connections by for the next that asks, and will
+                // make another when it finds this one gone. If every one is in use,
+                // those that wait to be taken wait until one is done.
+                let made_room = |_: ()| -> bool {
+                    SERVED.lock();
+                    let idle = CONNS[..CONN_COUNT].iter().position(|conn| {
+                        let mut byte = [0u8; 1];
+                        conn.doing == IDLE
+                            && conn.got == 0
+                            && recv(conn.fd, byte.as_mut_ptr(), 1, MSG_PEEK | MSG_DONTWAIT) < 0
+                            && error() == EAGAIN
+                    });
+                    if let Some(idle) = idle {
+                        drop_conn(idle);
+                    }
+                    SERVED.unlock();
+                    idle.is_some()
+                };
+                if CONN_COUNT >= MOST_CLIENTS && !made_room(()) {
+                    break;
+                }
+                let mut fd = accept(LISTENER, core::ptr::null_mut(), core::ptr::null_mut());
+                // 23 and 24 are the system's words for no more files.
+                if fd < 0 && matches!(error(), 23 | 24) && made_room(()) {
+                    fd = accept(LISTENER, core::ptr::null_mut(), core::ptr::null_mut());
+                }
                 let mut room = false;
                 if fd >= 0 {
                     SERVED.lock();
                     CONNS[CONN_COUNT] = Conn { fd, ..NO_CONN };
                     CONN_COUNT += 1;
-                    room = CONN_COUNT < MOST_CLIENTS;
+                    room = true;
                     SERVED.unlock();
                 } else if error() != EINTR && error() != EAGAIN {
-                    // The process has no more files to open, or the like: a moment is
-                    // let pass, so that the asking again is not without end.
+                    // Every connection is in use: a moment is let pass, so that the
+                    // asking again is not without end.
                     let (wanted, mut left) = ([0i64, 10_000_000], [0i64; 2]);
                     nanosleep(&wanted, &mut left);
                 }
