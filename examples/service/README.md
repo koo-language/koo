@@ -42,7 +42,7 @@ The service has been run so on [Control Plane](https://controlplane.com), where 
 
 What was seen there, with sixteen clients placing orders and reading each back through whichever copy answered, some 1,400 orders a second:
 
-- Both copies replaced one after the other, twice, while the clients went on: 489,775 orders placed and 489,775 read back, each as it was placed, and not one request refused, cut off or answered wrongly. Each copy that was told to stop answered what it had in hand and logged that it had stopped, well inside the time the platform gives.
+- Both copies replaced one after the other, twice, while the clients went on: 489,775 orders placed and 489,775 read back, each as it was placed, and not one request refused, cut off or answered wrongly. The platform takes a copy out of use before it tells it to stop, so each copy was idle when it was told, stopped at once, and logged that it had: what was seen is that the service keeps to the platform's way of replacing it, and not how it answers what it has in hand when it is stopped in the middle, which the tests of Koo itself look at.
 - The database restarted while the clients went on: the service answered 500 at once while there was no database, the platform took both copies out of use when `/healthz` said so, and the first check after the database was back put them in again. Nothing of the service was restarted, and no request failed after that.
 
 ## What to set

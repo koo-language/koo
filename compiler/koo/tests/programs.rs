@@ -356,6 +356,17 @@ fn examples_run() {
 /// The tests make and drop tables whose names begin with `koo_`, and a schema named
 /// `koo_book`; without the variable they are skipped.
 fn test_database() -> Option<String> {
+    // What the environment says of a database, by the names PostgreSQL's client knows,
+    // is what an address that leaves a part out has for it: whoever runs the tests may
+    // have such variables set, and the programs the tests run are not to hear them.
+    static CLEARED: std::sync::Once = std::sync::Once::new();
+    CLEARED.call_once(|| {
+        for name in ["PGHOST", "PGPORT", "PGUSER", "PGPASSWORD", "PGDATABASE", "PGSSLMODE"] {
+            // (The tests of this file read and change the environment only through
+            // the standard library, which does both one at a time.)
+            unsafe { std::env::remove_var(name) };
+        }
+    });
     std::env::var("KOO_TEST_POSTGRES").ok().filter(|url| !url.is_empty())
 }
 
