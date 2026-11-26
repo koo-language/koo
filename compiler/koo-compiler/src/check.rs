@@ -765,7 +765,38 @@ impl<'a> Checker<'a> {
             }
         }
 
-        // 2. Aliases and named error sets, which may name the types above.
+        // 2. Aliases and named error sets, which may name the types above. A name for a
+        // type that is itself another name, declared further down, waits for that one.
+        let mut later: Vec<&str> = file
+            .items
+            .iter()
+            .filter_map(|item| match &item.kind {
+                ast::ItemKind::Type(decl) if matches!(decl.body, ast::TypeBody::Alias(_)) => {
+                    Some(decl.name.name.as_str())
+                }
+                _ => None,
+            })
+            .collect();
+        loop {
+            let waiting = later.len();
+            for item in &file.items {
+                if let ast::ItemKind::Type(decl) = &item.kind
+                    && let ast::TypeBody::Alias(aliased) = &decl.body
+                    && decl.type_params.is_empty()
+                    && later.contains(&decl.name.name.as_str())
+                    && !names_one_of(aliased, &later, &decl.name.name)
+                {
+                    let ty = self.resolve_type(aliased);
+                    if !self.type_names.contains_key(&decl.name.name) {
+                        self.type_names.insert(decl.name.name.clone(), TypeName::Alias(ty));
+                    }
+                    later.retain(|name| *name != decl.name.name);
+                }
+            }
+            if later.len() == waiting {
+                break;
+            }
+        }
         for item in &file.items {
             match &item.kind {
                 ast::ItemKind::Type(decl)
@@ -778,12 +809,14 @@ impl<'a> Checker<'a> {
                     ast::TypeBody::Struct(_) if decl.resource => self.unsupported(decl.name.span, "resources are"),
                     ast::TypeBody::Struct(_) => {}
                     ast::TypeBody::Distinct(_) => self.unsupported(decl.name.span, "distinct types are"),
-                    ast::TypeBody::Alias(aliased) => {
+                    // What is left names itself, by one way or another, and is said so.
+                    ast::TypeBody::Alias(aliased) if later.contains(&decl.name.name.as_str()) => {
                         let ty = self.resolve_type(aliased);
                         if !self.type_names.contains_key(&decl.name.name) {
                             self.type_names.insert(decl.name.name.clone(), TypeName::Alias(ty));
                         }
                     }
+                    ast::TypeBody::Alias(_) => {}
                 },
                 ast::ItemKind::Error(decl) => {
                     if let ast::ErrorBody::Set(types) = &decl.body {
@@ -1346,7 +1379,8 @@ impl<'a> Checker<'a> {
                 continue;
             }
             match self.type_names.get(name) {
-                Some(TypeName::Error(id)) => ids.push(*id),
+                // By its own name, or by another name for it.
+                Some(TypeName::Error(id) | TypeName::Alias(Ty::Error(id))) => ids.push(*id),
                 Some(TypeName::ErrorSet(ErrSet::Any)) => return ErrSet::Any,
                 Some(TypeName::ErrorSet(ErrSet::Of(set))) => ids.extend(set),
                 Some(_) => self.error_help(
@@ -3013,6 +3047,30 @@ fn inside(function: &str, message: &str) -> (String, Option<&'static str>) {
         }
     }
     (format!("in `{function}`: {message}"), None)
+}
+
+/// Whether a type as it is written names one of `names`, other than `but`.
+fn names_one_of(ty: &ast::Type, names: &[&str], but: &str) -> bool {
+    let any = |types: &[ast::Type]| types.iter().any(|ty| names_one_of(ty, names, but));
+    match &ty.kind {
+        ast::TypeKind::Named { path, args } => {
+            (path.len() == 1 && path[0].name != but && names.contains(&path[0].name.as_str())) || any(args)
+        }
+        ast::TypeKind::List(inner) | ast::TypeKind::Optional(inner) | ast::TypeKind::Array(inner, _) => {
+            names_one_of(inner, names, but)
+        }
+        ast::TypeKind::Map(key, value) => names_one_of(key, names, but) || names_one_of(value, names, but),
+        ast::TypeKind::Tuple(types) => any(types),
+        ast::TypeKind::Fn {
+            params, ret, errors, ..
+        } => {
+            params.iter().any(|(_, ty)| names_one_of(ty, names, but))
+                || ret.as_ref().is_some_and(|ty| names_one_of(ty, names, but))
+                || any(errors)
+        }
+        ast::TypeKind::Struct(fields) => fields.iter().any(|field| names_one_of(&field.ty, names, but)),
+        ast::TypeKind::Result { ok, errors } => names_one_of(ok, names, but) || any(errors),
+    }
 }
 
 fn is_type_like(name: &str) -> bool {

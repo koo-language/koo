@@ -570,6 +570,8 @@ Actors are the newest part of Koo, and the part that will grow the most. It is a
 
 A method that runs for a long time keeps the thread it is running on, and one that never returns keeps it for ever. The other actors do not suffer for it: when every thread is busy and actors have been waiting for a hundredth of a second, another thread is started for them, up to a few hundred threads. But nothing takes the thread away from the method, and nothing can make its own actor answer anyone else until it is done. An ask of that actor waits as long as the method runs.
 
+A parameter of an actor's method cannot have a default yet: the value is given at each call, or the parameter is an optional.
+
 When a told message panics, the storage that the message was using at that moment is not freed.
 
 The specification describes more than this: actors with type parameters, ways to supervise one actor from another, and to reach an actor on another machine. None of that is built.

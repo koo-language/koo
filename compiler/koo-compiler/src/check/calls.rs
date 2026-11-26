@@ -206,7 +206,11 @@ impl<'a> Checker<'a> {
                         let message = self.expr_as(values[0], &Ty::Str);
                         self.mk_call(ExprKind::Panic(Box::new(message)), Ty::Never, span)
                     }
-                    "all" | "race" | "with_timeout" | "isolate" => {
+                    // The functions of tasks, which are not built: but a name that is not
+                    // kept for them, and that the program has given a function, is its own.
+                    "all" | "race" | "with_timeout" | "isolate"
+                        if !self.free_fns.contains_key(&name.name) && !self.generic_fns.contains_key(&name.name) =>
+                    {
                         self.unsupported(callee.span, "tasks are");
                         self.unknown(span)
                     }
@@ -432,6 +436,34 @@ impl<'a> Checker<'a> {
                 Ty::Byte => Some("byte"),
                 _ => None,
             };
+            // A list has three functions that no program or library writes.
+            if let Ty::List(element) = &named
+                && matches!(name.name.as_str(), "new" | "with_capacity" | "with_size")
+            {
+                let (element, ty) = ((**element).clone(), named.clone());
+                let what = format!("`{}.{}`", type_name.name, name.name);
+                let wanted = usize::from(name.name != "new");
+                let Some(values) = self.plain_args(args, wanted, &what, span) else {
+                    return self.unknown(span);
+                };
+                if name.name == "new" {
+                    return self.mk_call(ExprKind::ListLit(Vec::new()), ty, span);
+                }
+                let n = self.expr_as(values[0], &Ty::Int);
+                if name.name == "with_capacity" {
+                    return self.mk_call(ExprKind::Builtin(Builtin::ListWithCapacity, vec![n]), ty, span);
+                }
+                if !matches!(element, Ty::Int | Ty::Float | Ty::Bool | Ty::Byte | Ty::Unknown) {
+                    let found = self.ty_name(&element);
+                    self.error_help(
+                        type_name.span,
+                        format!("`List<{found}>.with_size` is not supported by this compiler yet"),
+                        "it fills a list with zeros, so the element type is `int`, `float`, `bool` or `byte`",
+                    );
+                    return self.unknown(span);
+                }
+                return self.mk_call(ExprKind::Builtin(Builtin::ListWithSize, vec![n]), ty, span);
+            }
             return match primitive {
                 Some(primitive) => self.primitive_call(primitive, name, args, span),
                 None => self.call_on_type(&named, name, args, span, expected),
@@ -455,7 +487,11 @@ impl<'a> Checker<'a> {
         if self.generic_types.contains_key(&type_name.name) {
             self.error(
                 name.span,
-                format!("`{}` has no function `{}`", type_name.name, name.name),
+                format!(
+                    "`{}` has no function `{}`",
+                    self.shown_name(&type_name.name, true),
+                    name.name
+                ),
             );
             for arg in args {
                 self.expr(&arg.value, None);
@@ -485,7 +521,11 @@ impl<'a> Checker<'a> {
                     Some(Owner::Enum(id)) => self.program.enums[id].variants.iter().any(|v| v.name == name.name),
                     _ => false,
                 };
-                let message = format!("`{}` has no function `{}`", type_name.name, name.name);
+                let message = format!(
+                    "`{}` has no function `{}`",
+                    self.shown_name(&type_name.name, true),
+                    name.name
+                );
                 // The functions the compiler writes for a type that can have them.
                 let written = match name.name.as_str() {
                     "from_env" => Some(

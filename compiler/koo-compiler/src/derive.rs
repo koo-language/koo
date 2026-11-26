@@ -83,6 +83,9 @@ struct Deriver<'a> {
     aliases: HashMap<&'a str, &'a Type>,
     /// The types JSON is written for.
     ok: HashSet<&'a str>,
+    /// The types that may be sent to an actor: those of `ok` whose own fields are what
+    /// a message can hold, whether or not the type writes its own JSON.
+    wire: HashSet<&'a str>,
     /// The readers written for lists, optionals and maps, by the type each reads.
     readers: HashMap<String, usize>,
     out: String,
@@ -683,6 +686,16 @@ impl<'a> Deriver<'a> {
                 if !self.holds(&param.ty) {
                     self.cannot_send(param.ty.span, "this type");
                 }
+                // What stands between a caller and the method is written from the
+                // method's parameters, and a default is not carried there yet.
+                if let Some(default) = &param.default {
+                    self.problems.push((
+                        default.span,
+                        "a parameter of an actor's method cannot have a default yet".to_string(),
+                        "take a `T?` and use `else` in the method, or give the value at each call (Section 9.11)"
+                            .to_string(),
+                    ));
+                }
             }
             if let Some(ret) = &sig.ret
                 && !self.holds(ret)
@@ -960,9 +973,13 @@ impl<'a> Deriver<'a> {
             self.out,
             "fn {lower}___handle(id: int, home: string) -> {name} {{\n    \
              return {name} {{ id, home, send: {send} {{ id, home }}, try_send: {attempt} {{ id, home }} }}\n}}\n\n\
-             fn (self: {name}) _json_write(out: var string) {{\n    out += \"\\{{\\\"id\\\":{{self.id}},\\\"home\\\":\"\n    \
+             fn (self: {name}) _json_write(out: var string) {{\n    \
+             if not __json_is_wire() {{\n        shown := \"{{self}}\"\n        shown._json_write(var out)\n        return\n    }}\n    \
+             out += \"\\{{\\\"id\\\":{{self.id}},\\\"home\\\":\"\n    \
              self.home._json_write(var out)\n    out += \"}}\"\n}}\n\n\
              fn {name}._json_read(text: string, at: var int) -> {name} ! JsonError {{\n    \
+             if not __json_is_wire() {{\n        \
+             fail JsonError {{ message: \"a handle of an actor is not read from JSON: it is made by starting the actor\", path: \"\" }}\n    }}\n    \
              var id: int? = none\n    var home: string? = none\n    var first := true\n    \
              j__open(text, var at, 123)?\n    while j__more(text, var at, 125, var first)? {{\n        \
              key := j__key(text, var at)?\n        match key {{\n            \
@@ -1149,6 +1166,7 @@ pub fn derive(package: &File, json: bool, rows: bool, envs: bool) -> Derived {
         insides: HashMap::new(),
         aliases: HashMap::new(),
         ok: HashSet::new(),
+        wire: HashSet::new(),
         readers: HashMap::new(),
         out: String::new(),
         count: 0,
@@ -1364,57 +1382,66 @@ pub fn derive(package: &File, json: bool, rows: bool, envs: bool) -> Derived {
     // And so can a duration and a time, which the prelude writes and reads.
     handles.extend(["Duration", "Time"]);
     deriver.ok.extend(handles.iter().copied());
-    loop {
-        let mut struck: Vec<&str> = Vec::new();
-        for name in order.iter().copied() {
-            // A type that writes and reads itself has JSON whatever its fields are.
-            if !deriver.ok.contains(name) || both(&theirs, name) {
-                continue;
+    // Twice: first for what has JSON, where a type that writes and reads itself has it
+    // whatever its fields are; then for what may be a message to an actor, which is
+    // sent by its fields and not by what the type chooses to write of itself.
+    let mut with_json: HashSet<&str> = HashSet::new();
+    for sending in [false, true] {
+        loop {
+            let mut struck: Vec<&str> = Vec::new();
+            for name in order.iter().copied() {
+                if !deriver.ok.contains(name) || (!sending && both(&theirs, name)) {
+                    continue;
+                }
+                let held = if let Some((params, fields)) = deriver.generics.get(name).cloned() {
+                    // What its type parameters stand for has JSON, or the structure is
+                    // not asked for JSON with them.
+                    deriver.params = params;
+                    let held = deriver.fields_hold(fields, None);
+                    deriver.params.clear();
+                    held
+                } else if let Some(fields) = deriver.structs.get(name).copied() {
+                    deriver.fields_hold(fields, None)
+                } else if let Some(decl) = deriver.enums.get(name).copied() {
+                    let rename = deriver.renames.get(name).copied().unwrap_or(Rename::Snake);
+                    decl.variants
+                        .iter()
+                        .all(|variant| deriver.fields_hold(variant.fields.as_deref().unwrap_or(&[]), Some(rename)))
+                } else if let Some((params, decl)) = deriver.generic_enums.get(name).cloned() {
+                    let rename = deriver.renames.get(name).copied().unwrap_or(Rename::Snake);
+                    deriver.params = params;
+                    let held = decl
+                        .variants
+                        .iter()
+                        .all(|variant| deriver.fields_hold(variant.fields.as_deref().unwrap_or(&[]), Some(rename)));
+                    deriver.params.clear();
+                    held
+                } else {
+                    handles.contains(&name)
+                };
+                if !held {
+                    struck.push(name);
+                }
             }
-            let held = if let Some((params, fields)) = deriver.generics.get(name).cloned() {
-                // What its type parameters stand for has JSON, or the structure is
-                // not asked for JSON with them.
-                deriver.params = params;
-                let held = deriver.fields_hold(fields, None);
-                deriver.params.clear();
-                held
-            } else if let Some(fields) = deriver.structs.get(name).copied() {
-                deriver.fields_hold(fields, None)
-            } else if let Some(decl) = deriver.enums.get(name).copied() {
-                let rename = deriver.renames.get(name).copied().unwrap_or(Rename::Snake);
-                decl.variants
-                    .iter()
-                    .all(|variant| deriver.fields_hold(variant.fields.as_deref().unwrap_or(&[]), Some(rename)))
-            } else if let Some((params, decl)) = deriver.generic_enums.get(name).cloned() {
-                let rename = deriver.renames.get(name).copied().unwrap_or(Rename::Snake);
-                deriver.params = params;
-                let held = decl
-                    .variants
-                    .iter()
-                    .all(|variant| deriver.fields_hold(variant.fields.as_deref().unwrap_or(&[]), Some(rename)));
-                deriver.params.clear();
-                held
-            } else {
-                handles.contains(&name)
-            };
-            if !held {
-                struck.push(name);
+            if struck.is_empty() {
+                break;
+            }
+            for name in struck {
+                deriver.ok.remove(name);
             }
         }
-        if struck.is_empty() {
-            break;
-        }
-        for name in struck {
-            deriver.ok.remove(name);
+        if !sending {
+            with_json = deriver.ok.clone();
         }
     }
+    deriver.wire = std::mem::replace(&mut deriver.ok, with_json);
     for name in order {
         if !types || !deriver.ok.contains(name) {
             continue;
         }
         let before = deriver.out.len();
-        if both(&theirs, name) {
-            // Nothing is written from its fields, which may be what JSON cannot hold.
+        if both(&theirs, name) && !deriver.wire.contains(name) {
+            // Nothing is written from its fields, which are not what JSON can hold.
         } else if let Some((_, fields)) = deriver.generics.get(name).cloned() {
             deriver.a_struct(name, fields);
         } else if let Some(fields) = deriver.structs.get(name).copied() {
@@ -1427,27 +1454,58 @@ pub fn derive(package: &File, json: bool, rows: bool, envs: bool) -> Derived {
         // What the type has of its own takes the place of what was written for it.
         if let Some(own) = theirs.get(name) {
             let written = deriver.out.split_off(before);
+            // What was written from the type's fields stays, under another name: it is
+            // how a value of the type goes to an actor in another process and comes
+            // back, whatever the type's own functions make of it for the world.
+            let (mut by_fields_out, mut by_fields_in) = (false, false);
             for function in written.split_inclusive("\n}\n\n") {
-                let taken = (own.contains("to_json")
-                    && (function.starts_with(&format!("fn (self: {name}) to_json("))
-                        || function.starts_with(&format!("fn (self: {name}) _json_write("))))
-                    || (own.contains("from_json")
-                        && (function.starts_with(&format!("fn {name}.from_json("))
-                            || function.starts_with(&format!("fn {name}._json_read("))));
-                if !taken {
+                let write = format!("fn (self: {name}) _json_write(");
+                let read = format!("fn {name}._json_read(");
+                if own.contains("to_json") && function.starts_with(&format!("fn (self: {name}) to_json(")) {
+                    continue;
+                }
+                if own.contains("from_json") && function.starts_with(&format!("fn {name}.from_json(")) {
+                    continue;
+                }
+                if own.contains("to_json") && function.starts_with(&write) {
+                    by_fields_out = true;
+                    deriver.out.push_str(&function.replacen(
+                        &write,
+                        &format!("fn (self: {name}) _json_write_fields("),
+                        1,
+                    ));
+                } else if own.contains("from_json") && function.starts_with(&read) {
+                    by_fields_in = true;
+                    deriver
+                        .out
+                        .push_str(&function.replacen(&read, &format!("fn {name}._json_read_fields("), 1));
+                } else {
                     deriver.out.push_str(function);
                 }
             }
             if own.contains("to_json") {
+                let between = if by_fields_out {
+                    "    if __json_is_wire() {\n        self._json_write_fields(var out)\n        return\n    }\n"
+                } else {
+                    ""
+                };
                 let _ = write!(
                     deriver.out,
-                    "fn (self: {name}) _json_write(out: var string) {{\n    out += self.to_json()\n}}\n\n"
+                    "fn (self: {name}) _json_write(out: var string) {{\n{between}    out += self.to_json()\n}}\n\n"
                 );
             }
             if own.contains("from_json") {
+                let between = if by_fields_in {
+                    format!(
+                        "    if __json_is_wire() {{\n        sent := {name}._json_read_fields(text, var at)?\n        \
+                         return sent\n    }}\n"
+                    )
+                } else {
+                    String::new()
+                };
                 let _ = write!(
                     deriver.out,
-                    "fn {name}._json_read(text: string, at: var int) -> {name} ! JsonError {{\n    \
+                    "fn {name}._json_read(text: string, at: var int) -> {name} ! JsonError {{\n{between}    \
                      start := __json_ws(text, at)\n    at = start\n    j__skip(text, var at)?\n    \
                      depth := __json_depth()\n    wire := __json_is_wire()\n    \
                      base := __json_base(depth)\n    \
@@ -1586,6 +1644,8 @@ pub fn derive(package: &File, json: bool, rows: bool, envs: bool) -> Derived {
     // are still running when `main` returns, the last declared first.
     let mut handed = String::new();
     let mut stopped = String::new();
+    // From here on the question is what may be sent, not what has JSON.
+    deriver.ok = deriver.wire.clone();
     for actor in deriver.actors.clone() {
         if deriver.an_actor(actor) {
             let (name, lower) = (&actor.name.name, own(&actor.name.name));

@@ -1,0 +1,28 @@
+// What JSON cannot hold is refused wherever a type with parameters would reach it, and
+// a handle of an actor is neither written nor read as one by a program.
+
+type Box<T> = { v: T }
+
+actor Counter {
+    var n: int = 0
+
+    fn bump(by: int = 1) -> int {
+        n += by
+        return n
+    }
+}
+
+fn main() ! JsonError {
+    print([1: "a"].to_json())
+    print(Map<int, string>.from_json("\{\"1\": \"a\"}")?)
+    print(Box<[int: string]> { v: [1: "a"] }.to_json())
+    nothing: int?? = none
+    print(Box<int??> { v: nothing }.to_json())
+    print(Counter.start().bump())
+}
+
+//! error a parameter of an actor's method cannot have a default yet
+//! error `[int: string]` has no JSON
+//! error `[int: string]` has no JSON
+//! error `[int: string]` has no JSON
+//! error `int??` has no JSON

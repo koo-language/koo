@@ -1,0 +1,58 @@
+// Another name for a type is the type in every respect (Section 6.7): in an error set
+// and in the arm that takes the error, in patterns, with the functions of a list, and
+// whatever the order the names are declared in.
+
+error Oops { why: string }
+type Fail = Oops
+
+enum Color { Red, Green }
+type Hue = Color
+
+type Point = { x: int, y: int }
+type P2 = Point
+
+type Names = [string]
+type Ints = [int]
+
+type First = Second
+type Second = int
+
+fn may() -> int ! Fail {
+    fail Fail { why: "by another name" }
+}
+
+fn with_timeout(n: int) -> int {
+    return n * 2
+}
+
+fn main() {
+    match may() {
+        v => print(v)
+        ! Fail { why } => print(why)
+    }
+    h: Hue = Hue.Green
+    match h {
+        Color.Red => print("red")
+        Hue.Green => print("green")
+    }
+    point := P2 { x: 1, y: 2 }
+    match point {
+        P2 { x, .. } => print(x)
+    }
+    print(Names.with_capacity(3).len)
+    print(Ints.with_size(2))
+    print(Names.new())
+    x: First = 1
+    print(x)
+    // A name the program has given a function is the program's.
+    print(with_timeout(21))
+}
+
+//= by another name
+//= green
+//= 1
+//= 0
+//= [0, 0]
+//= []
+//= 1
+//= 42

@@ -459,13 +459,28 @@ impl Gen<'_> {
 
     /// Appends `name { field: value, ... }` for the fields at `base`, a struct of `struct_ty`.
     fn fmt_fields(&mut self, name: &str, struct_ty: &str, base: &str, fields: &[FieldDef], offset: usize) {
-        if fields.is_empty() {
+        // A type of a standard package is shown as a program writes it, `http.Response`,
+        // and without what the package keeps to itself.
+        let library = name
+            .split_once("__")
+            .filter(|(_, rest)| rest.starts_with(char::is_uppercase));
+        let shown = match library {
+            Some((package, rest)) => format!("{}.{rest}", package.to_ascii_lowercase()),
+            None => name.to_string(),
+        };
+        let name = shown.as_str();
+        let seen: Vec<(usize, &FieldDef)> = fields
+            .iter()
+            .enumerate()
+            .filter(|(_, field)| library.is_none() || !field.name.starts_with('_'))
+            .collect();
+        if seen.is_empty() {
             self.append_text("%b", name);
             return;
         }
         self.append_text("%b", &format!("{name} {{ "));
-        for (index, field) in fields.iter().enumerate() {
-            let separator = if index == 0 { "" } else { ", " };
+        for (place_in_text, (index, field)) in seen.into_iter().enumerate() {
+            let separator = if place_in_text == 0 { "" } else { ", " };
             self.append_text("%b", &format!("{separator}{}: ", field.name));
             let place = self.field_ptr(struct_ty, base, index + offset);
             self.fmt_at(&field.ty, &place);

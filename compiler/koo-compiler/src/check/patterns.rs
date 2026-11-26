@@ -156,7 +156,8 @@ impl<'a> Checker<'a> {
         };
         let lookup = |checker: &mut Checker<'_>, name: &ast::Ident| -> Option<ErrorId> {
             match checker.type_names.get(&name.name) {
-                Some(TypeName::Error(id)) => {
+                // By its own name, or by another name for it.
+                Some(TypeName::Error(id) | TypeName::Alias(Ty::Error(id))) => {
                     let id = *id;
                     if !set.contains(id) {
                         // A warning in the specification, so that a library may stop
@@ -389,6 +390,7 @@ impl<'a> Checker<'a> {
                         };
                         if let Some((written, at)) = enum_name
                             && written != self.program.enums[*id].name
+                            && !matches!(self.type_names.get(&written), Some(TypeName::Alias(Ty::Enum(named))) if named == id)
                         {
                             let expected = self.ty_name(ty);
                             self.error(at, format!("expected a variant of `{expected}`"));
@@ -422,8 +424,18 @@ impl<'a> Checker<'a> {
                         Pattern::Variant { variant, fields }
                     }
                     Ty::Struct(id) => {
-                        if path.len() != 1 || name.name != self.program.structs[*id].name {
-                            let expected = self.program.structs[*id].name.clone();
+                        let another = matches!(
+                            self.type_names.get(&name.name),
+                            Some(TypeName::Alias(Ty::Struct(named))) if named == id
+                        );
+                        // A structure of a standard package is written with the package.
+                        let written = match path.as_slice() {
+                            [only] => Some(only.name.clone()),
+                            [package, of] => self.package_type(&[package.clone(), of.clone()]),
+                            _ => None,
+                        };
+                        if written.as_deref() != Some(self.program.structs[*id].name.as_str()) && !another {
+                            let expected = self.ty_name(ty);
                             self.error(span, format!("expected a pattern for `{expected}`"));
                             return Pattern::Wildcard;
                         }

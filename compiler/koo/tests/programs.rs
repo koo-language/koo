@@ -1716,6 +1716,10 @@ fn a_stopping_server_answers_what_it_has_in_hand() {
         } else {
             assert!(got.starts_with("HTTP/1.1 500"), "with {workers} workers: {got}");
         }
+        // A type that writes less of itself as JSON than it is goes to an actor whole,
+        // in whichever process the actor is.
+        let got = get(port, "/tag");
+        assert!(got.ends_with("\r\n\r\n7 \"t\" 0\n"), "with {workers} workers: {got}");
         let got = get(port, "/bytes");
         assert!(
             got.ends_with("\r\n\r\n[97, 195, 191]\n"),

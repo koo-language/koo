@@ -1,0 +1,45 @@
+// A handle of an actor is written in JSON as its name, and is not read from JSON: a
+// handle is made by starting an actor, and by nothing else.
+
+actor Counter {
+    var n: int = 0
+
+    fn bump() -> int {
+        n += 1
+        return n
+    }
+}
+
+actor Other {
+    var names: [string] = []
+
+    fn keep(name: string) -> int {
+        names.push(name)
+        return names.len
+    }
+}
+
+type Team = { lead: Counter, name: string }
+
+fn main() {
+    lead := Counter.start()
+    print([lead].to_json())
+    text := Team { lead, name: "a" }.to_json()
+    print(text)
+    match Team.from_json(text) {
+        team => print("read: {team}")
+        ! e => print("{e.path}: {e.message}")
+    }
+    // What would make a handle of one actor out of the handle of another.
+    match List<Other>.from_json("[\{\"id\":0,\"home\":\"nowhere\"}]") {
+        others => print(others[0].keep("x"))
+        ! e => print("{e.path}: {e.message}")
+    }
+    print(lead.bump())
+}
+
+//= ["Counter#0"]
+//= {"lead":"Counter#0","name":"a"}
+//= /lead: a handle of an actor is not read from JSON: it is made by starting the actor
+//= /0: a handle of an actor is not read from JSON: it is made by starting the actor
+//= 1

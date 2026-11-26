@@ -661,6 +661,49 @@ impl<'a> Checker<'a> {
             );
             return None;
         }
+        // The library's JSON for a map and for an optional is written for any type, and
+        // JSON itself is not: the keys of a map in it are strings, and it has one way
+        // to say that nothing is there, which an optional of an optional would need two of.
+        if self.templates[template].prelude {
+            let decl = self.templates[template].decl;
+            let json = matches!(
+                decl.sig.name.name.as_str(),
+                "_json_write" | "_json_read" | "to_json" | "from_json" | "_json_read_optional"
+            );
+            let owner = match &decl.sig.target {
+                ast::FnTarget::Method { ty: Some(ty), .. } | ast::FnTarget::TypeLevel(ty) => Some(&ty.kind),
+                _ => None,
+            };
+            let refused = match owner {
+                Some(ast::TypeKind::Named { path, .. }) if json && path.len() == 1 && path[0].name == "Map" => {
+                    args.first().filter(|key| !matches!(key, Ty::Str | Ty::Unknown)).map(|key| {
+                        let (key, value) = (self.ty_name(key), args.get(1).map_or(String::new(), |v| self.ty_name(v)));
+                        (
+                            format!("[{key}: {value}]"),
+                            "the keys of a map in JSON are strings: a map with other keys is written as a list of pairs, by the program",
+                        )
+                    })
+                }
+                Some(ast::TypeKind::Optional(_)) if json => args
+                    .first()
+                    .filter(|held| matches!(held, Ty::Optional(_)))
+                    .map(|held| {
+                        (
+                            format!("{}?", self.ty_name(held)),
+                            "JSON has one way to say that nothing is there, and an optional of an optional would need two",
+                        )
+                    }),
+                _ => None,
+            };
+            if let Some((found, why)) = refused {
+                // Said of the program's own call, whichever function of the library found it.
+                let origin = self.origin.take();
+                let at = origin.as_ref().map_or(span, |(at, _)| *at);
+                self.error_help(at, format!("`{found}` has no JSON"), why);
+                self.origin = origin;
+                return None;
+            }
+        }
         let t = &self.templates[template];
         let decl = t.decl;
         let prelude = t.prelude;
@@ -824,6 +867,13 @@ impl<'a> Checker<'a> {
                         None
                     };
                     if found.is_none() && built_in.is_none() {
+                        // A method that is there, and is not one function, is not
+                        // said to be missing.
+                        if !type_level && self.generic_method(ty, &method).is_some() {
+                            return Err(format!(
+                                "its `{method}` has a type parameter of its own, and is a function for each type it is called with: an interface asks for one"
+                            ));
+                        }
                         return Err(format!(
                             "it has no {} `{method}`",
                             if type_level { "function" } else { "method" }

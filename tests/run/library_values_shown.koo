@@ -1,0 +1,17 @@
+// A value of a type of a standard package is shown as a program writes the type, and
+// without what the package keeps to itself; and such a type is matched by that name.
+
+import std/http
+
+fn main() {
+    response := http.text("hi", status: 201)
+    print(response)
+    match response {
+        http.Response { status, .. } => print(status)
+    }
+    print(http.Error { kind: http.ErrorKind.Timeout, message: "late" })
+}
+
+//= http.Response { status: 201, content_type: "text/plain; charset=utf-8", headers: "", body: "hi", file: "" }
+//= 201
+//= late
