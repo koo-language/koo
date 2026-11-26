@@ -470,6 +470,16 @@ def left(name, server):
     status, text, took = ask("/after/5", body=b"abc", timeout=10)
     problems.append((status != 200 or text.strip() != b"5 /after/5 - 3") and f"after 60 clients left handlers that read their requests, a request was answered {status} {text[:60]!r}")
     problems.append(server.poll() is not None and f"the server ended, with status {server.poll()}")
+    # Handlers that work between their waits, as many as there are workers and more,
+    # left by their clients: with nothing to wait for they have two seconds of work
+    # each, and the requests of others are answered between its pieces, not after it.
+    abandon(["/grind"] * (2 * WORKERS), 0.3)
+    worst, until = 0.0, time.time() + 2
+    while time.time() < until:
+        status, _, took = ask("/ping", timeout=10)
+        worst = max(worst, took if status == 200 else 10.0)
+        time.sleep(0.01)
+    problems.append(worst > 0.5 and f"beside handlers that work on after their clients left, /ping waited {worst:.1f}s")
     # More handlers that would wait twenty seconds than the server has places for,
     # each left by its client a moment after it began.
     for _ in range(2 * WORKERS):

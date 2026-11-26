@@ -1,7 +1,9 @@
 // A server whose handlers ask a database slowly, for clients that leave before they are
-// answered (`a_client_that_leaves_gives_back_its_connection` in the tests). Its pool
-// has two connections, so that two handlers that kept theirs would keep everyone out.
+// answered and for handlers that take longer than they are given
+// (`a_client_that_leaves_gives_back_its_connection` in the tests). Its pool has two
+// connections, so that two handlers that kept theirs would keep everyone out.
 import std/http
+import std/log
 import std/os
 import std/sql
 import std/sql/postgres
@@ -9,6 +11,7 @@ import std/sql/postgres
 fn main() ! sql.Error | http.Error {
     db := postgres.connect(os.env("DATABASE_URL") else "", pool: 2)?
     db.exec("create table if not exists left_notes (n int)")?
+    other := os.env("UPSTREAM") else "http://127.0.0.1:1/"
     var app := http.App.new()
     // Holds a connection of the pool for as long as it is told.
     app.get("/slow/:seconds", req -> {
@@ -16,12 +19,35 @@ fn main() ! sql.Error | http.Error {
         db.exec("select pg_sleep({seconds})")?
         return http.text("slept\n")
     })
-    // The same inside a transaction, which is undone if its handler is ended.
-    app.get("/kept/:n", req -> {
+    // The same, by a handler that says what it was told when the statement failed, and
+    // what when it began another after that, and has an answer of its own for both.
+    app.get("/told/:seconds", req -> {
+        seconds := float.parse(req.param("seconds")) else 1.0
+        match db.exec("select pg_sleep({seconds})") {
+            n => return http.text("slept\n")
+            ! e => log.info("in the middle of a statement: {e.kind}")
+        }
+        match db.exec("select 1") {
+            n => log.info("a statement begun afterwards ran")
+            ! e => log.info("a statement begun afterwards: {e.kind}")
+        }
+        return http.text("an answer all the same\n")
+    })
+    // A request to another server, which does not answer, by a handler of the same kind.
+    app.get("/via", req -> {
+        match http.get(other, timeout: 20s) {
+            reply => return http.text(reply.body)
+            ! e => log.info("in the middle of a request: {e.kind}")
+        }
+        return http.text("an answer all the same\n")
+    })
+    // A transaction that takes so long, which is undone if its handler is not let finish.
+    app.get("/kept/:n/:seconds", req -> {
         n := int.parse(req.param("n")) else 0
+        seconds := float.parse(req.param("seconds")) else 1.0
         db.transaction(tx -> {
             tx.exec("insert into left_notes (n) values ({n})")?
-            tx.exec("select pg_sleep(2)")?
+            tx.exec("select pg_sleep({seconds})")?
         })?
         return http.text("kept\n")
     })
@@ -33,5 +59,6 @@ fn main() ! sql.Error | http.Error {
         db.exec("select 1")?
         return http.text("quick\n")
     })
-    app.serve(workers: int.parse(os.env("WORKERS") else "") else 1)?
+    limit := int.parse(os.env("TIMEOUT_MS") else "") else 30000
+    app.serve(workers: int.parse(os.env("WORKERS") else "") else 1, timeout: 1ms * limit)?
 }

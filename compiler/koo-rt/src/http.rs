@@ -2192,7 +2192,33 @@ mod imp {
             if PLACES[HERE].cut > MOST_CUT {
                 leave_if_given_up();
             }
+            // What it would have waited for, it does not wait for; but the others
+            // have their turn here as they would have had it, or a handler that works
+            // between its waits would keep the thread, now that it has no waits, until
+            // it was done.
+            give_way();
             true
+        }
+    }
+
+    /// Lets the loop go round once, for the other handlers and for what has arrived,
+    /// and comes back.
+    #[allow(static_mut_refs)]
+    unsafe fn give_way() {
+        unsafe {
+            if !may_leave() {
+                return;
+            }
+            let Some(next) = another_place() else { return };
+            let here = HERE;
+            PLACES[here].serial = (PLACES[here].serial + 1) & 0xff_ffff;
+            PLACES[here].fd = -1;
+            // A wait for a time that has come.
+            PLACES[here].until = nanos();
+            PLACES[here].late = false;
+            PLACES[here].doing = Doing::Waiting;
+            go_to(next);
+            PLACES[here].doing = Doing::Handling;
         }
     }
 
@@ -2967,6 +2993,12 @@ mod imp {
                     }
                 }
                 if late {
+                    // What has arrived meanwhile is taken note of first, without
+                    // waiting for any: a handler whose waits all end at once, as those
+                    // of one that was given up do, would otherwise go from one to the
+                    // next and the queue never be looked at.
+                    EVENT_COUNT = sys::wait(QUEUE, &mut EVENTS, 0);
+                    EVENT_AT = 0;
                     continue;
                 }
                 if STOP.load(core::sync::atomic::Ordering::Relaxed) {

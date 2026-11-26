@@ -1630,19 +1630,23 @@ fn a_client_that_leaves_gives_back_its_connection() {
         std::thread::sleep(std::time::Duration::from_millis(after));
         drop(asked);
     };
-    for workers in [1, 2] {
+    // A server that takes connections and says nothing, for a handler to ask.
+    let silent = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let upstream = format!("http://127.0.0.1:{}/", silent.local_addr().unwrap().port());
+    let start = |workers: usize, limit: &str, log: &Path| {
         let port = std::net::TcpListener::bind("127.0.0.1:0")
             .unwrap()
             .local_addr()
             .unwrap()
             .port();
-        let log = dir.join(format!("log-{workers}.txt"));
         let child = Command::new(&executable)
             .env("DATABASE_URL", &url)
+            .env("UPSTREAM", &upstream)
             .env("PORT", port.to_string())
             .env("WORKERS", workers.to_string())
+            .env("TIMEOUT_MS", limit)
             .stdout(std::process::Stdio::null())
-            .stderr(std::fs::File::create(&log).unwrap())
+            .stderr(std::fs::File::create(log).unwrap())
             .spawn()
             .expect("the server starts");
         let server = Server(child);
@@ -1652,6 +1656,26 @@ fn a_client_that_leaves_gives_back_its_connection() {
             }
             std::thread::sleep(std::time::Duration::from_millis(25));
         }
+        (server, port)
+    };
+    let body = |answer: String| answer.rsplit("\r\n\r\n").next().unwrap_or("").trim().to_string();
+    let quick_is_quick = |port: u16, workers: usize, after: &str| {
+        for _ in 0..4 {
+            let started = std::time::Instant::now();
+            let got = get(port, "/quick");
+            assert!(got.ends_with("\r\n\r\nquick\n"), "with {workers} workers: {got}");
+            assert!(
+                started.elapsed() < std::time::Duration::from_millis(1500),
+                "with {workers} workers, a statement after {after} took {:?}",
+                started.elapsed()
+            );
+        }
+    };
+    let mut kept = 0;
+    for workers in [1, 2] {
+        // Clients that leave, of a server that gives its handlers all the time they want.
+        let log = dir.join(format!("log-{workers}.txt"));
+        let (server, port) = start(workers, "0", &log);
         assert!(
             get(port, "/quick").ends_with("\r\n\r\nquick\n"),
             "with {workers} workers"
@@ -1661,39 +1685,100 @@ fn a_client_that_leaves_gives_back_its_connection() {
         // seconds, or eight.
         leave(port, &vec!["/slow/4".to_string(); 6], 300);
         std::thread::sleep(std::time::Duration::from_millis(200));
-        for _ in 0..4 {
-            let started = std::time::Instant::now();
-            let got = get(port, "/quick");
-            assert!(got.ends_with("\r\n\r\nquick\n"), "with {workers} workers: {got}");
-            assert!(
-                started.elapsed() < std::time::Duration::from_millis(1500),
-                "with {workers} workers, a statement after six clients left took {:?}",
-                started.elapsed()
-            );
-        }
+        quick_is_quick(port, workers, "six clients left");
         // A transaction whose client leaves in the middle of it is undone, now and
         // when its statement would have ended.
-        let count = || {
-            let got = get(port, "/count");
-            got.rsplit("\r\n\r\n").next().unwrap_or("").trim().to_string()
-        };
-        let before = count();
-        assert_eq!(before, format!("{}", workers - 1), "with {workers} workers");
-        leave(port, &[format!("/kept/{workers}"), format!("/kept/{workers}")], 300);
+        let count = || body(get(port, "/count"));
+        assert_eq!(count(), format!("{kept}"), "with {workers} workers");
+        leave(port, &[format!("/kept/{workers}/2"), format!("/kept/{workers}/2")], 300);
         std::thread::sleep(std::time::Duration::from_millis(300));
-        assert_eq!(count(), before, "with {workers} workers");
+        assert_eq!(count(), format!("{kept}"), "with {workers} workers");
         std::thread::sleep(std::time::Duration::from_millis(2500));
-        assert_eq!(count(), before, "with {workers} workers");
+        assert_eq!(count(), format!("{kept}"), "with {workers} workers");
         // And one that is waited for is kept.
-        assert!(get(port, &format!("/kept/{workers}")).ends_with("\r\n\r\nkept\n"));
-        assert_eq!(count(), format!("{workers}"), "with {workers} workers");
-        stop(server, port);
+        assert_eq!(body(get(port, &format!("/kept/{workers}/0.1"))), "kept");
+        kept += 1;
+        assert_eq!(count(), format!("{kept}"), "with {workers} workers");
+        // Nothing was said of any of it: nothing went wrong.
         let written = std::fs::read_to_string(&log).unwrap();
         assert!(
             written.is_empty(),
             "with {workers} workers the server wrote:\n{written}"
         );
+        // What a handler is told whose client has left: a statement it was in the
+        // middle of fails as one whose connection was lost, one it begins afterwards
+        // as one whose time ran out, and so does a request to another server.
+        leave(port, &["/told/4".to_string(), "/via".to_string()], 300);
+        std::thread::sleep(std::time::Duration::from_millis(400));
+        stop(server, port);
+        let written = std::fs::read_to_string(&log).unwrap();
+        for said in [
+            "in the middle of a statement: Connection",
+            "a statement begun afterwards: Timeout",
+            "in the middle of a request: Timeout",
+        ] {
+            assert_eq!(
+                written.matches(said).count(),
+                1,
+                "with {workers} workers the server wrote:\n{written}"
+            );
+        }
+
+        // Handlers that take longer than the second they are given, of clients that wait.
+        let log = dir.join(format!("log-timed-{workers}.txt"));
+        let (server, port) = start(workers, "1000", &log);
+        let count = || body(get(port, "/count"));
+        // In the middle of a statement, of a transaction, and of a request to another
+        // server: each client is answered 503 in about a second, whatever answer the
+        // handler had of its own.
+        let asked: Vec<_> = ["/slow/4", "/told/4", "/via", "/kept/9/4"]
+            .iter()
+            .map(|path| {
+                std::thread::spawn(move || {
+                    let started = std::time::Instant::now();
+                    (path, get(port, path), started.elapsed().as_millis())
+                })
+            })
+            .collect();
+        for answer in asked {
+            let (path, answer, took) = answer.join().unwrap();
+            assert!(
+                answer.starts_with("HTTP/1.1 503 ") && answer.ends_with("\r\n\r\nService Unavailable\n"),
+                "with {workers} workers, {path}: {answer}"
+            );
+            assert!(
+                (900..2500).contains(&took),
+                "with {workers} workers, {path} took {took} ms"
+            );
+        }
+        // The pool is free, the transaction is undone, and the next is kept.
+        quick_is_quick(port, workers, "four handlers ran out of time");
+        assert_eq!(count(), format!("{kept}"), "with {workers} workers");
+        assert_eq!(body(get(port, &format!("/kept/{workers}/0.1"))), "kept");
+        kept += 1;
+        std::thread::sleep(std::time::Duration::from_millis(3500));
+        assert_eq!(count(), format!("{kept}"), "with {workers} workers");
+        stop(server, port);
+        let written = std::fs::read_to_string(&log).unwrap();
+        for (said, times) in [
+            ("the handler was given 1000 ms and had not answered", 4),
+            ("in the middle of a statement: Connection", 1),
+            ("a statement begun afterwards: Timeout", 1),
+            ("in the middle of a request: Timeout", 1),
+        ] {
+            assert_eq!(
+                written.matches(said).count(),
+                times,
+                "with {workers} workers the server wrote:\n{written}"
+            );
+        }
+        assert_eq!(
+            written.lines().count(),
+            7,
+            "with {workers} workers the server wrote:\n{written}"
+        );
     }
+    drop(silent);
     let _ = std::fs::remove_dir_all(&dir);
 }
 
