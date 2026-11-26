@@ -365,27 +365,27 @@ unsafe fn gates() {
 
 // ---- holding an actor -------------------------------------------------------------------
 
-unsafe fn hold(me: &mut Thread, held: Held) {
+unsafe fn hold(me: *mut Thread, held: Held) {
     unsafe {
-        if me.held_len == me.held_cap {
-            let cap = (me.held_cap * 2).max(16);
-            me.held = realloc(me.held as *mut u8, cap * core::mem::size_of::<Held>()) as *mut Held;
-            if me.held.is_null() {
+        if (*me).held_len == (*me).held_cap {
+            let cap = ((*me).held_cap * 2).max(16);
+            (*me).held = realloc((*me).held as *mut u8, cap * core::mem::size_of::<Held>()) as *mut Held;
+            if (*me).held.is_null() {
                 fatal(b"koo: out of memory\n");
             }
-            me.held_cap = cap;
+            (*me).held_cap = cap;
         }
-        me.held.add(me.held_len).write(held);
-        me.held_len += 1;
+        (*me).held.add((*me).held_len).write(held);
+        (*me).held_len += 1;
     }
 }
 
-unsafe fn top<'a>(me: &mut Thread) -> Option<&'a mut Held> {
+unsafe fn top<'a>(me: *mut Thread) -> Option<&'a mut Held> {
     unsafe {
-        if me.held_len == 0 {
+        if (*me).held_len == 0 {
             None
         } else {
-            Some(&mut *me.held.add(me.held_len - 1))
+            Some(&mut *(*me).held.add((*me).held_len - 1))
         }
     }
 }
@@ -414,7 +414,7 @@ unsafe fn waits_for_itself(mine: u32, mut slot: *mut Slot) -> bool {
 
 /// Locks an actor for this thread, waiting for whoever has it. `what` says why, for the
 /// panic if the actor is gone or the wait could not end.
-unsafe fn lock(slot: *mut Slot, id: i64, what: &[u8], me: &mut Thread) {
+unsafe fn lock(slot: *mut Slot, id: i64, what: &[u8], me: *mut Thread) {
     unsafe {
         let word = (*slot).word.load(Relaxed);
         if word & LOCKED == 0
@@ -423,7 +423,7 @@ unsafe fn lock(slot: *mut Slot, id: i64, what: &[u8], me: &mut Thread) {
                 .compare_exchange(word, word | LOCKED, Acquire, Relaxed)
                 .is_ok()
         {
-            (*slot).holder.store(me.index, Release);
+            (*slot).holder.store((*me).index, Release);
             handed(slot);
             return;
         }
@@ -431,7 +431,7 @@ unsafe fn lock(slot: *mut Slot, id: i64, what: &[u8], me: &mut Thread) {
         loop {
             let word = (*slot).word.load(Acquire);
             if word & ALIVE == 0 || (*slot).generation.load(Acquire) != generation_of(id) {
-                me.waiting_for.store(0, Release);
+                (*me).waiting_for.store(0, Release);
                 stopped(what);
             }
             if word & LOCKED == 0 {
@@ -440,14 +440,14 @@ unsafe fn lock(slot: *mut Slot, id: i64, what: &[u8], me: &mut Thread) {
                     .compare_exchange(word, word | LOCKED, Acquire, Relaxed)
                     .is_ok()
                 {
-                    me.waiting_for.store(0, Release);
-                    (*slot).holder.store(me.index, Release);
+                    (*me).waiting_for.store(0, Release);
+                    (*slot).holder.store((*me).index, Release);
                     handed(slot);
                     return;
                 }
                 continue;
             }
-            if (*slot).holder.load(Acquire) == me.index {
+            if (*slot).holder.load(Acquire) == (*me).index {
                 cycle(slot, what);
             }
             looks += 1;
@@ -459,10 +459,10 @@ unsafe fn lock(slot: *mut Slot, id: i64, what: &[u8], me: &mut Thread) {
             // that would close a cycle of waits finds it. That thread may be this one.
             gates();
             WAITS.lock();
-            me.waiting_for.store(index_of(id) + 1, Release);
-            let for_ever = waits_for_itself(me.index, slot);
+            (*me).waiting_for.store(index_of(id) + 1, Release);
+            let for_ever = waits_for_itself((*me).index, slot);
             if for_ever {
-                me.waiting_for.store(0, Release);
+                (*me).waiting_for.store(0, Release);
             }
             WAITS.unlock();
             if for_ever {
@@ -703,16 +703,16 @@ unsafe fn leave_letter(id: i64, job: *mut Job, wait: Option<&[u8]>) -> bool {
                 drop_job(job);
                 return false;
             };
-            let me = me();
+            let me = core::ptr::from_mut(me());
             // The thread that would make room may be waiting for this one: then the
             // wait would never end, and it is a panic. An actor that tells itself is
             // the plainest case, since only it could make room.
             gates();
             WAITS.lock();
-            me.waiting_for.store(index_of(id) + 1, Release);
-            let for_ever = waits_for_itself(me.index, slot);
+            (*me).waiting_for.store(index_of(id) + 1, Release);
+            let for_ever = waits_for_itself((*me).index, slot);
             if for_ever {
-                me.waiting_for.store(0, Release);
+                (*me).waiting_for.store(0, Release);
             }
             WAITS.unlock();
             if for_ever {
@@ -731,7 +731,7 @@ unsafe fn leave_letter(id: i64, job: *mut Job, wait: Option<&[u8]>) -> bool {
             // each that waits at one time, and not one for every letter that waited.
             // If there can be no other, the letter is left all the same: a mailbox
             // over its limit is better than a program that stands still.
-            if me.worker {
+            if (*me).worker {
                 let waiting = WAITING_WORKERS.fetch_add(1, SeqCst) + 1;
                 let covered = waiting <= STAND_INS.load(SeqCst)
                     || (stand_in() && {
@@ -740,7 +740,7 @@ unsafe fn leave_letter(id: i64, job: *mut Job, wait: Option<&[u8]>) -> bool {
                     });
                 if !covered {
                     WAITING_WORKERS.fetch_sub(1, SeqCst);
-                    me.waiting_for.store(0, Release);
+                    (*me).waiting_for.store(0, Release);
                     (*slot).waiting.fetch_add(1, AcqRel);
                     break;
                 }
@@ -754,10 +754,10 @@ unsafe fn leave_letter(id: i64, job: *mut Job, wait: Option<&[u8]>) -> bool {
                 bench.wait();
             }
             bench.unlock();
-            if me.worker {
+            if (*me).worker {
                 WAITING_WORKERS.fetch_sub(1, SeqCst);
             }
-            me.waiting_for.store(0, Release);
+            (*me).waiting_for.store(0, Release);
             if slot_of(id).is_none() {
                 drop_job(job);
                 return true;
@@ -1021,11 +1021,11 @@ unsafe fn landing_stack() {
 /// top of the stack to run it on.
 pub unsafe fn landing() -> Option<(usize, usize)> {
     unsafe {
-        let me = me();
-        if me.landing == 0 || me.guard.is_null() {
+        let me = core::ptr::from_mut(me());
+        if (*me).landing == 0 || (*me).guard.is_null() {
             return None;
         }
-        Some((landed as extern "C" fn() -> ! as usize, me.landing))
+        Some((landed as extern "C" fn() -> ! as usize, (*me).landing))
     }
 }
 
@@ -1036,8 +1036,8 @@ extern "C" fn landed() -> ! {
 
 extern "C" fn work(_: *mut u8) -> *mut u8 {
     unsafe {
-        let me = me();
-        me.worker = true;
+        let me = core::ptr::from_mut(me());
+        (*me).worker = true;
         thread::watch_stack();
         landing_stack();
         loop {
@@ -1248,7 +1248,7 @@ pub unsafe extern "C" fn koo_actor_take(id: i64, method: *const Header) -> *mut 
         // What was told is run before an actor is asked: where there is no thread to
         // have run it, it is run now.
         waiting_mail();
-        let me = me();
+        let me = core::ptr::from_mut(me());
         let index = index_of(id);
         // A letter being run: its actor is this thread's already, and its state is here.
         if let Some(top) = top(me)
@@ -1278,7 +1278,7 @@ pub unsafe extern "C" fn koo_actor_take(id: i64, method: *const Header) -> *mut 
         // The actor may have stopped while this thread waited for it, or have panicked
         // once too often in what it was told.
         if (*slot).word.load(Acquire) & ALIVE == 0 || (*slot).generation.load(Acquire) != generation_of(id) {
-            me.held_len -= 1;
+            (*me).held_len -= 1;
             unlock(slot, index);
             stopped(bytes(method));
         }
@@ -1293,7 +1293,7 @@ pub unsafe extern "C" fn koo_actor_take(id: i64, method: *const Header) -> *mut 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn koo_actor_put(id: i64, state: *mut Header) {
     unsafe {
-        let me = me();
+        let me = core::ptr::from_mut(me());
         let index = index_of(id);
         let Some(top) = top(me) else {
             fatal(b"koo runtime: a state was put back that was not out\n")
@@ -1308,7 +1308,7 @@ pub unsafe extern "C" fn koo_actor_put(id: i64, state: *mut Header) {
         }
         let slot = slot_at(index);
         (*slot).state = state;
-        me.held_len -= 1;
+        (*me).held_len -= 1;
         // Nobody waits and nothing was told, most often: one exchange lets go.
         handing(slot);
         (*slot).holder.store(0, Release);
@@ -1337,13 +1337,13 @@ pub unsafe extern "C" fn koo_actor_alive(id: i64) -> bool {
 #[allow(static_mut_refs)]
 pub unsafe extern "C" fn koo_actor_end(id: i64, which: i64) -> *mut Header {
     unsafe {
-        let me = me();
+        let me = core::ptr::from_mut(me());
         let index = index_of(id);
         if which == 0 {
             let Some(slot) = slot_of(id) else {
                 die(&[b"an actor was stopped twice"]);
             };
-            if (*slot).holder.load(Acquire) == me.index {
+            if (*slot).holder.load(Acquire) == (*me).index {
                 die(&[
                     b"`",
                     kind_name((*slot).kind as usize),
@@ -1389,7 +1389,7 @@ pub unsafe extern "C" fn koo_actor_end(id: i64, which: i64) -> *mut Header {
         MAKING.lock();
         FREE.push(index);
         MAKING.unlock();
-        me.held_len -= 1;
+        (*me).held_len -= 1;
         unlock(slot, index);
         initial
     }
@@ -1429,21 +1429,21 @@ pub unsafe extern "C" fn koo_actor_any(kind: *const Header) -> i64 {
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn koo_guard_enter() -> *mut u64 {
     unsafe {
-        let me = me();
-        let guard = if me.spare_guard.is_null() {
+        let me = core::ptr::from_mut(me());
+        let guard = if (*me).spare_guard.is_null() {
             let guard = malloc(core::mem::size_of::<Guard>()) as *mut Guard;
             if guard.is_null() {
                 fatal(b"koo: out of memory\n");
             }
             guard
         } else {
-            let guard = me.spare_guard;
-            me.spare_guard = (*guard).below;
+            let guard = (*me).spare_guard;
+            (*me).spare_guard = (*guard).below;
             guard
         };
-        (*guard).mark = me.held_len;
-        (*guard).below = me.guard;
-        me.guard = guard;
+        (*guard).mark = (*me).held_len;
+        (*guard).below = (*me).guard;
+        (*me).guard = guard;
         (*guard).buffer.as_mut_ptr()
     }
 }
@@ -1452,14 +1452,14 @@ pub unsafe extern "C" fn koo_guard_enter() -> *mut u64 {
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn koo_guard_done() {
     unsafe {
-        let me = me();
-        let guard = me.guard;
+        let me = core::ptr::from_mut(me());
+        let guard = (*me).guard;
         if guard.is_null() {
             return;
         }
-        me.guard = (*guard).below;
-        (*guard).below = me.spare_guard;
-        me.spare_guard = guard;
+        (*me).guard = (*guard).below;
+        (*guard).below = (*me).spare_guard;
+        (*me).spare_guard = guard;
     }
 }
 
@@ -1512,16 +1512,16 @@ unsafe fn restart(slot: *mut Slot, index: u32) -> *mut Header {
 pub unsafe extern "C" fn koo_actor_recover() {
     unsafe {
         LEAKED.store(true, Relaxed);
-        let me = me();
-        me.waiting_for.store(0, Release);
-        me.json_wire = false;
-        me.json_base = 0;
+        let me = core::ptr::from_mut(me());
+        (*me).waiting_for.store(0, Release);
+        (*me).json_wire = false;
+        (*me).json_base = 0;
         crate::pg::abandon();
-        let mark = if me.guard.is_null() { 0 } else { (*me.guard).mark };
+        let mark = if (*me).guard.is_null() { 0 } else { (*(*me).guard).mark };
         koo_guard_done();
-        while me.held_len > mark {
-            me.held_len -= 1;
-            let held = *me.held.add(me.held_len);
+        while (*me).held_len > mark {
+            (*me).held_len -= 1;
+            let held = *(*me).held.add((*me).held_len);
             let slot = slot_at(held.slot);
             if held.taken {
                 (*slot).state = restart(slot, held.slot);
@@ -1581,6 +1581,7 @@ mod alone {
         false
     }
     pub unsafe fn at_exit() {}
+    pub unsafe fn let_go_of_old() {}
     pub extern "C" fn remove_socket() {}
     #[unsafe(no_mangle)]
     pub unsafe extern "C" fn koo_actor_home() -> *mut Header {
@@ -2378,12 +2379,12 @@ mod remote {
                 }
                 TURN = (TURN + step + 1) % (count - 1);
                 SERVED.unlock();
-                let me = me();
-                me.asked_on = fd + 1;
-                me.asked_kind = text[0];
-                me.asked = message;
-                me.asked_len = size;
-                me.asked_method = method_end;
+                let me = core::ptr::from_mut(me());
+                (*me).asked_on = fd + 1;
+                (*me).asked_kind = text[0];
+                (*me).asked = message;
+                (*me).asked_len = size;
+                (*me).asked_method = method_end;
                 taken = true;
             }
             if early && !taken {
@@ -2399,21 +2400,21 @@ mod remote {
     unsafe fn answer_taken() {
         unsafe {
             loop {
-                let me = me();
-                let fd = me.asked_on - 1;
+                let me = core::ptr::from_mut(me());
+                let fd = (*me).asked_on - 1;
                 // The asker is told that its message is the one being answered.
-                let there = me.asked_kind != ASK || write_full(fd, b"A");
+                let there = (*me).asked_kind != ASK || write_full(fd, b"A");
                 let answerer = ANSWERER.load(Acquire);
                 if there && answerer != 0 {
                     let answer: extern "C" fn() = core::mem::transmute(answerer);
                     answer();
                 }
-                let me = crate::thread::me();
+                let me = core::ptr::from_mut(crate::thread::me());
                 // A connection that was hung up on has its number turned about.
-                let leave = !there || answerer == 0 || me.asked_on < 0;
-                free(me.asked);
-                me.asked = core::ptr::null_mut();
-                me.asked_on = 0;
+                let leave = !there || answerer == 0 || (*me).asked_on < 0;
+                free((*me).asked);
+                (*me).asked = core::ptr::null_mut();
+                (*me).asked_on = 0;
                 SERVED.lock();
                 let index = CONNS[..CONN_COUNT].iter().position(|conn| conn.fd == fd);
                 let actor = index.map_or(NO_ACTOR, |index| CONNS[index].actor);
@@ -2443,11 +2444,11 @@ mod remote {
                 };
                 let conn = &mut CONNS[next];
                 conn.doing = BUSY;
-                me.asked_on = conn.fd + 1;
-                me.asked = core::mem::replace(&mut conn.message, core::ptr::null_mut());
-                me.asked_len = conn.len;
-                me.asked_kind = *me.asked;
-                me.asked_method = 3 + u16::from_le_bytes([*me.asked.add(1), *me.asked.add(2)]) as usize;
+                (*me).asked_on = conn.fd + 1;
+                (*me).asked = core::mem::replace(&mut conn.message, core::ptr::null_mut());
+                (*me).asked_len = conn.len;
+                (*me).asked_kind = *(*me).asked;
+                (*me).asked_method = 3 + u16::from_le_bytes([*(*me).asked.add(1), *(*me).asked.add(2)]) as usize;
                 SERVED.unlock();
             }
         }
@@ -2457,11 +2458,11 @@ mod remote {
     #[unsafe(no_mangle)]
     pub unsafe extern "C" fn koo_actor_message() -> *mut Header {
         unsafe {
-            let me = me();
-            if me.asked.is_null() {
+            let me = core::ptr::from_mut(me());
+            if (*me).asked.is_null() {
                 return new_str(b"");
             }
-            new_str(core::slice::from_raw_parts(me.asked.add(3), me.asked_method - 3))
+            new_str(core::slice::from_raw_parts((*me).asked.add(3), (*me).asked_method - 3))
         }
     }
 
@@ -2469,13 +2470,13 @@ mod remote {
     #[unsafe(no_mangle)]
     pub unsafe extern "C" fn koo_actor_body() -> *mut Header {
         unsafe {
-            let me = me();
-            if me.asked.is_null() {
+            let me = core::ptr::from_mut(me());
+            if (*me).asked.is_null() {
                 return new_str(b"");
             }
             new_str(core::slice::from_raw_parts(
-                me.asked.add(me.asked_method),
-                me.asked_len - me.asked_method,
+                (*me).asked.add((*me).asked_method),
+                (*me).asked_len - (*me).asked_method,
             ))
         }
     }
@@ -2485,12 +2486,12 @@ mod remote {
     pub unsafe extern "C" fn koo_actor_reply(kind: *const Header, body: *const Header) {
         unsafe {
             koo_flush();
-            let me = me();
-            if me.asked_on <= 0 || me.asked_kind != ASK {
+            let me = core::ptr::from_mut(me());
+            if (*me).asked_on <= 0 || (*me).asked_kind != ASK {
                 return;
             }
-            me.asked_kind = ANSWERED;
-            let fd = me.asked_on - 1;
+            (*me).asked_kind = ANSWERED;
+            let fd = (*me).asked_on - 1;
             let (kind, body) = (bytes(kind), bytes(body));
             let size = (2 + kind.len() + body.len()) as u32;
             let mut head = [0u8; 6];
@@ -2498,7 +2499,7 @@ mod remote {
             head[4..].copy_from_slice(&(kind.len() as u16).to_le_bytes());
             // An asker that is gone is not answered, and nothing else is the matter.
             if !(write_full(fd, &head) && write_full(fd, kind) && write_full(fd, body)) {
-                me.asked_on = -me.asked_on;
+                (*me).asked_on = -(*me).asked_on;
             }
         }
     }
@@ -2508,9 +2509,9 @@ mod remote {
     #[unsafe(no_mangle)]
     pub unsafe extern "C" fn koo_actor_hang_up() {
         unsafe {
-            let me = me();
-            if me.asked_on > 0 {
-                me.asked_on = -me.asked_on;
+            let me = core::ptr::from_mut(me());
+            if (*me).asked_on > 0 {
+                (*me).asked_on = -(*me).asked_on;
             }
         }
     }
@@ -2589,6 +2590,32 @@ mod remote {
                 return if busy { BUSY_THERE } else { -1 };
             }
             fd
+        }
+    }
+
+    /// Closes the connections that have been kept longer than they are kept for. A
+    /// server asks it once a second, so that a worker which was busy once and is quiet
+    /// now does not go on holding, in the process that has the actors, the places its
+    /// busy moment took.
+    #[allow(static_mut_refs)]
+    pub unsafe fn let_go_of_old() {
+        unsafe {
+            if HOME_COUNT == 0 || HOMES_OF != getpid() || !KEPT.try_lock() {
+                return;
+            }
+            let now = crate::koo_now_nanos();
+            let mut index = 0;
+            while index < HOME_COUNT {
+                if now - KEPT_AT[index] > KEPT_FOR {
+                    close(HOMES[index].1);
+                    HOME_COUNT -= 1;
+                    HOMES[index] = HOMES[HOME_COUNT];
+                    KEPT_AT[index] = KEPT_AT[HOME_COUNT];
+                } else {
+                    index += 1;
+                }
+            }
+            KEPT.unlock();
         }
     }
 
@@ -2728,12 +2755,14 @@ mod remote {
                 let answer_text = core::slice::from_raw_parts(answer, size);
                 let kind_len = u16::from_le_bytes([answer_text[0], answer_text[1]]) as usize;
                 let kind = &answer_text[2..2 + kind_len.min(size - 2)];
-                let me = me();
-                me.answer_kind_len = kind.len().min(me.answer_kind.len());
-                me.answer_kind[..me.answer_kind_len].copy_from_slice(&kind[..me.answer_kind_len]);
+                let me = core::ptr::from_mut(me());
+                let most = (*me).answer_kind.len();
+                let kept = kind.len().min(most);
+                (*me).answer_kind_len = kept;
+                (&mut (*me).answer_kind)[..kept].copy_from_slice(&kind[..kept]);
                 let text = new_str(&answer_text[(2 + kind_len).min(size)..]);
                 free(answer);
-                me.talking = false;
+                (*me).talking = false;
                 give_back(name, fd, true);
                 return text;
             }

@@ -1,0 +1,526 @@
+"""A check of a Koo server under the kinds of load that have broken it before.
+
+    python3 tests/stress/check.py <path to koo> [--target linux-x86-64] [--port 39800]
+    python3 tests/stress/check.py --binary <check.koo, built already> [--port 39800]
+
+Builds `check.koo`, starts it, and makes a series of checks against it, each of which
+passes or fails: every request answered exactly once, counters exact, nothing left
+spinning, open or running afterwards, and a prompt end when the server is told to
+stop. Ends with status 1 if any check failed. Takes about two minutes. Needs only
+Python 3 and, off Linux, `ps`, `pgrep` and `lsof`."""
+import atexit, glob, http.client, os, random, resource, signal, socket, subprocess, sys, tempfile, threading, time
+
+here = os.path.dirname(os.path.abspath(__file__))
+given = sys.argv[sys.argv.index("--binary") + 1] if "--binary" in sys.argv else None
+koo = None if given else os.path.abspath(sys.argv[1])
+target = sys.argv[sys.argv.index("--target") + 1] if "--target" in sys.argv else None
+PORT = int(sys.argv[sys.argv.index("--port") + 1]) if "--port" in sys.argv else 39800
+LINUX = sys.platform.startswith("linux")
+soft, hard = resource.getrlimit(resource.RLIMIT_NOFILE)
+want = 8192 if hard == resource.RLIM_INFINITY else min(8192, hard)
+resource.setrlimit(resource.RLIMIT_NOFILE, (max(soft, want), hard))
+threading.stack_size(256 * 1024)
+
+failures = []
+
+
+def ask(path, body=None, timeout=30):
+    """One request on a connection of its own: (status or the error's name, body, seconds)."""
+    began = time.time()
+    try:
+        conn = http.client.HTTPConnection("127.0.0.1", PORT, timeout=timeout)
+        conn.request("POST" if body is not None else "GET", path, body=body)
+        reply = conn.getresponse()
+        text = reply.read()
+        conn.close()
+        return reply.status, text, time.time() - began
+    except Exception as error:
+        return f"{type(error).__name__} ({error})", b"", time.time() - began
+
+
+class Client:
+    """Requests one after another on a connection that is kept, as a real client's are:
+    a machine has only so many ports for connections that are made and dropped."""
+
+    def __init__(self, timeout=30):
+        self.conn, self.timeout = None, timeout
+
+    def ask(self, path, body=None):
+        began = time.time()
+        try:
+            if self.conn is None:
+                self.conn = http.client.HTTPConnection("127.0.0.1", PORT, timeout=self.timeout)
+            self.conn.request("POST" if body is not None else "GET", path, body=body)
+            reply = self.conn.getresponse()
+            text = reply.read()
+            return reply.status, text, time.time() - began
+        except Exception as error:
+            if self.conn is not None:
+                self.conn.close()
+            self.conn = None
+            return f"{type(error).__name__} ({error})", b"", time.time() - began
+
+
+steady = Client()
+
+
+def fan(jobs):
+    """Runs every job at once, each on a thread, and returns what they returned, in order."""
+    out = [None] * len(jobs)
+
+    def run(index):
+        out[index] = jobs[index]()
+
+    threads = [threading.Thread(target=run, args=(i,), daemon=True) for i in range(len(jobs))]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    return out
+
+
+def children(pid):
+    if LINUX:
+        try:
+            with open(f"/proc/{pid}/task/{pid}/children") as f:
+                return [int(x) for x in f.read().split()]
+        except OSError:
+            return []
+    out = subprocess.run(["pgrep", "-P", str(pid)], capture_output=True, text=True).stdout
+    return [int(x) for x in out.split()]
+
+
+def files(pid):
+    if LINUX:
+        try:
+            return len(os.listdir(f"/proc/{pid}/fd"))
+        except OSError:
+            return 0
+    out = subprocess.run(["lsof", "-p", str(pid)], capture_output=True, text=True).stdout
+    return max(0, len(out.splitlines()) - 1)
+
+
+def threads_of(pid):
+    if LINUX:
+        try:
+            return len(os.listdir(f"/proc/{pid}/task"))
+        except OSError:
+            return 0
+    out = subprocess.run(["ps", "-M", "-p", str(pid)], capture_output=True, text=True).stdout
+    return max(0, len(out.splitlines()) - 1)
+
+
+def processor(pid):
+    """Seconds of processor the process has used."""
+    if LINUX:
+        try:
+            with open(f"/proc/{pid}/stat") as f:
+                fields = f.read().rsplit(")", 1)[1].split()
+            return (int(fields[11]) + int(fields[12])) / os.sysconf("SC_CLK_TCK")
+        except OSError:
+            return 0.0
+    out = subprocess.run(["ps", "-o", "time=", "-p", str(pid)], capture_output=True, text=True).stdout.strip()
+    if not out:
+        return 0.0
+    parts = out.split(":")
+    return sum(float(part) * 60 ** power for power, part in enumerate(reversed(parts)))
+
+
+def socket_of(pid):
+    """Where the supervising process is reached by its workers."""
+    if LINUX:
+        with open("/proc/net/unix") as f:
+            for line in f:
+                if f"@koo-{pid}-" in line:
+                    return "\0" + line.split("@", 1)[1].strip()
+        return None
+    found = glob.glob(os.path.join(os.environ.get("TMPDIR", "/tmp"), f"koo-{pid}-*.sock"))
+    return found[0] if found else None
+
+
+def check(name, problems):
+    """Reports one check: it passed if it has no problems to tell of."""
+    problems = [p for p in problems if p]
+    if problems:
+        failures.append(name)
+        print(f"FAIL  {name}")
+        for problem in problems[:6]:
+            print(f"        {problem}")
+    else:
+        print(f"pass  {name}")
+    sys.stdout.flush()
+
+
+def exactly_once(results, before, what):
+    """What is wrong with the answers of `/next` to one actor: each number once, none left out."""
+    bad = [r for r in results if r[0] != 200]
+    if bad:
+        return f"{what}: {len(bad)} of {len(results)} not answered with 200, the first {bad[0][0]} after {bad[0][2]:.1f}s"
+    got = sorted(int(r[1]) for r in results)
+    if got != list(range(before + 1, before + len(results) + 1)):
+        return f"{what}: answers are not {before + 1}..{before + len(results)}, each once: {got[:5]}..{got[-3:]}"
+    return None
+
+
+def count_of(actor, path="seen"):
+    """What an actor has counted. Asked again if the connection it was asked on had gone."""
+    for _ in range(3):
+        status, text, _ = steady.ask(f"/{path}/{actor}")
+        if status == 200:
+            return int(text)
+    return -1
+
+
+def start(workers):
+    env = dict(os.environ, PORT=str(PORT), WORKERS=str(workers))
+    env.pop("KOO_TARGET", None)
+    if ask("/ping", timeout=1)[0] == 200:
+        print(f"FAIL  something already answers on port {PORT}")
+        sys.exit(1)
+    server = subprocess.Popen([binary], env=env, stdout=subprocess.DEVNULL, stderr=open(errors, "a"))
+    atexit.register(lambda: server.poll() is None and server.kill())
+    for _ in range(100):
+        if server.poll() is None and ask("/ping", timeout=1)[0] == 200:
+            return server
+        time.sleep(0.1)
+    print("FAIL  the server did not start")
+    sys.exit(1)
+
+
+def stop(server, name):
+    began = time.time()
+    server.send_signal(signal.SIGTERM)
+    try:
+        status = server.wait(timeout=10)
+        took = time.time() - began
+        check(name, [status != 0 and f"exit status {status}", took > 3 and f"took {took:.1f}s to end"])
+    except subprocess.TimeoutExpired:
+        server.kill()
+        check(name, ["still running ten seconds after it was told to stop"])
+
+
+def burst(name, actors, each, rounds):
+    problems = []
+    for _ in range(rounds):
+        before = {a: count_of(a) for a in actors}
+        results = fan([(lambda a=a: (a, ask(f"/next/{a}"))) for a in actors for _ in range(each)])
+        for a in actors:
+            problems.append(exactly_once([r for who, r in results if who == a], before[a], f"actor {a}"))
+    check(name, problems)
+
+
+def large(name):
+    rng = random.Random(7)
+    bodies = [bytes(rng.choice(b"abcdefghijklmnopqrstuvwxyz0123456789") for _ in range(4096)) * rng.randint(60, 220) for _ in range(24)]
+    results = fan([(lambda i=i: ask(f"/echo/{80 + i % 8}", bodies[i], timeout=60)) for i in range(24)])
+    problems = [f"echo {i}: {r[0]} after {r[2]:.1f}s, {len(r[1])} of {len(bodies[i])} bytes" for i, r in enumerate(results) if r[0] != 200 or r[1] != bodies[i]]
+    results = fan([(lambda i=i: ask(f"/big/{88 + i}/3000000", timeout=60)) for i in range(8)])
+    problems += [f"big {i}: {r[0]}, {len(r[1])} bytes" for i, r in enumerate(results) if r[0] != 200 or len(r[1]) != 3000000]
+    check(name, problems)
+
+
+def slow_and_quick(name):
+    """Slow actors do not keep the quick ones waiting."""
+    before = {a: count_of(a) for a in range(16, 32)}
+    jobs = [(lambda a=a: ("nap", a, ask(f"/nap/{a}/400"))) for a in range(100, 200)]
+    jobs += [(lambda a=a: ("next", a, ask(f"/next/{a}"))) for a in range(16, 32) for _ in range(12)]
+    results = fan(jobs)
+    naps = [r for kind, _, r in results if kind == "nap"]
+    quick = [(a, r) for kind, a, r in results if kind == "next"]
+    problems = [f"{sum(1 for r in naps if r[0] != 200)} slow asks were not answered" if any(r[0] != 200 for r in naps) else None]
+    slowest = max(r[2] for _, r in quick)
+    problems.append(slowest > 5 and f"a quick ask took {slowest:.1f}s beside the slow ones")
+    for a in range(16, 32):
+        problems.append(exactly_once([r for who, r in quick if who == a], before[a], f"actor {a}"))
+    check(name, problems)
+
+
+def tells(name):
+    actors = range(32, 48)
+    before = sum(count_of(a, "told") for a in actors)
+    def teller(t):
+        client = Client()
+        return [client.ask(f"/tell/{32 + (t + k) % 16}")[0] for k in range(60)]
+
+    results = fan([(lambda t=t: teller(t)) for t in range(50)])
+    sent = sum(1 for batch in results for status in batch if status == 200)
+    told = 0
+    for _ in range(100):
+        told = sum(count_of(a, "told") for a in actors) - before
+        if told == sent:
+            break
+        time.sleep(0.1)
+    check(name, [sent != 3000 and f"{sent} of 3000 tells were answered", told != sent and f"{told} of {sent} told messages arrived"])
+
+
+def panics(name):
+    """Each actor once: one that panics more than five times in a minute is left stopped.
+    And no stack runs out in a server of one worker, which ends when one does."""
+    results = fan([(lambda i=i: ask(f"/slip/{200 + i}")) for i in range(16)])
+    problems = [any(r[0] != 500 for r in results) and f"a panic in an actor was answered with {sorted(set(str(r[0]) for r in results))}, not 500"]
+    if WORKERS > 1:
+        results = fan([(lambda i=i: ask(f"/dive/{216 + i}", timeout=60)) for i in range(8)])
+        problems.append(any(r[0] != 500 for r in results) and f"a stack that ran out in an actor was answered with {sorted(set(str(r[0]) for r in results))}, not 500")
+    results = fan([(lambda a=a: ask(f"/next/{a}")) for a in range(200, 224)])
+    bad = [(200 + i, r[0]) for i, r in enumerate(results) if r[0] != 200]
+    problems.append(bad and f"actors did not answer after they had panicked: {bad[:4]}")
+    problems.append(ask("/ping")[0] != 200 and "the server does not answer after the panics")
+    check(name, problems)
+
+
+def bad_clients(name):
+    """Clients that say nothing, or half of something, beside those that ask."""
+    held = []
+    for i in range(300):
+        s = socket.socket()
+        s.settimeout(5)
+        try:
+            s.connect(("127.0.0.1", PORT))
+            if i % 3 == 1:
+                s.sendall(b"GET /next/1 HT")
+            elif i % 3 == 2:
+                s.sendall(b"POST /echo/1 HTTP/1.1\r\nHost: x\r\nContent-Length: 1000\r\n\r\n0123456789")
+        except OSError:
+            pass
+        held.append(s)
+    actors = range(48, 64)
+    before = {a: count_of(a) for a in actors}
+    results = fan([(lambda a=a: (a, ask(f"/next/{a}", timeout=15))) for a in actors for _ in range(12)])
+    problems = [exactly_once([r for who, r in results if who == a], before[a], f"actor {a}") for a in actors]
+    for s in held:
+        s.close()
+    check(name, problems)
+
+
+def kills(name, server):
+    """Workers killed outright under load: nothing hangs, nothing is answered twice."""
+    actors = list(range(64, 80))
+    before = {a: count_of(a) for a in actors}
+    until = time.time() + 8
+    answers = {a: [] for a in actors}
+    errors, slow, lock = [0], [0.0], threading.Lock()
+
+    def client(seed):
+        rng, mine = random.Random(seed), Client(timeout=15)
+        while time.time() < until:
+            a = rng.choice(actors)
+            status, text, took = mine.ask(f"/next/{a}")
+            with lock:
+                slow[0] = max(slow[0], took)
+                if status == 200:
+                    answers[a].append(int(text))
+                else:
+                    errors[0] += 1
+
+    clients = [threading.Thread(target=client, args=(i,), daemon=True) for i in range(64)]
+    for t in clients:
+        t.start()
+    killed = 0
+    while time.time() < until - 1:
+        time.sleep(1)
+        workers = children(server.pid)
+        if workers:
+            try:
+                os.kill(random.choice(workers), signal.SIGKILL)
+                killed += 1
+            except OSError:
+                pass
+    for t in clients:
+        t.join()
+    problems = [killed == 0 and "no worker was there to kill"]
+    problems.append(slow[0] > 12 and f"a request waited {slow[0]:.1f}s")
+    total = sum(len(v) for v in answers.values())
+    problems.append(total < 200 and f"only {total} requests were answered in eight seconds")
+    lost = 0
+    for a in actors:
+        got = answers[a]
+        if len(set(got)) != len(got):
+            problems.append(f"actor {a} gave the same number twice")
+        after = count_of(a)
+        if after < before[a] + len(got):
+            problems.append(f"actor {a} counted {after - before[a]} for {len(got)} answers: it lost what it had")
+        lost += after - before[a] - len(got)
+    problems.append(lost > errors[0] and f"{lost} asks were run whose answers nobody got, with only {errors[0]} requests cut off")
+    for _ in range(50):
+        if len(children(server.pid)) == WORKERS:
+            break
+        time.sleep(0.1)
+    problems.append(len(children(server.pid)) != WORKERS and f"{len(children(server.pid))} workers afterwards, not {WORKERS}")
+    check(name, problems)
+
+
+def strangers(name, server):
+    """Peers on the supervising process's own socket that are no workers of its."""
+    path = socket_of(server.pid)
+    if path is None:
+        check(name, ["the supervising process's socket was not found"])
+        return
+    held = []
+    rng = random.Random(3)
+    for i in range(300):
+        s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        s.settimeout(2)
+        try:
+            s.connect(path)
+            if i % 3 == 0:
+                s.sendall(b"\x64")
+            elif i % 3 == 1:
+                s.sendall(b"\xff\xff\xff\x3f\x01\x05\x00ab")
+            else:
+                s.sendall(bytes(rng.randrange(256) for _ in range(64)))
+        except OSError:
+            pass
+        held.append(s)
+    time.sleep(0.5)
+    actors = range(240, 256)
+    before = {a: count_of(a) for a in actors}
+    results = fan([(lambda a=a: (a, ask(f"/next/{a}", timeout=15))) for a in actors for _ in range(12)])
+    problems = [exactly_once([r for who, r in results if who == a], before[a], f"actor {a}") for a in actors]
+    used = processor(server.pid)
+    time.sleep(2)
+    used = processor(server.pid) - used
+    problems.append(used > 0.5 and f"the supervising process used {used:.2f}s of processor in 2s with strangers connected")
+    for s in held:
+        s.close()
+    problems.append(server.poll() is not None and f"the server ended with status {server.returncode}")
+    check(name, problems)
+
+
+def crowded(name, server):
+    """More connections than the supervising process has room for, none of which it can
+    let go of: it waits for one to end, and does not spin meanwhile."""
+    path = socket_of(server.pid)
+    if path is None:
+        check(name, ["the supervising process's socket was not found"])
+        return
+    held, problems = [], []
+    for i in range(4200):
+        s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        s.settimeout(2)
+        # One that is refused for the moment, the others not yet taken, is tried again.
+        for attempt in range(200):
+            try:
+                s.connect(path)
+                s.sendall(b"\x64")
+                held.append(s)
+                break
+            except OSError:
+                if len(held) >= 4097:
+                    break
+                time.sleep(0.01)
+        else:
+            s.close()
+    problems.append(len(held) < 4097 and f"only {len(held)} connections could be made, too few to fill the table")
+    time.sleep(1)
+    used = processor(server.pid)
+    time.sleep(2)
+    used = processor(server.pid) - used
+    problems.append(used > 0.5 and f"the supervising process used {used:.2f}s of processor in 2s with its table full")
+    for s in held:
+        s.close()
+    time.sleep(0.5)
+    actors = range(224, 240)
+    before = {a: count_of(a) for a in actors}
+    results = fan([(lambda a=a: (a, ask(f"/next/{a}", timeout=15))) for a in actors for _ in range(12)])
+    problems += [exactly_once([r for who, r in results if who == a], before[a], f"actor {a}") for a in actors]
+    check(name, problems)
+
+
+def no_room(name, server):
+    """Every answering thread busy and no room for another connection to wait: a handler
+    that asks then waits for room, and is not told that the process is gone. (Only Linux
+    says at once that there is no room; elsewhere the one who connects is kept waiting.)"""
+    path = socket_of(server.pid)
+    naps = [threading.Thread(target=lambda a=a: ask(f"/nap/{a}/4000", timeout=60), daemon=True) for a in range(100, 240)]
+    for t in naps:
+        t.start()
+    time.sleep(1.5)
+    held = []
+    for i in range(4300):
+        s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        s.setblocking(False)
+        try:
+            s.connect(path)
+            held.append(s)
+        except OSError:
+            s.close()
+            break
+    # More at once than a worker has connections by, so that some must make one.
+    results = fan([(lambda: ask("/tell/47", timeout=30)) for _ in range(60)])
+    problems = [any(r[0] != 200 for r in results) and f"tells were answered with {sorted(set(str(r[0]) for r in results))} while the supervising process had no room"]
+    for s in held:
+        s.close()
+    for t in naps:
+        t.join()
+    problems.append(ask("/ping")[0] != 200 and "the server does not answer afterwards")
+    check(name, problems)
+
+
+def settled(name, server, files_before):
+    """Some time after the load: nothing spins, and nothing was left open or running."""
+    time.sleep(13)
+    pids = [server.pid] + children(server.pid)
+    before = {pid: processor(pid) for pid in pids}
+    time.sleep(3)
+    problems = []
+    for pid in pids:
+        used = processor(pid) - before[pid]
+        who = "the supervising process" if pid == server.pid else f"worker {pid}"
+        problems.append(used > 0.3 and f"{who} used {used:.2f}s of processor in 3s with nothing to do")
+    now = files(server.pid)
+    problems.append(now > files_before + 16 and f"the supervising process has {now} files open, and had {files_before} after the first load")
+    running = threads_of(server.pid)
+    problems.append(running > 160 and f"the supervising process has {running} threads")
+    problems.append(ask("/ping")[0] != 200 and "the server does not answer")
+    check(name, problems)
+
+
+build = tempfile.mkdtemp(prefix="koo-check-")
+binary, errors = os.path.join(build, "check"), os.path.join(build, "stderr.txt")
+if given:
+    binary = os.path.abspath(given)
+else:
+    command = [koo, "build", "--release", os.path.join(here, "check.koo"), "-o", binary]
+    if target:
+        command[2:2] = ["--target", target]
+    built = subprocess.run(command, capture_output=True, text=True, env={k: v for k, v in os.environ.items() if k != "KOO_TARGET"})
+    if built.returncode != 0:
+        print("FAIL  check.koo was not built\n" + built.stderr)
+        sys.exit(1)
+
+WORKERS = 4
+print(f"== {WORKERS} workers: the actors are in the supervising process")
+server = start(WORKERS)
+burst("600 asks at once, three times over, each answered exactly once", range(0, 16), 38, 3)
+# The workers keep the connections they asked on, for the next to ask: what is open now
+# is what is open after any such load, and is compared with what is open at the end.
+time.sleep(1)
+files_before = files(server.pid)
+large("long messages and long answers arrive whole")
+slow_and_quick("slow actors do not hold up quick ones")
+tells("3000 told messages all arrive")
+panics("a panic or an exhausted stack in an actor costs one request")
+bad_clients("300 clients that say half of something do not hold up the rest")
+kills("workers killed outright: nothing hangs, repeats or forgets", server)
+strangers("300 strangers on the supervising process's socket do no harm", server)
+crowded("a table full of connections that cannot be let go of is waited out, not spun on", server)
+if LINUX:
+    no_room("a supervising process with no room for another connection is waited for", server)
+burst("600 asks at once again, after all that", range(0, 16), 38, 1)
+settled("afterwards nothing spins and nothing is left open", server, files_before)
+stop(server, "told to stop, the server ends at once with status 0")
+
+WORKERS = 1
+print(f"== {WORKERS} worker: the actors are in the process that answers")
+server = start(WORKERS)
+burst("300 asks at once, each answered exactly once", range(0, 16), 19, 2)
+large("long messages and long answers arrive whole")
+tells("3000 told messages all arrive")
+panics("a panic in an actor costs one request")
+bad_clients("300 clients that say half of something do not hold up the rest")
+stop(server, "told to stop, the server ends at once with status 0")
+
+if failures:
+    print(f"\n{len(failures)} failed; what the server wrote is in {errors}")
+    sys.exit(1)
+print("\nall passed")

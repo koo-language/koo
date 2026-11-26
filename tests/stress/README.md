@@ -1,9 +1,24 @@
-# What found the defects
+# A server under load, and what found the defects
+
+`check.py` is run by the tests on every change. It builds `check.koo`, a server whose
+handlers ask and tell 256 actors, and makes a series of checks against it, each of
+which passes or fails: hundreds of asks at once answered exactly once each, long
+messages whole, workers killed outright, clients and local peers that say half of
+something, a table of connections with no room left, and afterwards nothing spinning,
+nothing left open, and a prompt end when the server is told to stop.
+
+    python3 tests/stress/check.py target/release/koo
+    python3 tests/stress/check.py target/release/koo --target linux-x86-64
+
+It takes about two minutes, and needs Python 3 and a limit on open files of 8192 or
+more (`ulimit -n`).
+
+## What found the defects
 
 These are the programs and scripts with which several independent searches for
 defects found what they found: hangs of a server under load, lookups that did not
 keep to their time, crashes from hostile peers. They are kept so that the same
-searches can be made again. The test suite does not run them: most need a Linux
+searches can be made again. The test suite does not run these: most need a Linux
 container with limits set on it, a name server that misbehaves on purpose, or
 minutes of load.
 

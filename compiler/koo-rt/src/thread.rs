@@ -252,6 +252,11 @@ pub fn room() -> bool {
 }
 
 /// What the calling thread has of its own.
+// (A function that goes on to run a program's code, or anything else that asks for the
+// thread's record again, keeps what this returns as a pointer, `core::ptr::from_mut(me())`,
+// and never takes a `&mut Thread` as a parameter: a parameter is promised to be the only
+// way to the record, and what was read through it is not read again after a call that
+// changed it, the list of actors held for one.)
 #[inline]
 pub unsafe fn me<'a>() -> &'a mut Thread {
     unsafe {

@@ -1693,6 +1693,7 @@ mod imp {
                 return;
             }
             SWEPT = seconds;
+            super::super::actor::let_go_of_old();
             for index in 0..CONNS.len {
                 let c = conn(index);
                 let busy = c.handling || (!CURRENT.answered && CURRENT.conn == index);

@@ -60,3 +60,16 @@ jobs:
         run: |
           target=linux-$(uname -m | sed 's/x86_64/x86-64/; s/aarch64/arm64/')
           env -u KOO_TEST_POSTGRES_TLS KOO_TARGET=$target cargo test -p koo --test programs
+      # A server under the kinds of load that have broken it before: hundreds of
+      # handlers asking actors at once, workers killed, peers that say half of
+      # something, a table with no room left. Each check passes or fails.
+      - name: a server under load
+        run: |
+          ulimit -n 16384 || ulimit -n "$(ulimit -Hn)"
+          python3 tests/stress/check.py target/debug/koo
+      - name: a server under load, built for the target (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          ulimit -n 16384 || ulimit -n "$(ulimit -Hn)"
+          target=linux-$(uname -m | sed 's/x86_64/x86-64/; s/aarch64/arm64/')
+          python3 tests/stress/check.py target/debug/koo --target $target
