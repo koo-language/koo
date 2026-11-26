@@ -1,0 +1,198 @@
+// One server for the hunt: actors of several kinds, asked and told from handlers.
+import std/http
+import std/time
+
+actor Counter {
+    var count: int = 0
+    var told: int = 0
+
+    fn next() -> int {
+        count += 1
+        return count
+    }
+
+    fn total() -> int {
+        return count
+    }
+
+    fn tolds() -> int {
+        return told
+    }
+
+    fn nap(millis: int) -> int {
+        time.sleep(1ms * millis)
+        count += 1
+        return count
+    }
+
+    fn echo(text: string) -> string {
+        return text
+    }
+
+    fn big(n: int) -> string {
+        return "x".repeat(n)
+    }
+
+    fn tell() {
+        told += 1
+    }
+
+    fn slow_tell(millis: int) {
+        time.sleep(1ms * millis)
+        told += 1
+    }
+
+    fn slow_say(millis: int, text: string) {
+        time.sleep(1ms * millis)
+        told += 1
+        print(text)
+    }
+
+    fn boom(n: int) -> int {
+        return 10 / n
+    }
+
+    fn told_boom(n: int) {
+        told += 10 / n
+    }
+
+    fn deep(n: int) -> int {
+        return sink(n)
+    }
+
+    fn told_deep(n: int) {
+        told += sink(n)
+    }
+
+    fn say(text: string) -> int {
+        print(text)
+        count += 1
+        return count
+    }
+}
+
+@mailbox(4)
+actor Small {
+    var told: int = 0
+
+    fn slow(millis: int) {
+        time.sleep(1ms * millis)
+        told += 1
+    }
+
+    fn tolds() -> int {
+        return told
+    }
+}
+
+actor Registry {
+    var made: [Counter] = []
+
+    fn add(c: Counter) -> int {
+        made.push(c)
+        return made.len
+    }
+
+    fn size() -> int {
+        return made.len
+    }
+}
+
+fn sink(n: int) -> int {
+    if n <= 0 {
+        return 0
+    }
+    return 1 + sink(n - 1)
+}
+
+fn num(req: http.Request, name: string) -> int {
+    return int.parse(req.param(name)) else 0
+}
+
+fn main() ! http.Error {
+    var counters: [Counter] = []
+    for i in 0..64 {
+        counters.push(Counter.start())
+    }
+    small := Small.start()
+    registry := Registry.start()
+    var app := http.App.new()
+    app.get("/ping", req -> http.text("pong\n"))
+    app.get("/next/:i", req -> http.text("{counters[num(req, "i") % 64].next()}\n"))
+    app.get("/total/:i", req -> http.text("{counters[num(req, "i") % 64].total()}\n"))
+    app.get("/tolds/:i", req -> http.text("{counters[num(req, "i") % 64].tolds()}\n"))
+    app.get("/nap/:i/:ms", req -> http.text("{counters[num(req, "i") % 64].nap(num(req, "ms"))}\n"))
+    app.post("/echo/:i", req -> http.text(counters[num(req, "i") % 64].echo(req.body())))
+    app.get("/big/:i/:n", req -> http.text(counters[num(req, "i") % 64].big(num(req, "n"))))
+    app.get("/tell/:i", req -> {
+        counters[num(req, "i") % 64].send.tell()
+        return http.text("told\n")
+    })
+    app.get("/trytell/:i", req -> http.text("{counters[num(req, "i") % 64].try_send.tell()}\n"))
+    app.get("/slowtell/:i/:ms", req -> {
+        counters[num(req, "i") % 64].send.slow_tell(num(req, "ms"))
+        return http.text("told\n")
+    })
+    app.get("/slowsay/:i/:ms/:text", req -> {
+        counters[num(req, "i") % 64].send.slow_say(num(req, "ms"), req.param("text"))
+        return http.text("told\n")
+    })
+    app.get("/boom/:i", req -> http.text("{counters[num(req, "i") % 64].boom(0)}\n"))
+    app.get("/toldboom/:i", req -> {
+        counters[num(req, "i") % 64].send.told_boom(0)
+        return http.text("told\n")
+    })
+    app.get("/deep/:i", req -> http.text("{counters[num(req, "i") % 64].deep(100000000)}\n"))
+    app.get("/tolddeep/:i", req -> {
+        counters[num(req, "i") % 64].send.told_deep(100000000)
+        return http.text("told\n")
+    })
+    app.get("/hdeep", req -> http.text("{sink(100000000)}\n"))
+    app.get("/hboom", req -> http.text("{10 / num(req, "zero")}\n"))
+    app.get("/say/:i/:n", req -> http.text("{counters[num(req, "i") % 64].say("s".repeat(num(req, "n")))}\n"))
+    app.get("/small/:ms", req -> {
+        small.send.slow(num(req, "ms"))
+        return http.text("told\n")
+    })
+    app.get("/trysmall/:ms", req -> http.text("{small.try_send.slow(num(req, "ms"))}\n"))
+    app.get("/smalltolds", req -> http.text("{small.tolds()}\n"))
+    // An actor started by the handler, asked, and stopped.
+    app.get("/life/:n", req -> {
+        c := Counter.start()
+        var last := 0
+        for i in 0..num(req, "n") {
+            last = c.next()
+        }
+        c.stop()
+        return http.text("{last}\n")
+    })
+    // An actor started by the handler and kept.
+    app.get("/keep", req -> {
+        c := Counter.start()
+        return http.text("{registry.add(c)}\n")
+    })
+    app.get("/kept", req -> http.text("{registry.size()}\n"))
+    app.get("/spin/:n", req -> {
+        var work := 0
+        for i in 0..num(req, "n") {
+            work = (work + i) % 1000003
+        }
+        return http.text("{work}\n")
+    })
+    app.get("/sleep/:ms", req -> {
+        time.sleep(1ms * num(req, "ms"))
+        return http.text("slept\n")
+    })
+    // A lookup from a handler: the host and the time are the request's.
+    app.get("/look/:host/:ms", req -> {
+        started := time.uptime()
+        host := req.param("host")
+        limit := num(req, "ms")
+        match http.get("http://{host}:8081/", timeout: 1ms * limit) {
+            reply => return http.text("{reply.status} {reply.body} -- {(time.uptime() - started).millis()} ms\n")
+            ! e => return http.text("{e.kind}: {e} -- {(time.uptime() - started).millis()} ms\n")
+        }
+    })
+    app.serve(port: 8080, max_body: 8000000)?
+    print("serve returned")
+}

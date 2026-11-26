@@ -1,0 +1,14 @@
+// look HOST [TIMEOUT_MS]: asks http://HOST:8081/ and says what came of it, and how long it took.
+import std/http
+import std/os
+import std/time
+
+fn main() {
+    host := os.args().get(0) else "ok.test"
+    limit := int.parse(os.args().get(1) else "5000") else 5000
+    started := time.uptime()
+    match http.get("http://{host}:8081/", timeout: 1ms * limit) {
+        reply => print("{host} [{limit} ms]: {reply.status} {reply.body} -- {(time.uptime() - started).millis()} ms")
+        ! e => print("{host} [{limit} ms]: {e.kind}: {e} -- {(time.uptime() - started).millis()} ms")
+    }
+}

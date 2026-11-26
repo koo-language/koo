@@ -1003,7 +1003,6 @@ extern "C" fn monitor(_: *mut u8) -> *mut u8 {
     }
 }
 
-/// A worker: takes an actor with mail, runs it, and lets go.
 /// Gives the calling thread a stack to come back by when its own is exhausted in the
 /// middle of a message: the message then ends as it does for any panic.
 unsafe fn landing_stack() {
@@ -1034,6 +1033,7 @@ extern "C" fn landed() -> ! {
     unsafe { leave() }
 }
 
+/// A worker: takes an actor with mail, runs it, and lets go.
 extern "C" fn work(_: *mut u8) -> *mut u8 {
     unsafe {
         let me = core::ptr::from_mut(me());
@@ -1649,6 +1649,7 @@ mod remote {
         fn signal(number: i32, handler: usize) -> usize;
         fn recv(fd: i32, data: *mut u8, len: usize, flags: i32) -> isize;
         fn shutdown(fd: i32, how: i32) -> i32;
+        fn fcntl(fd: i32, command: i32, ...) -> i32;
     }
 
     const MSG_PEEK: i32 = 2;
@@ -1657,6 +1658,7 @@ mod remote {
     const AF_UNIX: i32 = 1;
     const SOCK_STREAM: i32 = 1;
     const POLLIN: i16 = 0x1;
+    const POLLOUT: i16 = 0x4;
     const EINTR: i32 = 4;
     const SIGPIPE: i32 = 13;
     const ASK: u8 = 0;
@@ -1749,8 +1751,11 @@ mod remote {
     const BUSY: u8 = 1;
     /// its message was read, and waits until its actor has answered another;
     const HELD_UP: u8 = 2;
-    /// or the other end is gone, and the thread that answers on it has yet to let go.
+    /// or the other end is gone, and the thread that answers on it has yet to let go;
     const GONE: u8 = 3;
+    /// or its message is answered and the answer is still going out, to an asker that
+    /// takes it slowly: `out` is what is left of it. Its actor has gone on to the next.
+    const SENDING: u8 = 4;
 
     #[derive(Clone, Copy)]
     struct Conn {
@@ -1767,6 +1772,15 @@ mod remote {
         len: usize,
         got: usize,
         head: [u8; 4],
+        /// Whether more arrived on it while its message was being answered or held
+        /// up. It is not watched again until that message is done with: what is there
+        /// stays there, and to be told of it again and again would be to spin.
+        early: bool,
+        /// What is left of an answer that is going out, how long it is, and how much of
+        /// it has gone.
+        out: *mut u8,
+        out_len: usize,
+        out_sent: usize,
     }
 
     const NO_CONN: Conn = Conn {
@@ -1778,6 +1792,10 @@ mod remote {
         len: 0,
         got: 0,
         head: [0; 4],
+        early: false,
+        out: core::ptr::null_mut(),
+        out_len: 0,
+        out_sent: 0,
     };
 
     /// The connections, and whose turn it is. `SERVED` is held to read or change them:
@@ -1840,6 +1858,47 @@ mod remote {
 
     unsafe fn error() -> i32 {
         unsafe { *errno_location() }
+    }
+
+    /// Writes as much as the other end has room for, waiting for room until `until`
+    /// and no longer (0 for not at all). Returns how much went out, or nothing if the
+    /// other end is gone.
+    unsafe fn write_some(fd: i32, data: &[u8], until: i64) -> Option<usize> {
+        unsafe {
+            const F_GETFL: i32 = 3;
+            const F_SETFL: i32 = 4;
+            let non_blocking = if cfg!(target_os = "macos") { 0x4 } else { 0x800 };
+            let flags = fcntl(fd, F_GETFL);
+            fcntl(fd, F_SETFL, flags | non_blocking);
+            let (mut sent, mut there) = (0, true);
+            while sent < data.len() {
+                let n = write(fd, data.as_ptr().add(sent), data.len() - sent);
+                if n > 0 {
+                    sent += n as usize;
+                    continue;
+                }
+                let code = error();
+                if code == EINTR {
+                    continue;
+                }
+                if code != EAGAIN {
+                    there = false;
+                    break;
+                }
+                let left = (until - crate::koo_now_nanos()) / 1_000_000;
+                if until == 0 || left <= 0 {
+                    break;
+                }
+                let mut room = PollFd {
+                    fd,
+                    events: POLLOUT,
+                    revents: 0,
+                };
+                poll(&mut room, 1, left as i32);
+            }
+            fcntl(fd, F_SETFL, flags);
+            there.then_some(sent)
+        }
     }
 
     unsafe fn write_full(fd: i32, mut data: &[u8]) -> bool {
@@ -2023,6 +2082,7 @@ mod remote {
             shutdown(CONNS[index].fd, 2);
             close(CONNS[index].fd);
             free(CONNS[index].message);
+            free(CONNS[index].out);
             CONN_COUNT -= 1;
             CONNS[index] = CONNS[CONN_COUNT];
         }
@@ -2091,6 +2151,12 @@ mod remote {
                     let taken = take(milliseconds);
                     LEADING.unlock();
                     if taken {
+                        // (With a stack to come back by, as the threads that answer
+                        // have: a method that runs out of stack is then a panic in the
+                        // actor here too, and not the end of the server.)
+                        if me().landing == 0 {
+                            super::landing_stack();
+                        }
                         answer_taken();
                     }
                     return false;
@@ -2141,7 +2207,12 @@ mod remote {
             // watched too: its next message may arrive before this thread looks again,
             // and would otherwise lie there until something else woke the thread.
             for conn in &CONNS[..CONN_COUNT] {
-                if conn.doing != GONE {
+                if conn.doing == SENDING {
+                    // One whose answer is going out is watched for room to write in.
+                    fds[count].fd = conn.fd;
+                    fds[count].events = POLLOUT;
+                    count += 1;
+                } else if conn.doing != GONE && !conn.early {
                     fds[count].fd = conn.fd;
                     count += 1;
                 }
@@ -2216,7 +2287,6 @@ mod remote {
                 waiting = room && poll(&mut more, 1, 0) > 0;
             }
             // Each connection in its turn, so that no sender waits behind a busy one.
-            let mut early = false;
             let mut taken = false;
             for step in 0..count - 1 {
                 let slot = &fds[1 + (TURN + step) % (count - 1)];
@@ -2229,6 +2299,32 @@ mod remote {
                     SERVED.unlock();
                     continue;
                 };
+                if CONNS[index].doing == SENDING {
+                    // Room for more of an answer that is going out: as much as there
+                    // is room for goes, and when all has gone the connection is free
+                    // for its next message.
+                    let conn = &mut CONNS[index];
+                    let rest = core::slice::from_raw_parts(conn.out.add(conn.out_sent), conn.out_len - conn.out_sent);
+                    match write_some(fd, rest, 0) {
+                        None => drop_conn(index),
+                        Some(sent) => {
+                            conn.out_sent += sent;
+                            if conn.out_sent == conn.out_len {
+                                free(conn.out);
+                                conn.out = core::ptr::null_mut();
+                                conn.out_len = 0;
+                                conn.out_sent = 0;
+                                conn.doing = IDLE;
+                                conn.early = false;
+                                conn.turn = TURNS;
+                                TURNS += 1;
+                                CROWDED.store(false, Relaxed);
+                            }
+                        }
+                    }
+                    SERVED.unlock();
+                    continue;
+                }
                 if CONNS[index].doing != IDLE {
                     // Something on a connection that is being answered: the other end
                     // is gone, or its next message is early.
@@ -2243,7 +2339,7 @@ mod remote {
                             _ => {}
                         }
                     } else {
-                        early = true;
+                        CONNS[index].early = true;
                     }
                     SERVED.unlock();
                     continue;
@@ -2387,10 +2483,26 @@ mod remote {
                 (*me).asked_method = method_end;
                 taken = true;
             }
-            if early && !taken {
-                thread::give_way();
-            }
             taken
+        }
+    }
+
+    /// Whether a message, `Kind id method`, names its actor by the kind the actor is of.
+    /// One that names no actor, or one that is no longer there, is for the program to
+    /// answer as it does.
+    unsafe fn of_its_kind(message: &[u8]) -> bool {
+        unsafe {
+            let mut parts = message.split(|byte| *byte == b' ');
+            let (Some(kind), Some(id)) = (parts.next(), parts.next()) else {
+                return true;
+            };
+            let Some(id) = core::str::from_utf8(id).ok().and_then(|id| id.parse::<i64>().ok()) else {
+                return true;
+            };
+            match slot_of(id) {
+                Some(slot) => kind_name((*slot).kind as usize) == kind,
+                None => true,
+            }
         }
     }
 
@@ -2405,6 +2517,11 @@ mod remote {
                 // The asker is told that its message is the one being answered.
                 let there = (*me).asked_kind != ASK || write_full(fd, b"A");
                 let answerer = ANSWERER.load(Acquire);
+                // A message that names an actor by a kind the actor is not of comes
+                // from no worker of this program: it is not run, and whoever sent it
+                // is hung up on.
+                let message = core::slice::from_raw_parts((*me).asked.add(3), (*me).asked_method - 3);
+                let there = there && of_its_kind(message);
                 if there && answerer != 0 {
                     let answer: extern "C" fn() = core::mem::transmute(answerer);
                     answer();
@@ -2421,9 +2538,15 @@ mod remote {
                 if let Some(index) = index {
                     if leave || CONNS[index].doing == GONE {
                         drop_conn(index);
+                    } else if !CONNS[index].out.is_null() {
+                        // Its answer is still going out, and whoever waits for a
+                        // message sends the rest: the actor is not kept for that.
+                        CONNS[index].doing = SENDING;
+                        CONNS[index].actor = NO_ACTOR;
                     } else {
                         CONNS[index].doing = IDLE;
                         CONNS[index].actor = NO_ACTOR;
+                        CONNS[index].early = false;
                         CONNS[index].turn = TURNS;
                         TURNS += 1;
                         CROWDED.store(false, Relaxed);
@@ -2498,9 +2621,55 @@ mod remote {
             head[..4].copy_from_slice(&size.to_le_bytes());
             head[4..].copy_from_slice(&(kind.len() as u16).to_le_bytes());
             // An asker that is gone is not answered, and nothing else is the matter.
-            if !(write_full(fd, &head) && write_full(fd, kind) && write_full(fd, body)) {
-                (*me).asked_on = -(*me).asked_on;
+            // One that is there and takes its answer slowly, a worker in the middle of
+            // a long computation for one, is waited for a moment and no longer: what is
+            // left of the answer is put by with the connection, to go out as there is
+            // room, and the actor goes on to its next message meanwhile.
+            let until = crate::koo_now_nanos() + 50_000_000;
+            let parts: [&[u8]; 3] = [&head, kind, body];
+            let total = head.len() + kind.len() + body.len();
+            let mut done = 0;
+            for part in parts {
+                match write_some(fd, part, until) {
+                    Some(sent) => {
+                        done += sent;
+                        if sent < part.len() {
+                            break;
+                        }
+                    }
+                    None => {
+                        (*me).asked_on = -(*me).asked_on;
+                        return;
+                    }
+                }
             }
+            if done == total {
+                return;
+            }
+            let rest = malloc(total - done);
+            let (mut skip, mut at) = (done, 0);
+            if !rest.is_null() {
+                for part in parts {
+                    let from = skip.min(part.len());
+                    skip -= from;
+                    core::ptr::copy_nonoverlapping(part.as_ptr().add(from), rest.add(at), part.len() - from);
+                    at += part.len() - from;
+                }
+            }
+            SERVED.lock();
+            let index = CONNS[..CONN_COUNT].iter().position(|conn| conn.fd == fd);
+            match index {
+                Some(index) if !rest.is_null() && CONNS[index].doing == BUSY => {
+                    CONNS[index].out = rest;
+                    CONNS[index].out_len = total - done;
+                    CONNS[index].out_sent = 0;
+                }
+                _ => {
+                    free(rest);
+                    (*me).asked_on = -(*me).asked_on;
+                }
+            }
+            SERVED.unlock();
         }
     }
 
@@ -2582,7 +2751,13 @@ mod remote {
             if fd < 0 || !crate::pg::connect_within(fd, &address as *const Address as *const u8, len, 2000) {
                 // The process is there and has no room for another connection this
                 // moment, which Linux says in so many words; or it is not there.
-                let busy = fd >= 0 && cfg!(target_os = "linux") && error() == EAGAIN;
+                // (Or this process has no file left to make a connection with, which
+                // 23 and 24 say: one is free when another of its handlers is done.)
+                let busy = if fd < 0 {
+                    matches!(error(), 23 | 24)
+                } else {
+                    cfg!(target_os = "linux") && error() == EAGAIN
+                };
                 if fd >= 0 {
                     close(fd);
                 }

@@ -56,6 +56,20 @@ actor Counter {
     }
 }
 
+// An actor of another kind, so that there are two.
+actor Names {
+    var names: [string] = []
+
+    fn add(name: string) -> int {
+        names.push(name)
+        return names.len
+    }
+
+    fn all() -> [string] {
+        return names
+    }
+}
+
 fn num(req: http.Request, name: string) -> int {
     return int.parse(req.param(name)) else 0
 }
@@ -65,8 +79,15 @@ fn main() ! http.Error {
     for i in 0..256 {
         counters.push(Counter.start())
     }
+    names := Names.start()
     var app := http.App.new()
     app.get("/ping", req -> http.text("pong\n"))
+    app.get("/names", req -> http.text("{names.add("n")} {names.all().len}\n"))
+    // A handler that waits, and lets its worker go on meanwhile.
+    app.get("/wait/:ms", req -> {
+        time.sleep(1ms * num(req, "ms"))
+        return http.text("waited\n")
+    })
     app.get("/next/:i", req -> http.text("{counters[num(req, "i") % 256].next()}\n"))
     app.get("/seen/:i", req -> http.text("{counters[num(req, "i") % 256].seen()}\n"))
     app.get("/nap/:i/:ms", req -> http.text("{counters[num(req, "i") % 256].nap(num(req, "ms"))}\n"))

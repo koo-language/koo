@@ -1,0 +1,18 @@
+// A server with one long answer, and a handler that calls itself without end.
+import std/http
+
+fn sink(n: int) -> int {
+    if n <= 0 {
+        return 0
+    }
+    return 1 + sink(n - 1)
+}
+
+fn main() ! http.Error {
+    var app := http.App.new()
+    app.get("/ping", req -> http.text("pong\n"))
+    app.get("/long/:n", req -> http.text("x".repeat(int.parse(req.param("n")) else 0)))
+    app.get("/deep", req -> http.text("{sink(100000000)}\n"))
+    app.serve(port: 8080)?
+    print("serve returned")
+}

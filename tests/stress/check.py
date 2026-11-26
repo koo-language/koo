@@ -8,7 +8,7 @@ passes or fails: every request answered exactly once, counters exact, nothing le
 spinning, open or running afterwards, and a prompt end when the server is told to
 stop. Ends with status 1 if any check failed. Takes about two minutes. Needs only
 Python 3 and, off Linux, `ps`, `pgrep` and `lsof`."""
-import atexit, glob, http.client, os, random, resource, signal, socket, subprocess, sys, tempfile, threading, time
+import atexit, glob, http.client, struct, os, random, resource, signal, socket, subprocess, sys, tempfile, threading, time
 
 here = os.path.dirname(os.path.abspath(__file__))
 given = sys.argv[sys.argv.index("--binary") + 1] if "--binary" in sys.argv else None
@@ -197,6 +197,114 @@ def stop(server, name):
     except subprocess.TimeoutExpired:
         server.kill()
         check(name, ["still running ten seconds after it was told to stop"])
+
+
+def stop_while_sending(server, name):
+    """Told to stop while clients are still taking long answers, slowly: they get them whole."""
+    size, got = 6000000, [0] * 4
+
+    def reader(index):
+        try:
+            s = socket.socket()
+            s.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 65536)
+            s.settimeout(20)
+            s.connect(("127.0.0.1", PORT))
+            s.sendall(f"GET /big/{90 + index}/{size} HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n".encode())
+            data = b""
+            while True:
+                piece = s.recv(65536)
+                if not piece:
+                    break
+                data += piece
+                time.sleep(0.03)
+            got[index] = len(data.split(b"\r\n\r\n", 1)[1]) if b"\r\n\r\n" in data else -1
+        except OSError:
+            got[index] = -2
+
+    readers = [threading.Thread(target=reader, args=(i,), daemon=True) for i in range(4)]
+    for t in readers:
+        t.start()
+    time.sleep(0.7)
+    began = time.time()
+    server.send_signal(signal.SIGTERM)
+    for t in readers:
+        t.join()
+    problems = [any(n != size for n in got) and f"answers of {size} bytes arrived as {got}"]
+    try:
+        status = server.wait(timeout=15)
+        problems.append(status != 0 and f"exit status {status}")
+    except subprocess.TimeoutExpired:
+        server.kill()
+        problems.append("still running long after it was told to stop")
+    check(name, problems)
+
+
+def shared(name):
+    """Many requests that wait, arriving one after another: they are shared out among the
+    workers, and a quick request is answered at once by one that has room."""
+    waits = []
+    for i in range(300):
+        t = threading.Thread(target=lambda: waits.append(ask("/wait/5000", timeout=30)[0]), daemon=True)
+        t.start()
+        waits.append(t)
+        time.sleep(0.004)
+    threads = [w for w in waits if isinstance(w, threading.Thread)]
+    time.sleep(0.5)
+    quick = [ask("/ping", timeout=4) for _ in range(10)]
+    slowest = max(r[2] for r in quick)
+    problems = [any(r[0] != 200 for r in quick) and f"quick requests were answered {sorted(set(str(r[0]) for r in quick))} beside 300 that wait"]
+    problems.append(slowest > 2 and f"a quick request took {slowest:.1f}s beside 300 that wait")
+    for t in threads:
+        t.join()
+    done = [w for w in waits if not isinstance(w, threading.Thread)]
+    problems.append(any(status != 200 for status in done) and f"{sum(1 for status in done if status != 200)} of the 300 that waited were not answered")
+    check(name, problems)
+
+
+def message(method, body):
+    """A message as a worker sends it to the supervising process: an ask of `Kind id method`."""
+    inner = bytes([0]) + struct.pack("<H", len(method)) + method.encode() + body.encode()
+    return struct.pack("<I", len(inner)) + inner
+
+
+def forgers(name, server):
+    """A local peer that writes well-formed messages no worker would: an actor named by a
+    kind it is not of, and more on a connection than its answer has been waited for."""
+    path = socket_of(server.pid)
+    if path is None:
+        check(name, ["the supervising process's socket was not found"])
+        return
+    problems = []
+    for method in ("Names 0 all", "Names 3 add", "Counter 256 next"):
+        s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        s.settimeout(3)
+        try:
+            s.connect(path)
+            s.sendall(message(method, '["x"]' if method.endswith("add") else "[]"))
+            s.recv(200)
+        except OSError:
+            pass
+        s.close()
+    time.sleep(0.3)
+    problems.append(server.poll() is not None and f"the server ended with status {server.returncode} when an actor was named by another kind")
+    problems.append(ask("/names")[0] != 200 and "the actor of the other kind does not answer afterwards")
+    problems.append(ask("/next/0")[0] != 200 and "the first actor does not answer afterwards")
+    s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    try:
+        s.connect(path)
+        s.sendall(message("Counter 250 nap", "[3000]"))
+        time.sleep(0.3)
+        s.sendall(b"\x00")
+    except OSError:
+        problems.append("the supervising process could not be reached")
+    time.sleep(0.3)
+    used = processor(server.pid)
+    time.sleep(2)
+    used = processor(server.pid) - used
+    problems.append(used > 0.5 and f"the supervising process used {used:.2f}s of processor in 2s over one byte too many")
+    s.close()
+    time.sleep(1)
+    check(name, problems)
 
 
 def burst(name, actors, each, rounds):
@@ -431,6 +539,9 @@ def no_room(name, server):
     that asks then waits for room, and is not told that the process is gone. (Only Linux
     says at once that there is no room; elsewhere the one who connects is kept waiting.)"""
     path = socket_of(server.pid)
+    if path is None:
+        check(name, ["the supervising process's socket was not found"])
+        return
     naps = [threading.Thread(target=lambda a=a: ask(f"/nap/{a}/4000", timeout=60), daemon=True) for a in range(100, 240)]
     for t in naps:
         t.start()
@@ -501,14 +612,18 @@ slow_and_quick("slow actors do not hold up quick ones")
 tells("3000 told messages all arrive")
 panics("a panic or an exhausted stack in an actor costs one request")
 bad_clients("300 clients that say half of something do not hold up the rest")
+shared("300 requests that wait are shared out, and a quick one is answered at once")
 kills("workers killed outright: nothing hangs, repeats or forgets", server)
 strangers("300 strangers on the supervising process's socket do no harm", server)
+forgers("a peer that names an actor by another kind, or says too much, does no harm", server)
 crowded("a table full of connections that cannot be let go of is waited out, not spun on", server)
 if LINUX:
     no_room("a supervising process with no room for another connection is waited for", server)
 burst("600 asks at once again, after all that", range(0, 16), 38, 1)
 settled("afterwards nothing spins and nothing is left open", server, files_before)
 stop(server, "told to stop, the server ends at once with status 0")
+server = start(WORKERS)
+stop_while_sending(server, "told to stop while long answers are going out, the server sends them whole")
 
 WORKERS = 1
 print(f"== {WORKERS} worker: the actors are in the process that answers")

@@ -1,0 +1,13 @@
+// A server whose handlers wait: no actors, nothing else.
+import std/http
+import std/time
+
+fn main() ! http.Error {
+    var app := http.App.new()
+    app.get("/ping", req -> http.text("pong\n"))
+    app.get("/sleep/:ms", req -> {
+        time.sleep(1ms * (int.parse(req.param("ms")) else 0))
+        return http.text("slept\n")
+    })
+    app.serve(port: 8080)?
+}

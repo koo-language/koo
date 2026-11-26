@@ -364,6 +364,7 @@ pub unsafe fn after_fork() {
         THREADS[0].store(mine, Release);
         THREAD_COUNT.store(1, Release);
         STARTING.store(0, Release);
+        RESERVE.store(0, Release);
     }
 }
 
@@ -376,6 +377,11 @@ pub unsafe fn start(work: extern "C" fn(*mut u8) -> *mut u8) -> bool {
         // take the last of the room.)
         STARTING.fetch_add(1, Relaxed);
         if THREAD_COUNT.load(Relaxed) + STARTING.load(Relaxed) + 4 > MOST_THREADS {
+            STARTING.fetch_sub(1, Relaxed);
+            return false;
+        }
+        let reserve = RESERVE.load(Relaxed);
+        if reserve != 0 && processes_left().is_some_and(|left| left <= reserve as i64) {
             STARTING.fetch_sub(1, Relaxed);
             return false;
         }
@@ -632,6 +638,60 @@ pub fn processors() -> usize {
     count.min(allowed()).max(1)
 }
 
+/// The numbers in a small file of the system's, where `max` stands for no limit.
+#[cfg(target_os = "linux")]
+unsafe fn numbers(path: &core::ffi::CStr) -> Option<[i64; 2]> {
+    unsafe extern "C" {
+        fn open(path: *const u8, flags: i32, ...) -> i32;
+        fn read(fd: i32, buffer: *mut u8, count: usize) -> isize;
+        fn close(fd: i32) -> i32;
+    }
+    unsafe {
+        let fd = open(path.as_ptr() as *const u8, 0);
+        if fd < 0 {
+            return None;
+        }
+        let mut text = [0u8; 64];
+        let len = read(fd, text.as_mut_ptr(), text.len());
+        close(fd);
+        let text = core::str::from_utf8(&text[..len.max(0) as usize]).ok()?;
+        let mut found = [-1i64; 2];
+        for (at, word) in text.split_ascii_whitespace().take(2).enumerate() {
+            found[at] = if word == "max" { -1 } else { word.parse().ok()? };
+        }
+        Some(found)
+    }
+}
+
+/// How many more processes and threads the program's control group may have, on Linux,
+/// where it has a limit on them and says so. A thread counts as a process does.
+#[cfg(target_os = "linux")]
+fn processes_left() -> Option<i64> {
+    unsafe {
+        let one = |path| numbers(path).map(|found| found[0]);
+        let (most, now) = match one(c"/sys/fs/cgroup/pids.max") {
+            Some(most) => (most, one(c"/sys/fs/cgroup/pids.current")?),
+            None => (
+                one(c"/sys/fs/cgroup/pids/pids.max")?,
+                one(c"/sys/fs/cgroup/pids/pids.current")?,
+            ),
+        };
+        if most < 0 || now < 0 { None } else { Some(most - now) }
+    }
+}
+
+#[cfg(not(target_os = "linux"))]
+fn processes_left() -> Option<i64> {
+    None
+}
+
+/// How many processes a thread that is started must leave the program room for, or 0
+/// where nobody has asked. The process that watches the workers of a server asks: its
+/// own threads count against the same limit as its workers, and a thread, once started,
+/// stays, so that every one it started with the last of the room would be a worker it
+/// could never start again.
+pub static RESERVE: AtomicUsize = AtomicUsize::new(0);
+
 /// How many processors the system lets the program use at a time, on Linux: the
 /// processors it may run on, and the time its control group is allowed, which is
 /// written as so many microseconds in each period of so many.
@@ -642,24 +702,6 @@ fn allowed() -> usize {
         fn open(path: *const u8, flags: i32, ...) -> i32;
         fn read(fd: i32, buffer: *mut u8, count: usize) -> isize;
         fn close(fd: i32) -> i32;
-    }
-    /// The numbers in a small file of the system's, where `max` stands for no limit.
-    unsafe fn numbers(path: &core::ffi::CStr) -> Option<[i64; 2]> {
-        unsafe {
-            let fd = open(path.as_ptr() as *const u8, 0);
-            if fd < 0 {
-                return None;
-            }
-            let mut text = [0u8; 64];
-            let len = read(fd, text.as_mut_ptr(), text.len());
-            close(fd);
-            let text = core::str::from_utf8(&text[..len.max(0) as usize]).ok()?;
-            let mut found = [-1i64; 2];
-            for (at, word) in text.split_ascii_whitespace().take(2).enumerate() {
-                found[at] = if word == "max" { -1 } else { word.parse().ok()? };
-            }
-            Some(found)
-        }
     }
     unsafe {
         let mut most = usize::MAX;

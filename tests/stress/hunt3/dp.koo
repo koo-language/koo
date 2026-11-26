@@ -1,0 +1,31 @@
+// An actor with a method that calls itself without end, in a server of several workers.
+import std/http
+
+actor Digger {
+    var dug: int = 0
+
+    fn dig(n: int) -> int {
+        dug += 1
+        return down(n)
+    }
+
+    fn count() -> int {
+        return dug
+    }
+}
+
+fn down(n: int) -> int {
+    if n <= 0 {
+        return 0
+    }
+    return 1 + down(n - 1)
+}
+
+fn main() ! http.Error {
+    digger := Digger.start()
+    var app := http.App.new()
+    app.get("/ping", req -> http.text("pong\n"))
+    app.get("/count", req -> http.text("{digger.count()}\n"))
+    app.get("/dig", req -> http.text("{digger.dig(100000000)}\n"))
+    app.serve(port: 8080)?
+}

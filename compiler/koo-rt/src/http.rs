@@ -694,7 +694,18 @@ mod imp {
 
     static mut LISTEN: i32 = -1;
     static mut QUEUE: i32 = -1;
+    /// How many workers the server is to have, and when one that could not be started
+    /// is tried again.
+    static mut WORKERS_WANTED: usize = 0;
+    static mut START_AT: i64 = 0;
     static mut ACCEPTING: bool = false;
+    /// Why it is not, when it is not for want of being told to stop: the system had no
+    /// socket for another connection, or the worker has nearly all the handlers it can.
+    static mut NO_SOCKETS: bool = false;
+    static mut CROWDED: bool = false;
+    /// The most connections a process has open at a time: what the system allows it in
+    /// files, less what its handlers are left for themselves.
+    static mut MOST_OPEN: usize = usize::MAX;
     static mut MAX_BODY: usize = 1024 * 1024;
     static mut LOG: bool = false;
     static mut CONNS: List<Conn> = List::new();
@@ -911,17 +922,48 @@ mod imp {
         c.generation = c.generation.wrapping_add(1);
         unsafe {
             FREE.push(index as u32);
-            if !ACCEPTING && LISTEN >= 0 {
-                // There is room for another connection again.
-                ACCEPTING = true;
-                sys::listener_on(QUEUE, LISTEN, true);
+            // There is a socket to be had again for another connection.
+            NO_SOCKETS = false;
+        }
+    }
+
+    /// Takes new connections or leaves them to the other workers, as things stand. A
+    /// worker leaves them when it is told to stop, when it has no socket for another,
+    /// and when its handlers are nearly as many as it has places for: the system gives
+    /// a new connection to whichever worker is looking, and is as ready to give them all
+    /// to one, whose requests would then wait for a place while its neighbours had
+    /// nothing to do. It takes them again when a good few of its handlers are done.
+    #[allow(static_mut_refs)]
+    unsafe fn take_or_leave() {
+        unsafe {
+            let handlers = PLACES[..PLACE_COUNT]
+                .iter()
+                .filter(|place| matches!(place.doing, Doing::Handling | Doing::Waiting | Doing::Ready))
+                .count();
+            let open = CONNS.len - FREE.len;
+            if CROWDED {
+                CROWDED = handlers > MOST_PLACES - 40 || open + 8 > MOST_OPEN || !a_place_to_spare();
+            } else {
+                CROWDED = handlers >= MOST_PLACES - 24 || open >= MOST_OPEN || !a_place_to_spare();
+            }
+            let wanted = !STOP && !NO_SOCKETS && !CROWDED;
+            if wanted != ACCEPTING && LISTEN >= 0 {
+                ACCEPTING = wanted;
+                sys::listener_on(QUEUE, LISTEN, wanted);
             }
         }
     }
 
     #[allow(static_mut_refs)]
     unsafe fn take_connections() {
-        loop {
+        // So many at a time and no more, and none past the most there may be: the rest
+        // are still waiting when the requests on these have been looked at, and it is
+        // known by then whether this worker has room for them or its neighbours are to
+        // have them.
+        for _ in 0..16 {
+            if unsafe { CONNS.len - FREE.len >= MOST_OPEN } {
+                return;
+            }
             let fd = unsafe { accept(LISTEN, core::ptr::null_mut(), core::ptr::null_mut()) };
             if fd < 0 {
                 let code = unsafe { error() };
@@ -932,8 +974,8 @@ mod imp {
                     // No more sockets to be had: stop asking until one is given back.
                     unsafe {
                         if CONNS.items().iter().any(|c| c.fd >= 0) {
-                            ACCEPTING = false;
-                            sys::listener_on(QUEUE, LISTEN, false);
+                            NO_SOCKETS = true;
+                            take_or_leave();
                         }
                     }
                 }
@@ -1755,15 +1797,24 @@ mod imp {
                     }
                     continue;
                 }
+                // (While it is found out which workers have gone, no thread of this
+                // process takes the room they leave.)
+                thread::RESERVE.store(1 + WORKERS_WANTED, core::sync::atomic::Ordering::Relaxed);
                 loop {
                     let mut status = 0;
                     let gone = waitpid(-1, &mut status, WNOHANG);
                     if gone <= 0 {
                         break;
                     }
-                    let Some(slot) = CHILDREN[..CHILD_COUNT].iter().position(|child| *child == gone) else {
-                        continue;
-                    };
+                    if let Some(slot) = CHILDREN[..CHILD_COUNT].iter().position(|child| *child == gone) {
+                        CHILD_COUNT -= 1;
+                        CHILDREN[slot] = CHILDREN[CHILD_COUNT];
+                    }
+                }
+                // A worker that has gone has another started in its place: now, or, if
+                // the system has no process to give this moment, a second from now and
+                // every second after, until the server has the workers it was to have.
+                while CHILD_COUNT < WORKERS_WANTED && nanos() >= START_AT {
                     // What is waiting to be printed is printed here, not by the worker too.
                     koo_flush();
                     // The threads that answer for the actors go on meanwhile, but leave
@@ -1776,12 +1827,15 @@ mod imp {
                     }
                     super::super::actor::forking(false);
                     if child > 0 {
-                        CHILDREN[slot] = child;
+                        CHILDREN[CHILD_COUNT] = child;
+                        CHILD_COUNT += 1;
                     } else {
-                        CHILD_COUNT -= 1;
-                        CHILDREN[slot] = CHILDREN[CHILD_COUNT];
+                        START_AT = nanos() + 1_000_000_000;
                     }
                 }
+                // Room is left for one worker to be started in another's place, and
+                // for each that is still to be started.
+                thread::RESERVE.store(1 + WORKERS_WANTED - CHILD_COUNT, core::sync::atomic::Ordering::Relaxed);
                 // The wait ends early when the signal to stop arrives.
                 if super::super::actor::pending(100) {
                     return 2;
@@ -2174,6 +2228,19 @@ mod imp {
                     setrlimit(sys::RLIMIT_NOFILE, &fewer);
                 }
             }
+            // Not all of them are for connections: a handler opens files of its own, to
+            // ask an actor, a database or another server, and one that found none left
+            // would wait for a connection to close that waits for the handler. So where
+            // files are few, half are kept for the handlers; where they are many, two
+            // for each handler there can be at a time.
+            MOST_OPEN = usize::MAX;
+            if getrlimit(sys::RLIMIT_NOFILE, &mut limit) == 0 {
+                let files = limit[0].min(1 << 30) as usize;
+                MOST_OPEN = (files / 2)
+                    .max(files.saturating_sub(2 * MOST_PLACES))
+                    .saturating_sub(16)
+                    .max(8);
+            }
             STOP = false;
             STOPPED_AT = 0;
             CHILD = false;
@@ -2213,7 +2280,10 @@ mod imp {
                 start_queue();
                 return port;
             }
-            // This process answers nothing: it watches over those that do.
+            // This process answers nothing: it watches over those that do, and starts
+            // the ones that could not be started just now when they can be.
+            WORKERS_WANTED = workers as usize;
+            thread::RESERVE.store(1 + WORKERS_WANTED - CHILD_COUNT, core::sync::atomic::Ordering::Relaxed);
             SUPERVISOR = true;
             port
         }
@@ -2421,6 +2491,9 @@ mod imp {
     /// arrives on the connections it has, in nanoseconds.
     static mut STOPPED_AT: i64 = 0;
     const LINGER: i64 = 300_000_000;
+    /// How long after it was told to stop a server still sends what is left of the
+    /// answers it has begun.
+    const DRAIN: i64 = 30_000_000_000;
 
     /// How many handlers have panicked in this process.
     static mut PANICS: usize = 0;
@@ -2616,7 +2689,13 @@ mod imp {
                     let waiting = PLACES[..PLACE_COUNT]
                         .iter()
                         .any(|place| matches!(place.doing, Doing::Waiting | Doing::Ready));
-                    if !waiting && nanos() - STOPPED_AT > LINGER {
+                    // An answer that is still going out, to a client that takes it
+                    // slowly, is in hand as much as one that is not yet written: it is
+                    // sent to the end, for as long as half a minute. (One that the
+                    // client has stopped taking is given up sooner, as at any time.)
+                    let sending = nanos() - STOPPED_AT < DRAIN
+                        && CONNS.items().iter().any(|c| c.fd >= 0 && c.output.len > c.sent);
+                    if !waiting && !sending && nanos() - STOPPED_AT > LINGER {
                         if PLACE_COUNT > 1 {
                             ENDING = true;
                             continue;
@@ -2624,11 +2703,8 @@ mod imp {
                         finish();
                         return -2;
                     }
-                    if ACCEPTING {
-                        ACCEPTING = false;
-                        sys::listener_on(QUEUE, LISTEN, false);
-                    }
                 }
+                take_or_leave();
                 sweep();
                 // A handler that waits until a time is woken when the time has come.
                 let (time, mut soonest, mut late) = (nanos(), 1000, false);

@@ -333,16 +333,31 @@ unsafe fn literal(name: &[u8]) -> Option<Ip> {
     }
 }
 
-/// What a file holds, or nothing if it cannot be read. Only the first 64 KB.
+/// What a file of the system's settings holds, or nothing if it cannot be read. Of one
+/// longer than 4 MB, the whole lines of the first 4 MB: half a line would be read as a
+/// line that says something else.
 unsafe fn file(path: &core::ffi::CStr) -> Buf {
     unsafe {
+        const MOST: usize = 4 << 20;
         let mut out = Buf::new();
         let file = fopen(path.as_ptr() as *const u8, c"r".as_ptr() as *const u8);
         if file.is_null() {
             return out;
         }
-        out.room(65536);
-        out.len = fread(out.ptr, 1, 65536, file);
+        loop {
+            out.room(65536);
+            let got = fread(out.ptr.add(out.len), 1, 65536, file);
+            out.len += got;
+            if got < 65536 {
+                break;
+            }
+            if out.len >= MOST {
+                while out.len > 0 && *out.ptr.add(out.len - 1) != b'\n' {
+                    out.len -= 1;
+                }
+                break;
+            }
+        }
         fclose(file);
         out
     }
@@ -450,7 +465,9 @@ unsafe fn ask_name_servers(servers: &[Ip], name: &[u8], kind: u8, until: i64) ->
             // for two seconds, or for what is left of the caller's time.
             let patience = koo_now_nanos() + 2_000_000_000;
             let patience = if until != 0 { patience.min(until) } else { patience };
-            while asked & !unhelpful != 0 && ready(fd, false, patience) {
+            // (The time is looked at before each datagram as well as while waiting for
+            // one: a stream of them that are no answers is not waited through.)
+            while asked & !unhelpful != 0 && koo_now_nanos() < patience && ready(fd, false, patience) {
                 let mut answer = [0u8; 1500];
                 let mut from = [0u8; 28];
                 let mut from_len = from.len() as u32;

@@ -1,0 +1,33 @@
+// Two kinds of actor in a server of two workers.
+import std/http
+
+actor Counter {
+    var count: int = 0
+
+    fn next() -> int {
+        count += 1
+        return count
+    }
+}
+
+actor Names {
+    var names: [string] = []
+
+    fn add(name: string) -> int {
+        names.push(name)
+        return names.len
+    }
+
+    fn all() -> [string] {
+        return names
+    }
+}
+
+fn main() ! http.Error {
+    counter := Counter.start()
+    names := Names.start()
+    var app := http.App.new()
+    app.get("/next", req -> http.text("{counter.next()}\n"))
+    app.get("/names", req -> http.json(names.all()))
+    app.serve(port: 8080, workers: 2)?
+}
