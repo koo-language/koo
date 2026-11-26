@@ -1,0 +1,20 @@
+// `==` on an enumeration whose variants have fields compares the fields too, alone as in
+// a list (Section 5.5).
+enum Shape {
+    Circle { radius: float }
+    Dot
+}
+
+fn main() {
+    small := Shape.Circle { radius: 1.0 }
+    large := Shape.Circle { radius: 2.0 }
+    print(small == large)
+    print(small != large)
+    print([small].contains(large))
+    print([small] == [large])
+}
+
+//= false
+//= true
+//= false
+//= false

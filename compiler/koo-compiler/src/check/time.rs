@@ -58,7 +58,7 @@ impl Checker<'_> {
     /// the statement.
     pub(super) fn sql_template(&mut self, parts: &[koo_syntax::ast::StrPart], span: Span) -> Option<Expr> {
         use koo_syntax::ast;
-        let Some(Ty::Struct(query)) = self.prelude_struct("SqlQuery") else {
+        let Some(Ty::Struct(query)) = self.prelude_struct("Sql__Query") else {
             return None;
         };
         let mut texts = vec![String::new()];
@@ -131,7 +131,7 @@ impl Checker<'_> {
                 _ => None,
             }
         }
-        let Some(Ty::Struct(message)) = self.prelude_struct("LogMessage") else {
+        let Some(Ty::Struct(message)) = self.prelude_struct("Log__Message") else {
             return None;
         };
         let mut texts = vec![String::new()];

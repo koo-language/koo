@@ -1,0 +1,29 @@
+// Another name for a type has the functions and the variants of the type it names.
+type Stack<T> = { items: [T] }
+fn Stack<T>.new() -> Stack<T> { return Stack { items: [] } }
+enum Outcome<T> { Good { value: T }, Bad }
+
+type Celsius = float
+type Table = [string: [int]]
+type IntStack = Stack<int>
+type IntOutcome = Outcome<int>
+
+fn main() ! JsonError {
+    print(float.parse("1.5") else 0.0)
+    print(Celsius.parse("1.5") else 0.0)
+    t := Table.new()
+    print(t)
+    s := IntStack.new()
+    print(s)
+    print(IntStack.from_json(`{"items": [5]}`)?)
+    print(IntOutcome.Good { value: 1 })
+    print(IntOutcome.Bad)
+}
+
+//= 1.5
+//= 1.5
+//= [:]
+//= Stack<int> { items: [] }
+//= Stack<int> { items: [5] }
+//= Good { value: 1 }
+//= Bad

@@ -43,41 +43,48 @@ pub struct Parsed {
 
 /// Parses a complete source file: imports, then declarations.
 pub fn parse_file(src: &str) -> Parsed {
-    parse(src, false, 0)
+    parse(src, false, 0, false)
+}
+
+/// Parses a source file of the standard library, or one the compiler writes for a
+/// program: there alone a name of a type may have `__` in it, which sets a name of the
+/// library's apart from every name a program can write.
+pub fn parse_library(src: &str) -> Parsed {
+    parse(src, false, 0, true)
 }
 
 /// Parses a source file that begins at offset `base` of its package (see `SourceMap`):
 /// every span in the result counts from the start of the package.
 pub fn parse_file_at(src: &str, base: u32) -> Parsed {
-    parse(src, false, base)
+    parse(src, false, base, false)
 }
 
 /// Parses a fragment, as found in documentation: declarations and statements in any order,
 /// where a function may be a signature without a body.
 pub fn parse_fragment(src: &str) -> Parsed {
-    parse(src, true, 0)
+    parse(src, true, 0, false)
 }
 
 /// The stack the parser runs on. `MAX_NESTING` levels of the deepest recursion fit in it
 /// with room to spare, in unoptimized builds too.
 const PARSER_STACK: usize = 64 * 1024 * 1024;
 
-fn parse(src: &str, fragment: bool, base: u32) -> Parsed {
+fn parse(src: &str, fragment: bool, base: u32, library: bool) -> Parsed {
     // The parser is recursive, and the thread it is called on may have a small stack, so
     // it runs on a thread of its own. Where a thread cannot be started it runs in place.
     std::thread::scope(|scope| {
         let spawned = std::thread::Builder::new()
             .name("koo-parser".to_string())
             .stack_size(PARSER_STACK)
-            .spawn_scoped(scope, || parse_in_place(src, fragment, base));
+            .spawn_scoped(scope, || parse_in_place(src, fragment, base, library));
         match spawned {
             Ok(handle) => handle.join().unwrap_or_else(|panic| std::panic::resume_unwind(panic)),
-            Err(_) => parse_in_place(src, fragment, base),
+            Err(_) => parse_in_place(src, fragment, base, library),
         }
     })
 }
 
-fn parse_in_place(src: &str, fragment: bool, base: u32) -> Parsed {
+fn parse_in_place(src: &str, fragment: bool, base: u32, library: bool) -> Parsed {
     let lexed = lex_at(src, base);
     let index = LineIndex::at(src, base);
     let docs = lexed
@@ -85,7 +92,22 @@ fn parse_in_place(src: &str, fragment: bool, base: u32) -> Parsed {
         .iter()
         .map(|d| (index.line(d.offset), d.text.clone()))
         .collect();
+    // A name of a type with `__` in it is the standard library's: a program can
+    // neither declare one nor use one of the library's by that name.
+    let reserved: Vec<Diagnostic> = lexed
+        .tokens
+        .iter()
+        .filter_map(|token| match &token.kind {
+            Tok::UpperIdent(name) if !library && name.contains("__") => Some(
+                Diagnostic::new(token.span, format!("`{name}` is not a name a program can use"))
+                    .with_note("a name with `__` in it is reserved for the standard library (Section 3.1)"),
+            ),
+            _ => None,
+        })
+        .collect();
     let mut parser = Parser::new(lexed.tokens, fragment);
+    parser.diags.extend(reserved);
+    parser.library = library;
     parser.docs = docs;
     parser.index = index;
     let file = parser.file();
@@ -182,6 +204,8 @@ pub(crate) struct Parser {
     else_bind_ok: bool,
     /// Whether signatures without bodies and top-level statements are accepted.
     fragment: bool,
+    /// Whether what is parsed is the standard library's own (see `parse_library`).
+    library: bool,
     /// The names bound by `import c` declarations in this file (Section 11.1).
     c_prefixes: Vec<String>,
     /// Documentation comments by line.
@@ -209,6 +233,7 @@ impl Parser {
             struct_lit_ok: true,
             else_bind_ok: true,
             fragment,
+            library: false,
             // A fragment has no imports of its own; in one, `c` is the prefix of C names.
             c_prefixes: if fragment { vec!["c".to_string()] } else { Vec::new() },
             docs: HashMap::new(),
@@ -727,7 +752,9 @@ impl Parser {
         match self.peek() {
             Tok::UpperIdent(_) => {
                 let id = Self::ident_from(self.bump());
-                if id.name.contains('_') {
+                // A name with `__` in it is the standard library's own, and is refused
+                // in a program wherever it is written (see `parse_in_place`).
+                if id.name.contains('_') && !id.name.contains("__") {
                     self.report_help(
                         id.span,
                         format!("`{}` is not UpperCamelCase", id.name),

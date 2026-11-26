@@ -218,7 +218,7 @@ impl<'a> Checker<'a> {
                 };
                 let defs = self.program.errors[id].fields.clone();
                 let fields = match fields {
-                    Some(fields) => self.field_patterns(fields, *rest, &defs, name),
+                    Some(fields) => self.field_patterns(fields, *rest, &defs, name, &[]),
                     None => Vec::new(),
                 };
                 Pattern::Err {
@@ -244,14 +244,30 @@ impl<'a> Checker<'a> {
         rest: bool,
         defs: &[FieldDef],
         owner: &ast::Ident,
+        hidden: &[bool],
     ) -> Vec<(usize, Pattern)> {
+        let hidden = |index: usize| hidden.get(index).copied().unwrap_or(false);
         let mut out: Vec<(usize, Pattern)> = Vec::new();
         for field in fields {
-            let Some(index) = defs.iter().position(|d| d.name == field.name.name) else {
+            let found = defs
+                .iter()
+                .position(|d| d.name == field.name.name)
+                .filter(|index| !hidden(*index));
+            let Some(index) = found else {
                 self.error(
                     field.name.span,
                     format!("`{}` has no field `{}`", owner.name, field.name.name),
                 );
+                // What the pattern would have bound is still a name, of no known type,
+                // so that the one mistake is reported once.
+                match &field.pattern {
+                    Some(pattern) => {
+                        self.pattern(pattern, &Ty::Unknown);
+                    }
+                    None => {
+                        self.declare(&field.name, Ty::Unknown, false, LocalKind::Owned);
+                    }
+                }
                 continue;
             };
             if out.iter().any(|(i, _)| *i == index) {
@@ -268,11 +284,12 @@ impl<'a> Checker<'a> {
             };
             out.push((index, pattern));
         }
-        if !rest && out.len() < defs.len() {
+        let seen = (0..defs.len()).filter(|index| !hidden(*index)).count();
+        if !rest && out.len() < seen {
             let missing: Vec<String> = defs
                 .iter()
                 .enumerate()
-                .filter(|(i, _)| !out.iter().any(|(j, _)| j == i))
+                .filter(|(i, _)| !hidden(*i) && !out.iter().any(|(j, _)| j == i))
                 .map(|(_, d)| format!("`{}`", d.name))
                 .collect();
             self.error_help(
@@ -399,7 +416,7 @@ impl<'a> Checker<'a> {
                         let defs = self.program.enums[*id].variants[variant].fields.clone();
                         // A bare `Name` matches the variant whatever its fields.
                         let fields = match fields {
-                            Some(fields) => self.field_patterns(fields, *rest, &defs, name),
+                            Some(fields) => self.field_patterns(fields, *rest, &defs, name, &[]),
                             None => Vec::new(),
                         };
                         Pattern::Variant { variant, fields }
@@ -411,8 +428,16 @@ impl<'a> Checker<'a> {
                             return Pattern::Wildcard;
                         }
                         let defs = self.program.structs[*id].fields.clone();
+                        // What a type of the library keeps hidden, and what a handle of
+                        // an actor is made of, a pattern reaches no more than `x.field`.
+                        let handle = self.handles.contains(id);
+                        let library = *id < self.prelude_types.0;
+                        let hidden: Vec<bool> = defs
+                            .iter()
+                            .map(|def| !self.body_in_prelude && (handle || (library && def.name.starts_with('_'))))
+                            .collect();
                         let fields = match fields {
-                            Some(fields) => self.field_patterns(fields, *rest, &defs, name),
+                            Some(fields) => self.field_patterns(fields, *rest, &defs, name, &hidden),
                             None => Vec::new(),
                         };
                         Pattern::Struct { fields }

@@ -817,12 +817,18 @@ impl<'a> Checker<'a> {
                     } else {
                         self.method_of(ty, &method)
                     };
-                    let Some(found) = found else {
+                    // A method the compiler itself gives the type is a method of it too.
+                    let built_in = if found.is_none() && !type_level {
+                        self.built_in_method(ty, &method)
+                    } else {
+                        None
+                    };
+                    if found.is_none() && built_in.is_none() {
                         return Err(format!(
                             "it has no {} `{method}`",
                             if type_level { "function" } else { "method" }
                         ));
-                    };
+                    }
                     // The same parameter types, and a return type that is the interface's.
                     let saved = std::mem::replace(&mut self.type_env, env.clone());
                     let wanted_params: Vec<(ParamKind, Ty)> = member
@@ -842,20 +848,36 @@ impl<'a> Checker<'a> {
                         _ => wanted_ok,
                     };
                     self.type_env = saved;
-                    let sig = self.sigs[found].clone();
-                    // The place a function of the library is told is no parameter of
-                    // the method as a program sees it.
-                    let seen = sig.params.len() - usize::from(self.located.contains(&found));
-                    let same_params = seen == wanted_params.len()
-                        && sig.params[..seen].iter().zip(&wanted_params).all(|(have, (kind, ty))| {
-                            have.ty == *ty && (have.kind == ParamKind::Var) == (*kind == ParamKind::Var)
-                        });
-                    if !same_params || !self.can_coerce(&sig.ret, &wanted_ret) {
+                    // What the type's method takes, what it returns, and whether it
+                    // changes the value it is called on.
+                    let (have_params, have_ret, have_var) = match (found, built_in) {
+                        (Some(found), _) => {
+                            let sig = self.sigs[found].clone();
+                            // The place a function of the library is told is no parameter
+                            // of the method as a program sees it.
+                            let seen = sig.params.len() - usize::from(self.located.contains(&found));
+                            let params: Vec<(bool, Ty)> = sig.params[..seen]
+                                .iter()
+                                .map(|have| (have.kind == ParamKind::Var, have.ty.clone()))
+                                .collect();
+                            let var = sig.receiver.as_ref().is_some_and(|r| r.kind == ParamKind::Var);
+                            (params, sig.ret, var)
+                        }
+                        (None, Some((params, ret, var))) => {
+                            (params.into_iter().map(|ty| (false, ty)).collect(), ret, var)
+                        }
+                        (None, None) => unreachable!("a method that was not found was refused above"),
+                    };
+                    let same_params = have_params.len() == wanted_params.len()
+                        && have_params
+                            .iter()
+                            .zip(&wanted_params)
+                            .all(|((var, have), (kind, ty))| have == ty && *var == (*kind == ParamKind::Var));
+                    if !same_params || !self.can_coerce(&have_ret, &wanted_ret) {
                         return Err(format!("its `{method}` has a different signature from the interface's"));
                     }
                     if let ast::FnTarget::Method { kind, .. } = &member.sig.target {
                         let wanted_var = param_kind(*kind) == ParamKind::Var;
-                        let have_var = sig.receiver.as_ref().is_some_and(|r| r.kind == ParamKind::Var);
                         if wanted_var != have_var {
                             return Err(format!("its `{method}` and the interface's disagree on `var`"));
                         }
@@ -935,6 +957,34 @@ impl<'a> Checker<'a> {
         let reads = sig.receiver.as_ref().is_some_and(|r| r.kind == ParamKind::Borrow)
             && sig.params.iter().all(|param| param.kind == ParamKind::Borrow);
         (reads && sig.params.len() == 1 && sig.params[0].ty == *ty && sig.ret == Ty::Int).then_some(id)
+    }
+
+    /// A method that the compiler gives a type and no program or library writes: what it
+    /// takes, what it returns, and whether it changes the value it is called on. They
+    /// are the methods `method_call_at` knows (`check/calls.rs`).
+    pub(super) fn built_in_method(&self, ty: &Ty, name: &str) -> Option<(Vec<Ty>, Ty, bool)> {
+        let overflow = || Ty::Result(Box::new(Ty::Int), ErrSet::of(vec![self.overflow]));
+        Some(match (ty, name) {
+            (Ty::List(element), "push") => (vec![(**element).clone()], Ty::Unit, true),
+            (Ty::List(element), "pop") => (Vec::new(), Ty::Optional(element.clone()), true),
+            (Ty::List(element), "get") => (vec![Ty::Int], Ty::Optional(element.clone()), false),
+            (Ty::List(_), "swap") => (vec![Ty::Int, Ty::Int], Ty::Unit, true),
+            (Ty::List(_), "clear") => (Vec::new(), Ty::Unit, true),
+            (Ty::List(element), "sort") if **element == Ty::Int => (Vec::new(), Ty::Unit, true),
+            (Ty::Int | Ty::Float, "abs") => (Vec::new(), ty.clone(), false),
+            (Ty::Int | Ty::Float | Ty::Str | Ty::Byte | Ty::Bool, "compare") => (vec![ty.clone()], Ty::Int, false),
+            (Ty::Int | Ty::Float, "min" | "max") => (vec![ty.clone()], ty.clone(), false),
+            (
+                Ty::Int,
+                "wrapping_add" | "wrapping_sub" | "wrapping_mul" | "bit_and" | "bit_or" | "bit_xor" | "shl" | "shr",
+            ) => (vec![Ty::Int], Ty::Int, false),
+            (Ty::Float, "sqrt") => (Vec::new(), Ty::Float, false),
+            (Ty::Float, "floor" | "ceil" | "round" | "trunc") => (Vec::new(), overflow(), false),
+            (ty, "hash") if self.is_hashable(ty) => (Vec::new(), Ty::Int, false),
+            // Every value has a text form (Section 4.6).
+            (ty, "to_string") if !matches!(ty, Ty::Unit | Ty::Result(..)) => (Vec::new(), Ty::Str, false),
+            _ => return None,
+        })
     }
 
     /// The method `name` of a type, for an interface or an operator to use. A method

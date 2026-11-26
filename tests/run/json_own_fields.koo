@@ -1,0 +1,32 @@
+// A type that writes and reads its own JSON has it whatever its fields are, and is used
+// inside other types.
+type Pair = { p: (int, int) }
+
+fn (self: Pair) to_json() -> string {
+    (a, b) := self.p
+    return "[{a},{b}]"
+}
+
+fn Pair.from_json(text: string) -> Pair ! JsonError {
+    items := List<int>.from_json(text)?
+    if items.len != 2 { fail JsonError { message: "expected two numbers", path: "" } }
+    return Pair { p: (items[0], items[1]) }
+}
+
+type Line = { name: string, pair: Pair }
+
+fn main() ! JsonError {
+    pair := Pair { p: (1, 2) }
+    print(pair.to_json())
+    print(Pair.from_json("[3,4]")?)
+    line := Line { name: "x", pair }
+    print(line.to_json())
+    print(Line.from_json(`{"name":"y","pair":[5,6]}`)?)
+    print([pair].to_json())
+}
+
+//= [1,2]
+//= Pair { p: (3, 4) }
+//= {"name":"x","pair":[1,2]}
+//= Line { name: "y", pair: Pair { p: (5, 6) } }
+//= [[1,2]]

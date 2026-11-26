@@ -383,8 +383,12 @@ impl<'a> Checker<'a> {
             // A mistake found inside a prelude function is reported at the call that
             // needed the function, which is the code the programmer can change.
             Some((origin, function)) => {
-                let message = format!("in `{function}`: {}", message.into());
-                self.diags.push(Diagnostic::new(*origin, message));
+                let (message, help) = inside(function, &message.into());
+                let diagnostic = Diagnostic::new(*origin, message);
+                self.diags.push(match help {
+                    Some(help) => diagnostic.with_help(help),
+                    None => diagnostic,
+                });
             }
             None => self.diags.push(Diagnostic::new(span, message)),
         }
@@ -393,7 +397,8 @@ impl<'a> Checker<'a> {
     fn error_help(&mut self, span: Span, message: impl Into<String>, help: impl Into<String>) {
         match &self.origin {
             Some((origin, function)) => {
-                let message = format!("in `{function}`: {}", message.into());
+                let (message, about_json) = inside(function, &message.into());
+                let help = about_json.map_or_else(|| help.into(), str::to_string);
                 self.diags.push(Diagnostic::new(*origin, message).with_help(help));
             }
             None => self.diags.push(Diagnostic::new(span, message).with_help(help)),
@@ -540,7 +545,7 @@ impl<'a> Checker<'a> {
         }
     }
 
-    /// A type's name as the program writes it: the prelude's `HttpRequest` is `http.Request`.
+    /// A type's name as the program writes it: the prelude's `Http__Request` is `http.Request`.
     /// The name of a function as a program writes it: the prelude's `http__json` is the
     /// `http.json` of a standard package. A function the prelude has for its own use
     /// (`j__float`) keeps its name, which no program sees.
@@ -556,26 +561,25 @@ impl<'a> Checker<'a> {
     }
 
     pub(crate) fn shown_name(&self, name: &str, prelude: bool) -> String {
-        for (prefix, package) in [("Http", "http"), ("Sql", "sql"), ("Log", "log")] {
-            if let Some(rest) = name.strip_prefix(prefix)
-                && prelude
-                && rest.starts_with(char::is_uppercase)
-            {
-                return format!("{package}.{rest}");
+        // A type of a standard package has the package in its name, set off by what
+        // no name of a program's may contain: `Http__Request` is `http.Request`.
+        match name.split_once("__") {
+            Some((package, rest)) if prelude && rest.starts_with(char::is_uppercase) => {
+                format!("{}.{rest}", package.to_ascii_lowercase())
             }
+            _ => name.to_string(),
         }
-        name.to_string()
     }
 
     /// The prelude's name for a type of a standard package that the file imports:
-    /// `http.Request` is `HttpRequest`. The import counts as used.
+    /// `http.Request` is `Http__Request`. The import counts as used.
     pub(crate) fn package_type(&mut self, path: &[ast::Ident]) -> Option<String> {
         let [package, name] = path else { return None };
         let file = self.file_of(package.span);
         let own = self.modules.get(&(file, package.name.clone()))?.2.clone();
         let mut letters = own.chars();
         let first = letters.next()?.to_ascii_uppercase();
-        let full = format!("{first}{}{}", letters.as_str(), name.name);
+        let full = format!("{first}{}__{}", letters.as_str(), name.name);
         if !self.type_names.contains_key(&full) {
             return None;
         }
@@ -1377,8 +1381,18 @@ impl<'a> Checker<'a> {
             }
             // A variant of an enumeration, where one is expected: `Priority.Normal`.
             // What is wrong with it, if anything, is said as for any other value.
+            // The enumeration may have type arguments (`Tree<int>.Empty`), and what is
+            // expected may be an optional of it.
             ast::ExprKind::Field { base: on, .. } => {
-                matches!((&on.kind, expected), (ast::ExprKind::Name(_), Some(Ty::Enum(_))))
+                let named = match &on.kind {
+                    ast::ExprKind::TypeApp { base, .. } => matches!(base.kind, ast::ExprKind::Name(_)),
+                    kind => matches!(kind, ast::ExprKind::Name(_)),
+                };
+                let wanted = match expected {
+                    Some(Ty::Optional(inner)) => Some(&**inner),
+                    other => other,
+                };
+                named && matches!(wanted, Some(Ty::Enum(_)))
             }
             _ => false,
         };
@@ -1535,7 +1549,7 @@ impl<'a> Checker<'a> {
                     }
                     return None;
                 };
-                // The prelude's `HttpApp.get` is `http.App.get` to the program.
+                // The prelude's `Http__App.get` is `http.App.get` to the program.
                 let on = self.ty_name(&ty);
                 let on = if self.in_prelude {
                     self.shown_name(&on, true)
@@ -2816,12 +2830,14 @@ impl<'a> Checker<'a> {
                 "the value may be an error: `x?` passes the error on to the caller, and `x else fallback` gives a value in its place (Section 6.4)",
             ),
             (Ty::Result(..), Ty::Result(..)) => Some("the errors of the value are not all in the expected error set"),
-            (Ty::Struct(id), Ty::Str) if self.program.structs[*id].name == "LogMessage" && self.is_opaque(expected) => {
+            (Ty::Struct(id), Ty::Str)
+                if self.program.structs[*id].name == "Log__Message" && self.is_opaque(expected) =>
+            {
                 Some(
                     "a line of the log is written as a string literal, so that the values in it are kept as fields: `log.info(\"{text}\")` logs a string that the program has (Section 3.3)",
                 )
             }
-            (Ty::Struct(id), Ty::Str) if self.program.structs[*id].name == "SqlQuery" && self.is_opaque(expected) => {
+            (Ty::Struct(id), Ty::Str) if self.program.structs[*id].name == "Sql__Query" && self.is_opaque(expected) => {
                 Some(
                     "a query is written as a string literal where one is expected, so that the values in it are sent apart from its text; for text the program has put together itself there is `sql.Query.raw(text)` (Section 10.3)",
                 )
@@ -2968,10 +2984,35 @@ fn is_constant(expr: &ast::Expr) -> bool {
         } => matches!(expr.kind, ast::ExprKind::Int(_) | ast::ExprKind::Float(_)),
         // An enum variant without fields: `Level.Info`.
         ast::ExprKind::Field { base, name } => {
+            let base = match &base.kind {
+                ast::ExprKind::TypeApp { base, .. } => base,
+                _ => base,
+            };
             matches!(&base.kind, ast::ExprKind::Name(ty) if is_type_like(&ty.name)) && is_type_like(&name.name)
         }
         _ => false,
     }
+}
+
+/// What is said of a mistake found inside a function of the library, at the call that
+/// needed the function. Where the mistake is that a type has no JSON, that is what is
+/// said, and not which of the library's own functions found it out.
+fn inside(function: &str, message: &str) -> (String, Option<&'static str>) {
+    for found in [
+        " has no method `_json_write`",
+        " has no function `_json_read`",
+        " has no method `_json_read_optional`",
+    ] {
+        if let Some(at) = message.find(found) {
+            return (
+                format!("{} has no JSON, and neither has a value that holds one", &message[..at]),
+                Some(
+                    "JSON is written for numbers, strings, booleans, bytes, lists, optionals, maps with string keys, and the structs and enums made of those (Section 8.7)",
+                ),
+            );
+        }
+    }
+    (format!("in `{function}`: {message}"), None)
 }
 
 fn is_type_like(name: &str) -> bool {

@@ -1519,7 +1519,7 @@ fn a__serve_remote() {
 // ---- std/http ---------------------------------------------------------------------------
 //
 // A type of a standard package is declared here as the package's name and its own, and is
-// reached as `package.Name`: `http.Request` is `HttpRequest`.
+// reached as `package.Name`: `http.Request` is `Http__Request`.
 //
 // The server itself is in the support library. It reads and routes requests, and hands
 // them over one at a time: `serve` below is the whole of what runs for each.
@@ -1529,55 +1529,55 @@ fn a__serve_remote() {
 /// was to an address that is not one (`Address`), could not reach its server
 /// (`Connection`), was not answered in its time (`Timeout`), or was answered with
 /// something that is not HTTP (`Protocol`).
-enum HttpErrorKind { Listen, Address, Connection, Timeout, Protocol }
+enum Http__ErrorKind { Listen, Address, Connection, Timeout, Protocol }
 
-error HttpError { kind: HttpErrorKind, message: string }
+error Http__Error { kind: Http__ErrorKind, message: string }
 
 /// An error of the network as a person would be told of it.
-fn (self: HttpError) to_string() -> string { return self.message }
+fn (self: Http__Error) to_string() -> string { return self.message }
 
 /// A request, as its handler sees it.
-type HttpRequest = { _id: int, method: string, path: string }
+type Http__Request = { _id: int, method: string, path: string }
 
 /// A request as text is its method and its path, which is what a log wants of it.
-fn (self: HttpRequest) to_string() -> string { return "{self.method} {self.path}" }
+fn (self: Http__Request) to_string() -> string { return "{self.method} {self.path}" }
 
 /// What a `:name` in the route's path stands for in this request.
-fn (self: HttpRequest) param(name: string) -> string { return __http_param(self._id, name) }
+fn (self: Http__Request) param(name: string) -> string { return __http_param(self._id, name) }
 
 /// The value of a name in the query: `page` in `/orders?page=2`.
-fn (self: HttpRequest) query(name: string) -> string? {
+fn (self: Http__Request) query(name: string) -> string? {
     if not __http_query_has(self._id, name) { return none }
     return __http_query(self._id, name)
 }
 
 /// The value of a header. The name is matched whatever its case.
-fn (self: HttpRequest) header(name: string) -> string? {
+fn (self: Http__Request) header(name: string) -> string? {
     if not __http_header_has(self._id, name) { return none }
     return __http_header(self._id, name)
 }
 
 /// The body of the request, as text.
-fn (self: HttpRequest) body() -> string { return __http_body(self._id) }
+fn (self: Http__Request) body() -> string { return __http_body(self._id) }
 
 /// The body as the bytes it is, for one that is not text: a picture, an archive.
-fn (self: HttpRequest) bytes() -> [byte] { return __str_bytes(__http_body_raw(self._id)) }
+fn (self: Http__Request) bytes() -> [byte] { return __str_bytes(__http_body_raw(self._id)) }
 
 /// A field of a form that a page sent as the body.
-fn (self: HttpRequest) form(name: string) -> string? {
+fn (self: Http__Request) form(name: string) -> string? {
     if not __http_form_has(self._id, name) { return none }
     return __http_form(self._id, name)
 }
 
 /// A cookie the client sent back.
-fn (self: HttpRequest) cookie(name: string) -> string? {
+fn (self: Http__Request) cookie(name: string) -> string? {
     if not __http_cookie_has(self._id, name) { return none }
     return __http_cookie(self._id, name)
 }
 
 /// What the `*` at the end of the route stands for, or `none` for a path that climbs
 /// out of where it is with `..`: what is not `none` is safe to look for as a file.
-fn (self: HttpRequest) rest() -> string? {
+fn (self: Http__Request) rest() -> string? {
     rest := __http_rest(self._id)
     if rest == "/" { return none }
     return rest
@@ -1585,7 +1585,7 @@ fn (self: HttpRequest) rest() -> string? {
 
 /// The body of the request, read as JSON into the type that is expected:
 /// `input: NewOrder = req.json()?`.
-fn (self: HttpRequest) json<T>() -> T ! JsonError {
+fn (self: Http__Request) json<T>() -> T ! JsonError {
     return T.from_json(__http_body(self._id))?
 }
 
@@ -1596,18 +1596,18 @@ fn (self: HttpRequest) json<T>() -> T ! JsonError {
 /// can take it for a string.
 /// A file that `app.files` serves is one of a directory, `_root`, which it must
 /// really be in.
-type HttpResponse = { status: int, content_type: string, headers: string, body: string, file: string = "", _raw: [byte] = [], _root: string = "" }
+type Http__Response = { status: int, content_type: string, headers: string, body: string, file: string = "", _raw: [byte] = [], _root: string = "" }
 
 /// The response with one more header. A line break in a name or a value would begin
 /// another header, so there is none in what is sent. The type of the body is one
 /// header, whoever sets it, and the headers that say how the response is carried are
 /// the server's to write: a second of any of them would contradict the first.
-fn (self: HttpResponse) header(name: string, value: string) -> HttpResponse {
+fn (self: Http__Response) header(name: string, value: string) -> Http__Response {
     name_sent := name.replace("\r", "").replace("\n", "").replace(":", "").trim()
     value_sent := value.replace("\r", "").replace("\n", "")
     match name_sent.to_lower() {
         "content-type" => {
-            return HttpResponse {
+            return Http__Response {
                 status: self.status,
                 content_type: value_sent,
                 headers: self.headers,
@@ -1621,7 +1621,7 @@ fn (self: HttpResponse) header(name: string, value: string) -> HttpResponse {
         "content-length" | "transfer-encoding" | "connection" | "date" | "" => { return self }
         _ => {}
     }
-    return HttpResponse {
+    return Http__Response {
         status: self.status,
         content_type: self.content_type,
         headers: "{self.headers}{name_sent}: {value_sent}\r\n",
@@ -1634,7 +1634,7 @@ fn (self: HttpResponse) header(name: string, value: string) -> HttpResponse {
 
 /// The response with a cookie for the client to keep. It is kept for `max_age` seconds,
 /// or until the browser closes if that is negative; pages' scripts cannot read it.
-fn (self: HttpResponse) cookie(name: string, value: string, max_age: int = -1) -> HttpResponse {
+fn (self: Http__Response) cookie(name: string, value: string, max_age: int = -1) -> Http__Response {
     name_sent := name.replace(";", "").replace("=", "").replace(" ", "")
     value_sent := value.replace(";", "%3B").replace(" ", "%20").replace(",", "%2C")
     age := if max_age < 0 { "" } else { "; Max-Age={max_age}" }
@@ -1642,8 +1642,8 @@ fn (self: HttpResponse) cookie(name: string, value: string, max_age: int = -1) -
 }
 
 /// The response with another status.
-fn (self: HttpResponse) with_status(status: int) -> HttpResponse {
-    return HttpResponse {
+fn (self: Http__Response) with_status(status: int) -> Http__Response {
+    return Http__Response {
         status,
         content_type: self.content_type,
         headers: self.headers,
@@ -1655,100 +1655,100 @@ fn (self: HttpResponse) with_status(status: int) -> HttpResponse {
 }
 
 /// A response of plain text.
-fn http__text(body: string, status: int = 200) -> HttpResponse {
-    return HttpResponse { status, content_type: "text/plain; charset=utf-8", headers: "", body }
+fn http__text(body: string, status: int = 200) -> Http__Response {
+    return Http__Response { status, content_type: "text/plain; charset=utf-8", headers: "", body }
 }
 
 /// A response that is a page.
-fn http__html(body: string, status: int = 200) -> HttpResponse {
-    return HttpResponse { status, content_type: "text/html; charset=utf-8", headers: "", body }
+fn http__html(body: string, status: int = 200) -> Http__Response {
+    return Http__Response { status, content_type: "text/html; charset=utf-8", headers: "", body }
 }
 
 /// A response of a given type, for what the other functions do not make.
-fn http__send(body: string, content_type: string, status: int = 200) -> HttpResponse {
-    return HttpResponse { status, content_type, headers: "", body }
+fn http__send(body: string, content_type: string, status: int = 200) -> Http__Response {
+    return Http__Response { status, content_type, headers: "", body }
 }
 
 /// A response whose body is bytes that need not be text, of the type that is said.
-fn http__bytes(body: [byte], content_type: string = "application/octet-stream", status: int = 200) -> HttpResponse {
-    return HttpResponse { status, content_type, headers: "", body: "", _raw: body }
+fn http__bytes(body: [byte], content_type: string = "application/octet-stream", status: int = 200) -> Http__Response {
+    return Http__Response { status, content_type, headers: "", body: "", _raw: body }
 }
 
 /// A response that is a value as JSON.
-fn http__json<T>(value: T, status: int = 200) -> HttpResponse {
-    return HttpResponse { status, content_type: "application/json", headers: "", body: value.to_json() }
+fn http__json<T>(value: T, status: int = 200) -> Http__Response {
+    return Http__Response { status, content_type: "application/json", headers: "", body: value.to_json() }
 }
 
 /// A response that is a status and a line of text about it: `http.status(404, "no such order")`.
-fn http__status(status: int, message: string = "") -> HttpResponse {
+fn http__status(status: int, message: string = "") -> Http__Response {
     body := if message == "" { "" } else { "{message}\n" }
-    return HttpResponse { status, content_type: "text/plain; charset=utf-8", headers: "", body }
+    return Http__Response { status, content_type: "text/plain; charset=utf-8", headers: "", body }
 }
 
 /// A response that is a file, sent as it is. Its type is told by its name: `.html`,
 /// `.css`, `.png` and the rest. A file that is not there is answered with 404.
-fn http__file(path: string, status: int = 200) -> HttpResponse {
-    return HttpResponse { status, content_type: "", headers: "", body: "", file: path }
+fn http__file(path: string, status: int = 200) -> Http__Response {
+    return Http__Response { status, content_type: "", headers: "", body: "", file: path }
 }
 
 /// A response that sends the client elsewhere.
-fn http__redirect(to: string, status: int = 302) -> HttpResponse {
+fn http__redirect(to: string, status: int = 302) -> Http__Response {
     return http__status(status).header("Location", to)
 }
 
 /// A server: its routes, and the function that answers each.
-type HttpApp = {
+type Http__App = {
     methods: [string],
     paths: [string],
-    handlers: [fn(HttpRequest) -> HttpResponse ! Failure],
+    handlers: [fn(Http__Request) -> Http__Response ! Failure],
 }
 
-fn HttpApp.new() -> HttpApp {
-    return HttpApp { methods: [], paths: [], handlers: [] }
+fn Http__App.new() -> Http__App {
+    return Http__App { methods: [], paths: [], handlers: [] }
 }
 
 /// Answers requests of one method for a path with a function. A segment `:name` of the
 /// path matches any one segment, which the handler reads with `req.param("name")`, and
 /// `*` at the end matches whatever is left. The first route that matches answers.
-fn (self: var HttpApp) route(method: string, path: string, handler: take fn(HttpRequest) -> HttpResponse ! Failure) {
+fn (self: var Http__App) route(method: string, path: string, handler: take fn(Http__Request) -> Http__Response ! Failure) {
     self.methods.push(method)
     self.paths.push(path)
     self.handlers.push(handler)
 }
 
-fn (self: var HttpApp) get(path: string, handler: take fn(HttpRequest) -> HttpResponse ! Failure) {
+fn (self: var Http__App) get(path: string, handler: take fn(Http__Request) -> Http__Response ! Failure) {
     self.route("GET", path, handler)
 }
 
-fn (self: var HttpApp) post(path: string, handler: take fn(HttpRequest) -> HttpResponse ! Failure) {
+fn (self: var Http__App) post(path: string, handler: take fn(Http__Request) -> Http__Response ! Failure) {
     self.route("POST", path, handler)
 }
 
-fn (self: var HttpApp) put(path: string, handler: take fn(HttpRequest) -> HttpResponse ! Failure) {
+fn (self: var Http__App) put(path: string, handler: take fn(Http__Request) -> Http__Response ! Failure) {
     self.route("PUT", path, handler)
 }
 
-fn (self: var HttpApp) patch(path: string, handler: take fn(HttpRequest) -> HttpResponse ! Failure) {
+fn (self: var Http__App) patch(path: string, handler: take fn(Http__Request) -> Http__Response ! Failure) {
     self.route("PATCH", path, handler)
 }
 
-fn (self: var HttpApp) delete(path: string, handler: take fn(HttpRequest) -> HttpResponse ! Failure) {
+fn (self: var Http__App) delete(path: string, handler: take fn(Http__Request) -> Http__Response ! Failure) {
     self.route("DELETE", path, handler)
 }
 
 /// Serves the files of a directory under a path: with `app.files("/static", "public")`,
 /// `/static/css/site.css` is the file `public/css/site.css`, and `/static` itself is
 /// `public/index.html`. A path cannot climb out of the directory.
-fn (self: var HttpApp) files(path: string, directory: string) {
+fn (self: var Http__App) files(path: string, directory: string) {
     self.route("GET", "{path}/*", req -> {
         rest := req.rest() else return http__status(404, "Not Found")
         path := if rest == "" or rest.ends_with("/") { "{directory}/{rest}index.html" } else { "{directory}/{rest}" }
-        return HttpResponse { status: 200, content_type: "", headers: "", body: "", file: path, _root: directory }
+        return Http__Response { status: 200, content_type: "", headers: "", body: "", file: path, _root: directory }
     })
 }
 
 /// Answers requests of every method for a path.
-fn (self: var HttpApp) any(path: string, handler: take fn(HttpRequest) -> HttpResponse ! Failure) {
+fn (self: var Http__App) any(path: string, handler: take fn(Http__Request) -> Http__Response ! Failure) {
     self.route("*", path, handler)
 }
 
@@ -1759,20 +1759,20 @@ fn (self: var HttpApp) any(path: string, handler: take fn(HttpRequest) -> HttpRe
 /// A request's body may be `max_body` bytes, 1 MB unless more is asked for. With `log`,
 /// a line is written to standard error for each request: its method and path, the
 /// status of the answer, the size of it and the time it took.
-fn (self: HttpApp) serve(port: int = -1, workers: int = 0, max_body: int = 1048576, log: bool = false) ! HttpError {
+fn (self: Http__App) serve(port: int = -1, workers: int = 0, max_body: int = 1048576, log: bool = false) ! Http__Error {
     // Where to listen, and with how many workers, is the environment's to say when the
     // program does not: `PORT`, and `WEB_CONCURRENCY`.
     var at := port
     if port < 0 {
         at = 8080
         if text := os__env("PORT") {
-            at = int.parse(text.trim()) else fail HttpError {
-                kind: HttpErrorKind.Listen,
+            at = int.parse(text.trim()) else fail Http__Error {
+                kind: Http__ErrorKind.Listen,
                 message: "the environment variable `PORT` is `{text}`, which is not a port",
             }
             if at < 0 or at > 65535 {
-                fail HttpError {
-                    kind: HttpErrorKind.Listen,
+                fail Http__Error {
+                    kind: Http__ErrorKind.Listen,
                     message: "the environment variable `PORT` is `{text}`, which is not a port",
                 }
             }
@@ -1781,15 +1781,15 @@ fn (self: HttpApp) serve(port: int = -1, workers: int = 0, max_body: int = 10485
     var processes := workers
     if workers == 0 {
         if text := os__env("WEB_CONCURRENCY") {
-            processes = int.parse(text.trim()) else fail HttpError {
-                kind: HttpErrorKind.Listen,
+            processes = int.parse(text.trim()) else fail Http__Error {
+                kind: Http__ErrorKind.Listen,
                 message: "the environment variable `WEB_CONCURRENCY` is `{text}`, which is not a number of workers",
             }
             // None, or fewer, is a mistake in the setting, and not a way to ask for
             // one a core, which is asked for by not setting it.
             if processes < 1 {
-                fail HttpError {
-                    kind: HttpErrorKind.Listen,
+                fail Http__Error {
+                    kind: Http__ErrorKind.Listen,
                     message: "the environment variable `WEB_CONCURRENCY` is `{text}`, which is not a number of workers",
                 }
             }
@@ -1801,7 +1801,7 @@ fn (self: HttpApp) serve(port: int = -1, workers: int = 0, max_body: int = 10485
     }
     logged := if log { 1 } else { 0 }
     if __http_listen(at, processes, max_body, logged) < 0 {
-        fail HttpError { kind: HttpErrorKind.Listen, message: __last_error() }
+        fail Http__Error { kind: Http__ErrorKind.Listen, message: __last_error() }
     }
     // A handler may wait without the server's waiting with it: the support library
     // then runs the loop again, in another place, while the handler waits in its own
@@ -1812,7 +1812,7 @@ fn (self: HttpApp) serve(port: int = -1, workers: int = 0, max_body: int = 10485
 
 /// Takes requests, one after another, and answers each with its handler, until the
 /// server is told to stop.
-fn h__loop(app: HttpApp) {
+fn h__loop(app: Http__App) {
     while true {
         route := __http_next()
         if route == -3 {
@@ -1822,7 +1822,7 @@ fn h__loop(app: HttpApp) {
         }
         if route < 0 { break }
         id := __http_id()
-        request := HttpRequest { _id: id, method: __http_method(id), path: __http_path(id) }
+        request := Http__Request { _id: id, method: __http_method(id), path: __http_path(id) }
         // A panic in a handler is a bug in it. It ends the request, which is answered
         // with 500, and not the worker, which has other requests to answer.
         if __guard() {
@@ -1837,7 +1837,7 @@ fn h__loop(app: HttpApp) {
 }
 
 /// Calls a handler, and sends what it returns, or what its failure calls for.
-fn h__answer(handler: fn(HttpRequest) -> HttpResponse ! Failure, request: HttpRequest) {
+fn h__answer(handler: fn(Http__Request) -> Http__Response ! Failure, request: Http__Request) {
     id := request._id
     match handler(request) {
         response => {
@@ -1863,7 +1863,7 @@ fn h__answer(handler: fn(HttpRequest) -> HttpResponse ! Failure, request: HttpRe
         ! e => {
             // What else went wrong is for the log, not for the client.
             if __log_json() {
-                l__write("error", LogMessage {
+                l__write("error", Log__Message {
                     _parts: ["{request.method} {request.path}: {e}"],
                     _shown: [],
                     _names: [],
@@ -1990,32 +1990,32 @@ fn (self: var [T]) shuffle() {
 /// headers are in lower case.
 ///
 /// A body that is not text is kept apart, in `_raw`, as the bytes it is.
-type HttpReply = { status: int, headers: [string: string], body: string, _raw: [byte] = [] }
+type Http__Reply = { status: int, headers: [string: string], body: string, _raw: [byte] = [] }
 
 /// The body as the bytes it is, for an answer that is not text: a picture, an archive.
-fn (self: HttpReply) bytes() -> [byte] {
+fn (self: Http__Reply) bytes() -> [byte] {
     if self._raw.len > 0 { return self._raw }
     return self.body.bytes()
 }
 
 /// A header of the answer, however its name is written.
-fn (self: HttpReply) header(name: string) -> string? {
+fn (self: Http__Reply) header(name: string) -> string? {
     return self.headers[name.to_lower()]
 }
 
 /// Whether the status says that the request was done: 200 to 299.
-fn (self: HttpReply) ok() -> bool {
+fn (self: Http__Reply) ok() -> bool {
     return self.status >= 200 and self.status < 300
 }
 
 /// The body, read as JSON into the type that is expected.
-fn (self: HttpReply) json<T>() -> T ! JsonError {
+fn (self: Http__Reply) json<T>() -> T ! JsonError {
     return T.from_json(self.body)?
 }
 
 /// Makes a request of another server, and returns its answer, whatever its status. The
 /// whole of it, from finding the server to the last of the body, has `timeout` to take.
-fn http__fetch(method: string, url: string, body: string = "", headers: [string: string] = [:], timeout: Duration = 30s, bytes: [byte] = [], redirects: int = 0) -> HttpReply ! HttpError {
+fn http__fetch(method: string, url: string, body: string = "", headers: [string: string] = [:], timeout: Duration = 30s, bytes: [byte] = [], redirects: int = 0) -> Http__Reply ! Http__Error {
     // A body of bytes that need not be text goes out as it is; the text made of it
     // here is no program's.
     var sent := body
@@ -2117,7 +2117,7 @@ fn h__plain(path: string) -> string {
 }
 
 /// One request and its answer.
-fn h__once(method: string, url: string, body: string, headers: [string: string], nanos: int) -> HttpReply ! HttpError {
+fn h__once(method: string, url: string, body: string, headers: [string: string], nanos: int) -> Http__Reply ! Http__Error {
     var pairs: [string] = []
     for (name, value) in headers {
         pairs.push(name)
@@ -2125,12 +2125,12 @@ fn h__once(method: string, url: string, body: string, headers: [string: string],
     }
     if not __http_fetch(method, url, pairs, body, nanos) {
         kind := match __http_reply_kind() {
-            1 => HttpErrorKind.Address
-            3 => HttpErrorKind.Timeout
-            4 => HttpErrorKind.Protocol
-            _ => HttpErrorKind.Connection
+            1 => Http__ErrorKind.Address
+            3 => Http__ErrorKind.Timeout
+            4 => Http__ErrorKind.Protocol
+            _ => Http__ErrorKind.Connection
         }
-        fail HttpError { kind, message: __last_error() }
+        fail Http__Error { kind, message: __last_error() }
     }
     var found: [string: string] = [:]
     for line in __http_reply_headers().split("\n") {
@@ -2145,7 +2145,7 @@ fn h__once(method: string, url: string, body: string, headers: [string: string],
     }
     var raw: [byte] = []
     if not __http_reply_text() { raw = __str_bytes(__http_reply_raw()) }
-    return HttpReply { status: __http_reply_status(), headers: found, body: __http_reply_body(), _raw: raw }
+    return Http__Reply { status: __http_reply_status(), headers: found, body: __http_reply_body(), _raw: raw }
 }
 
 fn h__typed(headers: [string: string], content_type: string) -> [string: string] {
@@ -2156,23 +2156,23 @@ fn h__typed(headers: [string: string], content_type: string) -> [string: string]
     return all
 }
 
-fn http__get(url: string, headers: [string: string] = [:], timeout: Duration = 30s, redirects: int = 0) -> HttpReply ! HttpError {
+fn http__get(url: string, headers: [string: string] = [:], timeout: Duration = 30s, redirects: int = 0) -> Http__Reply ! Http__Error {
     return http__fetch("GET", url, "", headers, timeout, redirects: redirects)?
 }
 
-fn http__delete(url: string, headers: [string: string] = [:], timeout: Duration = 30s) -> HttpReply ! HttpError {
+fn http__delete(url: string, headers: [string: string] = [:], timeout: Duration = 30s) -> Http__Reply ! Http__Error {
     return http__fetch("DELETE", url, "", headers, timeout)?
 }
 
-fn http__post(url: string, body: string, content_type: string = "application/json", headers: [string: string] = [:], timeout: Duration = 30s) -> HttpReply ! HttpError {
+fn http__post(url: string, body: string, content_type: string = "application/json", headers: [string: string] = [:], timeout: Duration = 30s) -> Http__Reply ! Http__Error {
     return http__fetch("POST", url, body, h__typed(headers, content_type), timeout)?
 }
 
-fn http__put(url: string, body: string, content_type: string = "application/json", headers: [string: string] = [:], timeout: Duration = 30s) -> HttpReply ! HttpError {
+fn http__put(url: string, body: string, content_type: string = "application/json", headers: [string: string] = [:], timeout: Duration = 30s) -> Http__Reply ! Http__Error {
     return http__fetch("PUT", url, body, h__typed(headers, content_type), timeout)?
 }
 
-fn http__patch(url: string, body: string, content_type: string = "application/json", headers: [string: string] = [:], timeout: Duration = 30s) -> HttpReply ! HttpError {
+fn http__patch(url: string, body: string, content_type: string = "application/json", headers: [string: string] = [:], timeout: Duration = 30s) -> Http__Reply ! Http__Error {
     return http__fetch("PATCH", url, body, h__typed(headers, content_type), timeout)?
 }
 
@@ -2260,15 +2260,15 @@ fn e__duration(name: string) -> Duration ! EnvError {
 
 // ---- std/log ----------------------------------------------------------------------------
 
-enum LogLevel { Debug, Info, Warn, Error, Off }
+enum Log__Level { Debug, Info, Warn, Error, Off }
 
 /// What a line of the log says. A string literal where one is expected is made one by
 /// the compiler (Section 3.3): the text between its values, the values as they are
 /// shown, a name for each, and whether each is a number or a boolean, which JSON
 /// writes bare (1), a float (2), or anything else (0).
-type LogMessage = { _parts: [string], _shown: [string], _names: [string], _kinds: [int] }
+type Log__Message = { _parts: [string], _shown: [string], _names: [string], _kinds: [int] }
 
-fn l__write(level: string, message: LogMessage) {
+fn l__write(level: string, message: Log__Message) {
     var text := message._parts[0]
     for i in 0..message._shown.len {
         text += message._shown[i] + message._parts[i + 1]
@@ -2303,33 +2303,33 @@ fn l__write(level: string, message: LogMessage) {
 }
 
 /// Writes a line that is of use only to someone looking for a fault.
-fn log__debug(message: LogMessage) {
+fn log__debug(message: Log__Message) {
     if __log_on(0) { l__write("debug", message) }
 }
 
 /// Writes a line that says what the program did.
-fn log__info(message: LogMessage) {
+fn log__info(message: Log__Message) {
     if __log_on(1) { l__write("info", message) }
 }
 
 /// Writes a line that says something is not as it should be, though the program goes on.
-fn log__warn(message: LogMessage) {
+fn log__warn(message: Log__Message) {
     if __log_on(2) { l__write("warn", message) }
 }
 
 /// Writes a line that says something failed.
-fn log__error(message: LogMessage) {
+fn log__error(message: Log__Message) {
     if __log_on(3) { l__write("error", message) }
 }
 
 /// Sets the lowest level that is written, whatever the environment says.
-fn log__set_level(level: LogLevel) {
+fn log__set_level(level: Log__Level) {
     __log_level(match level {
-        LogLevel.Debug => 0
-        LogLevel.Info => 1
-        LogLevel.Warn => 2
-        LogLevel.Error => 3
-        LogLevel.Off => 4
+        Log__Level.Debug => 0
+        Log__Level.Info => 1
+        Log__Level.Warn => 2
+        Log__Level.Error => 3
+        Log__Level.Off => 4
     })
 }
 
@@ -2338,48 +2338,48 @@ fn log__set_level(level: LogLevel) {
 // A database is reached through the support library (`koo-rt/src/pg.rs`), which sends a
 // statement and its parameters apart and keeps the answer for the thread to read.
 
-enum SqlErrorKind { Connection, Constraint, Syntax, Serialization, Timeout, NoRows, Other }
+enum Sql__ErrorKind { Connection, Constraint, Syntax, Serialization, Timeout, NoRows, Other }
 
 /// Why a database did not do what was asked: `code` is the five characters by which
 /// PostgreSQL names the error, when it is the server that refused.
-error SqlError { kind: SqlErrorKind, message: string, code: string }
+error Sql__Error { kind: Sql__ErrorKind, message: string, code: string }
 
 /// An error of a database as a person would be told of it: what went wrong, and the
 /// server's code for it if it has one.
-fn (self: SqlError) to_string() -> string {
+fn (self: Sql__Error) to_string() -> string {
     if self.code == "" { return self.message }
     return "{self.message} ({self.code})"
 }
 
-fn s__error() -> SqlError {
+fn s__error() -> Sql__Error {
     kind := match __sql_kind() {
-        1 => SqlErrorKind.Connection
-        2 => SqlErrorKind.Constraint
-        3 => SqlErrorKind.Syntax
-        4 => SqlErrorKind.Serialization
-        5 => SqlErrorKind.Timeout
-        _ => SqlErrorKind.Other
+        1 => Sql__ErrorKind.Connection
+        2 => Sql__ErrorKind.Constraint
+        3 => Sql__ErrorKind.Syntax
+        4 => Sql__ErrorKind.Serialization
+        5 => Sql__ErrorKind.Timeout
+        _ => Sql__ErrorKind.Other
     }
-    return SqlError { kind, message: __sql_error(), code: __sql_code() }
+    return Sql__Error { kind, message: __sql_error(), code: __sql_code() }
 }
 
-fn s__other(message: string) -> SqlError {
-    return SqlError { kind: SqlErrorKind.Other, message, code: "" }
+fn s__other(message: string) -> Sql__Error {
+    return Sql__Error { kind: Sql__ErrorKind.Other, message, code: "" }
 }
 
 /// A statement: its text in pieces, and between each two pieces a parameter, which is
 /// text or NULL. A string literal with values in it, where a query is expected, is made
 /// one by the compiler (Section 3.3), so that a value is never part of the text.
-type SqlQuery = { _parts: [string], _params: [string?] }
+type Sql__Query = { _parts: [string], _params: [string?] }
 
 /// A statement that is all text, for one that a program has put together itself. What
 /// is in the text is the program's to answer for.
-fn SqlQuery.raw(text: string) -> SqlQuery {
-    return SqlQuery { _parts: [text], _params: [] }
+fn Sql__Query.raw(text: string) -> Sql__Query {
+    return Sql__Query { _parts: [text], _params: [] }
 }
 
 /// Adds another query to the end of this one, parameters and all.
-fn (self: var SqlQuery) append(more: SqlQuery) {
+fn (self: var Sql__Query) append(more: Sql__Query) {
     last := self._parts.len - 1
     self._parts[last] = self._parts[last] + more._parts[0]
     self._parts.extend(more._parts.skip(1))
@@ -2387,7 +2387,7 @@ fn (self: var SqlQuery) append(more: SqlQuery) {
 }
 
 /// The statement as it is sent: `$1`, `$2` and so on where the parameters go.
-fn (self: SqlQuery) text() -> string {
+fn (self: Sql__Query) text() -> string {
     var out := self._parts[0]
     for i in 0..self._params.len {
         out += "${i + 1}" + self._parts[i + 1]
@@ -2479,7 +2479,7 @@ fn s__array(text: string) -> [string?]? {
     return items
 }
 
-fn (self: SqlRow) _array(column: string, what: string) -> [string] ! SqlError {
+fn (self: Sql__Row) _array(column: string, what: string) -> [string] ! Sql__Error {
     text := self._text(column)? else fail s__null(column)
     items := s__array(text) else fail s__not(column, "an array", text)
     var out: [string] = []
@@ -2490,11 +2490,11 @@ fn (self: SqlRow) _array(column: string, what: string) -> [string] ! SqlError {
 }
 
 /// A column that is an array, as a list.
-fn (self: SqlRow) strings(column: string) -> [string] ! SqlError {
+fn (self: Sql__Row) strings(column: string) -> [string] ! Sql__Error {
     return self._array(column, "a string")?
 }
 
-fn (self: SqlRow) ints(column: string) -> [int] ! SqlError {
+fn (self: Sql__Row) ints(column: string) -> [int] ! Sql__Error {
     var out: [int] = []
     for item in self._array(column, "an int")? {
         out.push(int.parse(item) else fail s__not(column, "an array of ints", item))
@@ -2502,7 +2502,7 @@ fn (self: SqlRow) ints(column: string) -> [int] ! SqlError {
     return out
 }
 
-fn (self: SqlRow) floats(column: string) -> [float] ! SqlError {
+fn (self: Sql__Row) floats(column: string) -> [float] ! Sql__Error {
     var out: [float] = []
     for item in self._array(column, "a float")? {
         out.push(s__float(item) else fail s__not(column, "an array of floats", item))
@@ -2510,7 +2510,7 @@ fn (self: SqlRow) floats(column: string) -> [float] ! SqlError {
     return out
 }
 
-fn (self: SqlRow) bools(column: string) -> [bool] ! SqlError {
+fn (self: Sql__Row) bools(column: string) -> [bool] ! Sql__Error {
     var out: [bool] = []
     for item in self._array(column, "a bool")? {
         if item == "t" or item == "true" {
@@ -2525,13 +2525,13 @@ fn (self: SqlRow) bools(column: string) -> [bool] ! SqlError {
 }
 
 /// A row of an answer: a value, or NULL, for each column.
-type SqlRow = { _names: [string], _values: [string?] }
+type Sql__Row = { _names: [string], _values: [string?] }
 
 /// The names of the columns.
-fn (self: SqlRow) columns() -> [string] { return self._names }
+fn (self: Sql__Row) columns() -> [string] { return self._names }
 
 /// A row as text: each column with what it holds, as the database wrote it.
-fn (self: SqlRow) to_string() -> string {
+fn (self: Sql__Row) to_string() -> string {
     var out := "\{"
     for i in 0..self._names.len {
         if i > 0 { out += ", " }
@@ -2541,7 +2541,7 @@ fn (self: SqlRow) to_string() -> string {
     return out + "}"
 }
 
-fn (self: SqlRow) _text(column: string) -> string? ! SqlError {
+fn (self: Sql__Row) _text(column: string) -> string? ! Sql__Error {
     for i in 0..self._names.len {
         if self._names[i] == column { return self._values[i] }
     }
@@ -2560,57 +2560,57 @@ fn s__float(text: string) -> float? {
     }
 }
 
-fn s__null(column: string) -> SqlError {
+fn s__null(column: string) -> Sql__Error {
     return s__other("the column `{column}` is NULL")
 }
 
-fn s__not(column: string, what: string, text: string) -> SqlError {
+fn s__not(column: string, what: string, text: string) -> Sql__Error {
     return s__other("the column `{column}` holds `{text}`, which is not {what}")
 }
 
-fn (self: SqlRow) maybe_string(column: string) -> string? ! SqlError {
+fn (self: Sql__Row) maybe_string(column: string) -> string? ! Sql__Error {
     return self._text(column)?
 }
 
-fn (self: SqlRow) maybe_int(column: string) -> int? ! SqlError {
+fn (self: Sql__Row) maybe_int(column: string) -> int? ! Sql__Error {
     text := self._text(column)? else return none
     return int.parse(text) else fail s__not(column, "an int", text)
 }
 
-fn (self: SqlRow) maybe_float(column: string) -> float? ! SqlError {
+fn (self: Sql__Row) maybe_float(column: string) -> float? ! Sql__Error {
     text := self._text(column)? else return none
     return s__float(text) else fail s__not(column, "a float", text)
 }
 
-fn (self: SqlRow) maybe_bool(column: string) -> bool? ! SqlError {
+fn (self: Sql__Row) maybe_bool(column: string) -> bool? ! Sql__Error {
     text := self._text(column)? else return none
     if text == "t" or text == "true" { return true }
     if text == "f" or text == "false" { return false }
     fail s__not(column, "a bool", text)
 }
 
-fn (self: SqlRow) maybe_time(column: string) -> Time? ! SqlError {
+fn (self: Sql__Row) maybe_time(column: string) -> Time? ! Sql__Error {
     text := self._text(column)? else return none
     return s__time(text) else fail s__not(column, "a time", text)
 }
 
-fn (self: SqlRow) string(column: string) -> string ! SqlError {
+fn (self: Sql__Row) string(column: string) -> string ! Sql__Error {
     return self.maybe_string(column)? else fail s__null(column)
 }
 
-fn (self: SqlRow) int(column: string) -> int ! SqlError {
+fn (self: Sql__Row) int(column: string) -> int ! Sql__Error {
     return self.maybe_int(column)? else fail s__null(column)
 }
 
-fn (self: SqlRow) float(column: string) -> float ! SqlError {
+fn (self: Sql__Row) float(column: string) -> float ! Sql__Error {
     return self.maybe_float(column)? else fail s__null(column)
 }
 
-fn (self: SqlRow) bool(column: string) -> bool ! SqlError {
+fn (self: Sql__Row) bool(column: string) -> bool ! Sql__Error {
     return self.maybe_bool(column)? else fail s__null(column)
 }
 
-fn (self: SqlRow) time(column: string) -> Time ! SqlError {
+fn (self: Sql__Row) time(column: string) -> Time ! Sql__Error {
     return self.maybe_time(column)? else fail s__null(column)
 }
 
@@ -2640,19 +2640,19 @@ fn s__time(text: string) -> Time? {
 }
 
 /// The connections of a program to a database. It is a handle: a copy is the same pool.
-type SqlPool = { _id: int }
+type Sql__Pool = { _id: int }
 
 /// Opens a PostgreSQL database: `postgres://user:password@host:5432/name`. At most
 /// `pool` statements run at once, each on a connection of its own; one that finds them
 /// all in use waits for one, for `wait` at the longest.
-fn postgres__connect(url: string, pool: int = 10, wait: Duration = 30s) -> SqlPool ! SqlError {
+fn postgres__connect(url: string, pool: int = 10, wait: Duration = 30s) -> Sql__Pool ! Sql__Error {
     id := __sql_open(url, pool, wait.millis())
     if id < 0 { fail s__error() }
-    return SqlPool { _id: id }
+    return Sql__Pool { _id: id }
 }
 
 /// Sends a statement, in a transaction or, with zero for one, on any connection.
-fn s__send(db: int, transaction: int, query: SqlQuery) ! SqlError {
+fn s__send(db: int, transaction: int, query: Sql__Query) ! Sql__Error {
     var values: [string] = []
     var nulls := ""
     for param in query._params {
@@ -2668,12 +2668,12 @@ fn s__send(db: int, transaction: int, query: SqlQuery) ! SqlError {
 }
 
 /// The rows of the statement that the thread last sent.
-fn s__rows() -> [SqlRow] {
+fn s__rows() -> [Sql__Row] {
     var names: [string] = []
     for c in 0..__sql_cols() {
         names.push(__sql_name(c))
     }
-    var rows: [SqlRow] = []
+    var rows: [Sql__Row] = []
     for r in 0..__sql_rows() {
         var values: [string?] = []
         for c in 0..names.len {
@@ -2683,63 +2683,63 @@ fn s__rows() -> [SqlRow] {
                 values.push(__sql_value(r, c))
             }
         }
-        rows.push(SqlRow { _names: names, _values: values })
+        rows.push(Sql__Row { _names: names, _values: values })
     }
     return rows
 }
 
-fn s__no_row() -> SqlError {
-    return SqlError { kind: SqlErrorKind.NoRows, message: "the query returned no row", code: "" }
+fn s__no_row() -> Sql__Error {
+    return Sql__Error { kind: Sql__ErrorKind.NoRows, message: "the query returned no row", code: "" }
 }
 
 /// Runs a statement, and returns the rows it produced.
-fn (self: SqlPool) query(query: SqlQuery) -> [SqlRow] ! SqlError {
+fn (self: Sql__Pool) query(query: Sql__Query) -> [Sql__Row] ! Sql__Error {
     s__send(self._id, 0, query)?
     return s__rows()
 }
 
 /// The first row of what a statement produces, if it produces any.
-fn (self: SqlPool) query_one(query: SqlQuery) -> SqlRow? ! SqlError {
+fn (self: Sql__Pool) query_one(query: Sql__Query) -> Sql__Row? ! Sql__Error {
     s__send(self._id, 0, query)?
     return s__rows().first()
 }
 
 /// The first row of a statement that must produce one.
-fn (self: SqlPool) query_row(query: SqlQuery) -> SqlRow ! SqlError {
+fn (self: Sql__Pool) query_row(query: Sql__Query) -> Sql__Row ! Sql__Error {
     s__send(self._id, 0, query)?
     return s__rows().first() else fail s__no_row()
 }
 
 /// Runs a statement, and returns how many rows it changed.
-fn (self: SqlPool) exec(query: SqlQuery) -> int ! SqlError {
+fn (self: Sql__Pool) exec(query: Sql__Query) -> int ! Sql__Error {
     s__send(self._id, 0, query)?
     return __sql_affected()
 }
 
 /// How far a transaction is kept apart from the others that run beside it, as
 /// PostgreSQL names the three levels.
-enum SqlIsolation { ReadCommitted, RepeatableRead, Serializable }
+enum Sql__Isolation { ReadCommitted, RepeatableRead, Serializable }
 
 /// A transaction: statements of which the database does all, or none. It has one
 /// connection to itself from its first statement to its last.
-type SqlTx = { _db: int, _id: int }
+type Sql__Tx = { _db: int, _id: int }
 
-fn (self: SqlTx) query(query: SqlQuery) -> [SqlRow] ! SqlError {
+fn (self: Sql__Tx) query(query: Sql__Query) -> [Sql__Row] ! Sql__Error {
     s__send(self._db, self._id, query)?
     return s__rows()
 }
 
-fn (self: SqlTx) query_one(query: SqlQuery) -> SqlRow? ! SqlError {
+fn (self: Sql__Tx) query_one(query: Sql__Query) -> Sql__Row? ! Sql__Error {
     s__send(self._db, self._id, query)?
     return s__rows().first()
 }
 
-fn (self: SqlTx) query_row(query: SqlQuery) -> SqlRow ! SqlError {
+fn (self: Sql__Tx) query_row(query: Sql__Query) -> Sql__Row ! Sql__Error {
     s__send(self._db, self._id, query)?
     return s__rows().first() else fail s__no_row()
 }
 
-fn (self: SqlTx) exec(query: SqlQuery) -> int ! SqlError {
+fn (self: Sql__Tx) exec(query: Sql__Query) -> int ! Sql__Error {
     s__send(self._db, self._id, query)?
     return __sql_affected()
 }
@@ -2751,23 +2751,23 @@ fn (self: SqlTx) exec(query: SqlQuery) -> int ! SqlError {
 /// whole: they are fetched from the database `batch` at a time, through a cursor, so
 /// that no more than a batch is in memory at once. Returns how many rows there were.
 /// If `body` fails, no more are read and the failure is the answer.
-fn (self: SqlTx) each<E>(query: SqlQuery, body: fn(SqlRow) -> () ! E, batch: int = 1000) -> int ! E | SqlError {
+fn (self: Sql__Tx) each<E>(query: Sql__Query, body: fn(Sql__Row) -> () ! E, batch: int = 1000) -> int ! E | Sql__Error {
     // A name no other cursor of the transaction has, should `body` read rows too.
     name := "koo_rows_{__uptime()}"
-    var declared := SqlQuery.raw("declare {name} no scroll cursor for ")
+    var declared := Sql__Query.raw("declare {name} no scroll cursor for ")
     declared.append(query)
     self.exec(declared)?
     size := if batch < 1 { 1 } else { batch }
     var seen := 0
     while true {
-        rows := self.query(SqlQuery.raw("fetch {size} from {name}"))?
+        rows := self.query(Sql__Query.raw("fetch {size} from {name}"))?
         for row in rows {
             match body(row) {
                 _ => {}
                 ! e => {
                     // The cursor is closed if the transaction goes on; if it does not,
                     // the cursor ends with it.
-                    self.exec(SqlQuery.raw("close {name}")) else 0
+                    self.exec(Sql__Query.raw("close {name}")) else 0
                     fail e
                 }
             }
@@ -2775,24 +2775,24 @@ fn (self: SqlTx) each<E>(query: SqlQuery, body: fn(SqlRow) -> () ! E, batch: int
         }
         if rows.len < size { break }
     }
-    self.exec(SqlQuery.raw("close {name}"))?
+    self.exec(Sql__Query.raw("close {name}"))?
     return seen
 }
 
 /// The same, in a transaction of its own.
-fn (self: SqlPool) each<E>(query: SqlQuery, body: fn(SqlRow) -> () ! E, batch: int = 1000) -> int ! E | SqlError {
+fn (self: Sql__Pool) each<E>(query: Sql__Query, body: fn(Sql__Row) -> () ! E, batch: int = 1000) -> int ! E | Sql__Error {
     return self.transaction(tx -> tx.each(query, body, batch)?)?
 }
 
-fn (self: SqlPool) transaction<T, E>(body: fn(SqlTx) -> T ! E, isolation: SqlIsolation = SqlIsolation.ReadCommitted) -> T ! E | SqlError {
+fn (self: Sql__Pool) transaction<T, E>(body: fn(Sql__Tx) -> T ! E, isolation: Sql__Isolation = Sql__Isolation.ReadCommitted) -> T ! E | Sql__Error {
     level := match isolation {
-        SqlIsolation.ReadCommitted => 0
-        SqlIsolation.RepeatableRead => 1
-        SqlIsolation.Serializable => 2
+        Sql__Isolation.ReadCommitted => 0
+        Sql__Isolation.RepeatableRead => 1
+        Sql__Isolation.Serializable => 2
     }
     id := __sql_begin(self._id, level)
     if id == 0 { fail s__error() }
-    match body(SqlTx { _db: self._id, _id: id }) {
+    match body(Sql__Tx { _db: self._id, _id: id }) {
         value => {
             if not __sql_end(self._id, id, true) { fail s__error() }
             return value
@@ -2860,39 +2860,39 @@ fn JsonError._json_read(text: string, at: var int) -> JsonError ! JsonError {
     return JsonError { message: fields[0], path: fields[1] }
 }
 
-fn (self: HttpError) _json_write(out: var string) {
+fn (self: Http__Error) _json_write(out: var string) {
     out += "\{\"kind\":\"{self.kind}\",\"message\":" + __json_quote(self.message) + "}"
 }
 
-fn HttpError._json_read(text: string, at: var int) -> HttpError ! JsonError {
+fn Http__Error._json_read(text: string, at: var int) -> Http__Error ! JsonError {
     fields := j__strings(text, var at, ["kind", "message"])?
     kind := match fields[0] {
-        "Listen" => HttpErrorKind.Listen
-        "Address" => HttpErrorKind.Address
-        "Timeout" => HttpErrorKind.Timeout
-        "Protocol" => HttpErrorKind.Protocol
-        _ => HttpErrorKind.Connection
+        "Listen" => Http__ErrorKind.Listen
+        "Address" => Http__ErrorKind.Address
+        "Timeout" => Http__ErrorKind.Timeout
+        "Protocol" => Http__ErrorKind.Protocol
+        _ => Http__ErrorKind.Connection
     }
-    return HttpError { kind, message: fields[1] }
+    return Http__Error { kind, message: fields[1] }
 }
 
-fn (self: SqlError) _json_write(out: var string) {
+fn (self: Sql__Error) _json_write(out: var string) {
     out += "\{\"kind\":\"{self.kind}\",\"message\":" + __json_quote(self.message)
     out += ",\"code\":" + __json_quote(self.code) + "}"
 }
 
-fn SqlError._json_read(text: string, at: var int) -> SqlError ! JsonError {
+fn Sql__Error._json_read(text: string, at: var int) -> Sql__Error ! JsonError {
     fields := j__strings(text, var at, ["kind", "message", "code"])?
     kind := match fields[0] {
-        "Connection" => SqlErrorKind.Connection
-        "Constraint" => SqlErrorKind.Constraint
-        "Syntax" => SqlErrorKind.Syntax
-        "Serialization" => SqlErrorKind.Serialization
-        "Timeout" => SqlErrorKind.Timeout
-        "NoRows" => SqlErrorKind.NoRows
-        _ => SqlErrorKind.Other
+        "Connection" => Sql__ErrorKind.Connection
+        "Constraint" => Sql__ErrorKind.Constraint
+        "Syntax" => Sql__ErrorKind.Syntax
+        "Serialization" => Sql__ErrorKind.Serialization
+        "Timeout" => Sql__ErrorKind.Timeout
+        "NoRows" => Sql__ErrorKind.NoRows
+        _ => Sql__ErrorKind.Other
     }
-    return SqlError { kind, message: fields[1], code: fields[2] }
+    return Sql__Error { kind, message: fields[1], code: fields[2] }
 }
 
 // ---- std/test ---------------------------------------------------------------------------

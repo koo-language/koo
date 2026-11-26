@@ -314,7 +314,7 @@ impl Gen<'_> {
                 expr: inner,
                 binding,
                 alt,
-            } => self.gen_else(inner, *binding, alt, dest),
+            } => self.gen_else(inner, *binding, alt, dest, &expr.ty),
             ExprKind::Return(value) => self.gen_return(value.as_deref()),
             ExprKind::Fail(value) => {
                 let error = self.gen_scalar(value);
@@ -743,8 +743,15 @@ impl Gen<'_> {
 
     fn binary(&mut self, op: BinOp, lhs: &Expr, rhs: &Expr, span: Span) -> String {
         let ty = lhs.ty.clone();
-        // A plain enum compares by the order of its variants.
-        if let Ty::Enum(_) = ty {
+        // A plain enum compares by the order of its variants. One whose variants have
+        // fields is ordered so too, but is equal only to a value whose fields are equal.
+        if let Ty::Enum(id) = ty
+            && (!matches!(op, BinOp::Eq | BinOp::Ne)
+                || self.p.enums[id]
+                    .variants
+                    .iter()
+                    .all(|variant| variant.fields.is_empty()))
+        {
             let a = self.addr(lhs);
             let a = self.value(format!("load i64, ptr {a}"));
             let b = self.addr(rhs);
@@ -1183,7 +1190,7 @@ impl Gen<'_> {
     }
 
     /// `x else alt`, with the result at `dest`.
-    fn gen_else(&mut self, inner: &Expr, binding: Option<LocalId>, alt: &Block, dest: Option<&str>) {
+    fn gen_else(&mut self, inner: &Expr, binding: Option<LocalId>, alt: &Block, dest: Option<&str>, whole: &Ty) {
         let slot = self.eval_temp(inner);
         let llty = self.llty(&inner.ty);
         let (ok, is_result) = match &inner.ty {
@@ -1205,6 +1212,22 @@ impl Gen<'_> {
         self.label(&have);
         if let Some(dest) = dest {
             let payload = self.field_ptr(&llty, &slot, 1);
+            // Where the alternative is an optional or a result of what the operand
+            // holds, so is the whole, and what the operand held is one that is there.
+            let dest = match whole {
+                Ty::Optional(held) if **held == ok && *whole != ok => {
+                    self.emit(format!("store i1 true, ptr {dest}"));
+                    let wider = self.llty(whole);
+                    self.field_ptr(&wider, dest, 1)
+                }
+                Ty::Result(held, _) if **held == ok && *whole != ok => {
+                    self.emit(format!("store ptr null, ptr {dest}"));
+                    let wider = self.llty(whole);
+                    self.field_ptr(&wider, dest, 1)
+                }
+                _ => dest.to_string(),
+            };
+            let dest = dest.as_str();
             self.move_value(&ok, dest, &payload);
             if self.droppable(&inner.ty) {
                 self.zero(&inner.ty, &slot);

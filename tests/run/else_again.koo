@@ -1,0 +1,51 @@
+// The alternative of `else` may itself be an optional or a result, and then so is the
+// whole (Section 5.7).
+error Missing { what: string }
+
+fn name(n: int) -> string? {
+    if n > 0 { return "name {n}" }
+    return none
+}
+
+fn load(n: int) -> [string] ! Missing {
+    if n > 0 { return ["row {n}"] }
+    fail Missing { what: "row {n}" }
+}
+
+fn first(a: int, b: int) -> string? {
+    return name(a) else name(b)
+}
+
+fn rows(a: int, b: int) -> [string] ! Missing {
+    return load(a) else load(b)
+}
+
+fn chain(a: int, b: int, c: int) -> string {
+    return name(a) else name(b) else name(c) else "nobody"
+}
+
+fn main() {
+    print(first(1, 2))
+    print(first(0, 2))
+    print(first(0, 0))
+    print(rows(1, 2) else ["none"])
+    print(rows(0, 2) else ["none"])
+    match rows(0, 0) {
+        r => print(r)
+        ! e => print("failed: {e.what}")
+    }
+    print(chain(0, 0, 3))
+    print(chain(0, 0, 0))
+    kept := name(0) else name(7)
+    print(kept else "still none")
+}
+
+//= name 1
+//= name 2
+//= none
+//= ["row 1"]
+//= ["row 2"]
+//= failed: row 0
+//= name 3
+//= nobody
+//= name 7

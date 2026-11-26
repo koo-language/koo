@@ -30,7 +30,7 @@ pub fn compile_as(src: &str, file_name: &str, tests: bool) -> Result<String, Vec
 /// (Section 8.1). The spans of the diagnostics count from the start of the package, and
 /// `sources` renders them.
 pub fn compile_sources(sources: &SourceMap, tests: bool) -> Result<String, Vec<Diagnostic>> {
-    let prelude = koo_syntax::parse_file(PRELUDE);
+    let prelude = koo_syntax::parse_library(PRELUDE);
     assert!(
         prelude.diagnostics.is_empty(),
         "the prelude does not parse: {:?}",
@@ -58,7 +58,7 @@ pub fn compile_sources(sources: &SourceMap, tests: bool) -> Result<String, Vec<D
     let rows = sources.files().iter().any(|file| file.src.contains("from_row"));
     let envs = sources.files().iter().any(|file| file.src.contains("from_env"));
     let written = derive::derive(&package, json, rows, envs);
-    let derived = koo_syntax::parse_file(&written.source);
+    let derived = koo_syntax::parse_library(&written.source);
     assert!(
         derived.diagnostics.is_empty(),
         "what was written for the program does not parse: {:?}\n{}",

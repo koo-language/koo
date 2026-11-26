@@ -1,0 +1,14 @@
+// The library keeps no ordinary name to itself: a program may have a `LogLevel` or an
+// `HttpRequest` of its own.
+enum LogLevel { Quiet, Loud }
+type LogMessage = { level: LogLevel, text: string }
+type HttpRequest = { url: string }
+type HttpResponse = { status: int }
+type SqlQuery = { text: string }
+type SqlRow = { cells: [string] }
+
+fn main() {
+    print(LogLevel.Loud)
+}
+
+//= Loud

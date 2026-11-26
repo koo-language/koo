@@ -471,7 +471,7 @@ impl<'a> Checker<'a> {
             return;
         }
         let text: String = shapes.iter().map(Shape::source).collect();
-        let parsed = koo_syntax::parse_file(&text);
+        let parsed = koo_syntax::parse_library(&text);
         assert!(
             parsed.diagnostics.is_empty(),
             "a fused chain does not parse: {:?}\n{text}",
@@ -770,7 +770,7 @@ mod tests {
             for maps in [vec![true], vec![false], vec![true, false], vec![false, true, true]] {
                 let shape = Shape { maps, end };
                 let text = shape.source();
-                let parsed = koo_syntax::parse_file(&text);
+                let parsed = koo_syntax::parse_library(&text);
                 assert!(parsed.diagnostics.is_empty(), "{:?}\n{text}", parsed.diagnostics);
                 assert!(text.contains(&shape.name()));
                 assert!(seen.insert(shape.name()));

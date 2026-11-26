@@ -297,7 +297,7 @@ error: this type cannot be sent to an actor, or back from one
 4 |     fn set(at: (int, int), value: string) {
   |                ^^^^^^^^^^
   |
-  = help: a message is made of numbers, bytes, strings, booleans, lists, optionals, maps with string keys, the program's structs, enums and errors made of those, and the handles of actors; a function, a tuple or a generic type cannot cross from one actor to another yet
+  = help: a message is made of numbers, bytes, strings, booleans, lists, optionals, maps with string keys, the program's structs, enums and errors made of those, and the handles of actors; a function or a tuple cannot cross from one actor to another
 
 1 error
 ```

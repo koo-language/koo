@@ -1,0 +1,45 @@
+// What a round of looking for mistakes in the checker found accepted that is refused.
+
+type G<T> = { f: fn(T) -> [string], v: T }
+type W = { g: G<int> }
+
+// A function inside a structure with type parameters is a function all the same.
+actor A {
+    w: W
+    var total: int = 0
+
+    fn run(n: int) {
+        total += w.g.f(n).len
+    }
+}
+
+actor Counter {
+    var n: int = 0
+
+    fn bump() -> int {
+        n += 1
+        return n
+    }
+}
+
+// What the library keeps hidden, and what a handle is made of, no pattern reaches.
+fn hidden(d: Duration, t: Time, c: Counter) {
+    match d {
+        Duration { _ns } => print(_ns)
+    }
+    match t {
+        Time { _ns: n } => print(n)
+    }
+    match c {
+        Counter { id, .. } => print(id)
+    }
+}
+
+fn main() {
+    hidden(5s, Time.from_unix(5), Counter.start())
+}
+
+//! error a function cannot be given to an actor when it is started
+//! error `Duration` has no field `_ns`
+//! error `Time` has no field `_ns`
+//! error `Counter` has no field `id`

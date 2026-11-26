@@ -75,6 +75,9 @@ struct Deriver<'a> {
     problems: Vec<(Span, String, String)>,
     unwritten: Vec<String>,
     enums: HashMap<&'a str, &'a EnumDecl>,
+    /// The fields of every structure, enumeration and error the program declares,
+    /// whatever else is known of it: what a value of the type may hold.
+    insides: HashMap<&'a str, Vec<&'a [Field]>>,
     /// The enumerations with type parameters, each with the names of its parameters.
     generic_enums: HashMap<&'a str, (Vec<&'a str>, &'a EnumDecl)>,
     aliases: HashMap<&'a str, &'a Type>,
@@ -280,17 +283,11 @@ impl<'a> Deriver<'a> {
                     return false;
                 }
                 seen.push(name);
-                if let Some(inside) = self.structs.get(name) {
-                    return fields(inside, self, seen);
-                }
-                self.enums.get(name).is_some_and(|decl| {
-                    decl.variants.iter().any(|variant| {
-                        variant
-                            .fields
-                            .as_deref()
-                            .is_some_and(|inside| fields(inside, self, seen))
-                    })
-                })
+                // Whatever the type is: with type parameters or without, and whether
+                // its JSON is written for it or its own.
+                self.insides
+                    .get(name)
+                    .is_some_and(|insides| insides.iter().any(|inside| fields(inside, self, seen)))
             }
         }
     }
@@ -604,8 +601,8 @@ impl<'a> Deriver<'a> {
                         ["IoError"] => Some("IoError"),
                         ["ParseError"] => Some("ParseError"),
                         ["JsonError"] => Some("JsonError"),
-                        ["sql", "Error"] => Some("SqlError"),
-                        ["http", "Error"] => Some("HttpError"),
+                        ["sql", "Error"] => Some("Sql__Error"),
+                        ["http", "Error"] => Some("Http__Error"),
                         _ => None,
                     }
                 }
@@ -635,8 +632,8 @@ impl<'a> Deriver<'a> {
             span,
             format!("{what} cannot be sent to an actor, or back from one"),
             "a message is made of numbers, bytes, strings, booleans, lists, optionals, maps with string keys, the \
-             program's structs, enums and errors made of those, and the handles of actors; a function, a tuple \
-             or a generic type cannot cross from one actor to another yet"
+             program's structs, enums and errors made of those, and the handles of actors; a function or a \
+             tuple cannot cross from one actor to another"
                 .to_string(),
         ));
     }
@@ -1123,6 +1120,13 @@ impl<'a> Deriver<'a> {
     }
 }
 
+/// Whether a type has both its own `to_json` and its own `from_json`.
+fn both(theirs: &HashMap<&str, HashSet<&str>>, name: &str) -> bool {
+    theirs
+        .get(name)
+        .is_some_and(|own| own.contains("to_json") && own.contains("from_json"))
+}
+
 /// What the compiler writes for a program: the JSON functions of its types, and what
 /// carries messages to its actors and back. Nothing is written for a program that never
 /// says `json` and has no actor: nothing is made that nothing uses.
@@ -1142,6 +1146,7 @@ pub fn derive(package: &File, json: bool, rows: bool, envs: bool) -> Derived {
         problems: Vec::new(),
         enums: HashMap::new(),
         generic_enums: HashMap::new(),
+        insides: HashMap::new(),
         aliases: HashMap::new(),
         ok: HashSet::new(),
         readers: HashMap::new(),
@@ -1215,6 +1220,7 @@ pub fn derive(package: &File, json: bool, rows: bool, envs: bool) -> Derived {
             _ => (None, Vec::new()),
         };
         if let Some(name) = named {
+            deriver.insides.insert(name, fields.clone());
             let mut rename = Rename::Snake;
             for attribute in &item.attrs {
                 let policy = match (attribute.name.name.as_str(), attribute.args.as_slice()) {
@@ -1361,7 +1367,8 @@ pub fn derive(package: &File, json: bool, rows: bool, envs: bool) -> Derived {
     loop {
         let mut struck: Vec<&str> = Vec::new();
         for name in order.iter().copied() {
-            if !deriver.ok.contains(name) {
+            // A type that writes and reads itself has JSON whatever its fields are.
+            if !deriver.ok.contains(name) || both(&theirs, name) {
                 continue;
             }
             let held = if let Some((params, fields)) = deriver.generics.get(name).cloned() {
@@ -1406,7 +1413,9 @@ pub fn derive(package: &File, json: bool, rows: bool, envs: bool) -> Derived {
             continue;
         }
         let before = deriver.out.len();
-        if let Some((_, fields)) = deriver.generics.get(name).cloned() {
+        if both(&theirs, name) {
+            // Nothing is written from its fields, which may be what JSON cannot hold.
+        } else if let Some((_, fields)) = deriver.generics.get(name).cloned() {
             deriver.a_struct(name, fields);
         } else if let Some(fields) = deriver.structs.get(name).copied() {
             deriver.a_struct(name, fields);
@@ -1495,7 +1504,7 @@ pub fn derive(package: &File, json: bool, rows: bool, envs: bool) -> Derived {
             if let Some(read) = read.filter(|read| !read.is_empty()) {
                 let _ = write!(
                     deriver.out,
-                    "fn {name}.from_row(row: SqlRow) -> {name} ! SqlError {{\n    return {name} {{ {} }}\n}}\n\n",
+                    "fn {name}.from_row(row: Sql__Row) -> {name} ! Sql__Error {{\n    return {name} {{ {} }}\n}}\n\n",
                     read.join(", ")
                 );
             }
@@ -1615,7 +1624,7 @@ mod tests {
         let parsed = koo_syntax::parse_file(source);
         assert!(parsed.diagnostics.is_empty(), "{:?}", parsed.diagnostics);
         let derived = derive(&parsed.file, true, false, false).source;
-        let again = koo_syntax::parse_file(&derived);
+        let again = koo_syntax::parse_library(&derived);
         assert!(again.diagnostics.is_empty(), "{:#?}\n{derived}", again.diagnostics);
         for name in ["Line", "Status", "Payment", "Order"] {
             assert!(derived.contains(&format!("fn {name}.from_json")), "{name}\n{derived}");

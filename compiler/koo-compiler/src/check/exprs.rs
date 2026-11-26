@@ -118,8 +118,8 @@ impl<'a> Checker<'a> {
                 // (`check/time.rs`).
                 let template = match expected {
                     Some(ty @ Ty::Struct(id)) if self.is_opaque(ty) => match self.program.structs[*id].name.as_str() {
-                        "SqlQuery" => self.sql_template(parts, span),
-                        "LogMessage" => self.log_template(parts, span),
+                        "Sql__Query" => self.sql_template(parts, span),
+                        "Log__Message" => self.log_template(parts, span),
                         _ => None,
                     },
                     _ => None,
@@ -647,7 +647,8 @@ impl<'a> Checker<'a> {
             && type_name.is_upper()
         {
             return match self.type_names.get(&type_name.name).cloned() {
-                Some(TypeName::Enum(id)) => {
+                // By its own name, or by another name for it.
+                Some(TypeName::Enum(id) | TypeName::Alias(Ty::Enum(id))) => {
                     let variant = self.program.enums[id].variants.iter().position(|v| v.name == name.name);
                     match variant {
                         Some(variant) => self.variant_value(id, variant, span),
@@ -1310,9 +1311,9 @@ impl<'a> Checker<'a> {
                 "its fields are its own: write a duration as `250ms`, and get a time from `time.now()`, `Time.from_unix(seconds)` or `Time.parse(text)`"
             } else if self.handles.contains(&id) {
                 "a handle is what `start` returns: it is made by starting an actor, and by nothing else"
-            } else if self.program.structs[id].name == "HttpResponse" {
+            } else if self.program.structs[id].name == "Http__Response" {
                 "a response is made by `http.text`, `http.json`, `http.status`, `http.send`, `http.bytes`, `http.file` or `http.redirect`, and changed by `.header(...)`, `.cookie(...)` and `.with_status(...)`"
-            } else if self.program.structs[id].name == "HttpRequest" {
+            } else if self.program.structs[id].name == "Http__Request" {
                 "a request is what a client sent, and a handler is given it: to try a handler's work without a server, put the work in a function that takes what it needs of the request"
             } else {
                 "its fields are its own: a query is written as a string literal where one is expected, and a pool and its rows come from the database"
@@ -1420,6 +1421,7 @@ impl<'a> Checker<'a> {
         if !missing.is_empty() {
             let shown = match target {
                 Target::Struct(id) => self.ty_name(&Ty::Struct(id)),
+                Target::Error(id) => self.ty_name(&Ty::Error(id)),
                 _ => type_name.clone(),
             };
             self.error(span, format!("`{shown}` is missing {}", list_fields(&missing)));
@@ -1521,15 +1523,27 @@ impl<'a> Checker<'a> {
         };
         let mut alt = self.body(alt, true, Some(&ok));
         self.scopes.pop();
+        // The alternative may itself be an optional or a result of what the operand
+        // holds, and then so is the whole (Section 5.7).
+        let mut whole = ok.clone();
         if !diverges(&alt)
             && let Some(alt_value) = alt.value.take()
         {
-            let why = format!(
-                "this is {}, so the alternative is {}",
-                super::a(&self.ty_name(&value.ty)),
-                super::a(&self.ty_name(&ok))
-            );
-            alt.value = Some(Box::new(self.coerce_for(*alt_value, &ok, Some(inner.span), &why)));
+            let again = match &alt_value.ty {
+                Ty::Optional(held) | Ty::Result(held, _) => **held == ok && !ok.is_unknown(),
+                _ => false,
+            };
+            if again {
+                whole = alt_value.ty.clone();
+                alt.value = Some(alt_value);
+            } else {
+                let why = format!(
+                    "this is {}, so the alternative is {}",
+                    super::a(&self.ty_name(&value.ty)),
+                    super::a(&self.ty_name(&ok))
+                );
+                alt.value = Some(Box::new(self.coerce_for(*alt_value, &ok, Some(inner.span), &why)));
+            }
         }
         self.mk(
             ExprKind::Else {
@@ -1537,7 +1551,7 @@ impl<'a> Checker<'a> {
                 binding,
                 alt: Box::new(alt),
             },
-            ok,
+            whole,
             span,
         )
     }

@@ -1,0 +1,27 @@
+// A default may be a variant of an enumeration where an optional of it is expected, and
+// of an enumeration with type parameters.
+enum Priority { Low, Normal, High }
+enum Gen<T> { Nothing, Just { v: T } }
+
+// Accepted: a literal for an optional field, a variant for an optional parameter.
+type Ok = { s: string? = "x", n: int? = 3, q: Priority = Priority.Low }
+fn f(q: Priority? = Priority.High) -> string { return "{q}" }
+
+// Refused: a variant for an optional field, and a variant of a generic enumeration.
+type A = { p: Priority? = Priority.Low }
+type B = { g: Gen<int> = Gen<int>.Nothing }
+fn g(x: Gen<string> = Gen<string>.Nothing) -> string { return "{x}" }
+
+fn main() {
+    print(Ok {})
+    print(f())
+    print(A {})
+    print(B {})
+    print(g())
+}
+
+//= Ok { s: "x", n: 3, q: Low }
+//= High
+//= A { p: Low }
+//= B { g: Nothing }
+//= Nothing

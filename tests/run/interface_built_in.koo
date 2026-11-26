@@ -1,0 +1,35 @@
+// A method the compiler itself gives a type counts where an interface asks for it.
+interface Text { fn to_string() -> string }
+interface Cmp { fn compare(other: int) -> int }
+interface Abs { fn abs() -> int }
+interface Pusher { fn (self: var) push(item: int) }
+interface Popper { fn (self: var) pop() -> int? }
+
+fn show<T: Text>(x: T) -> string { return x.to_string() }
+fn order<T: Cmp>(x: T) -> int { return x.compare(3) }
+fn size<T: Abs>(x: T) -> int { return x.abs() }
+fn add<T: Pusher>(xs: var T) { xs.push(9) }
+fn drop<T: Popper>(xs: var T) -> int? { return xs.pop() }
+
+fn main() {
+    var xs := [1, 2]
+    // Each of these methods exists, and is called directly here.
+    print("{1.to_string()} {xs.to_string()} {5.compare(3)} {(-4).abs()}")
+    xs.push(3)
+    print(xs.pop())
+    // Through an interface each is said not to exist.
+    print(show(1))
+    print(show(xs))
+    print(order(5))
+    print(size(-4))
+    add(var xs)
+    print(drop(var xs))
+}
+
+//= 1 [1, 2] 1 4
+//= 3
+//= 1
+//= [1, 2]
+//= 1
+//= 4
+//= 9

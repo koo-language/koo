@@ -1,0 +1,18 @@
+// A name with `__` in it is the standard library's: a program can neither declare one
+// nor use one of the library's by that name.
+
+type Foo__Bar = { a: int }
+
+fn reserved() {
+    x: Http__Request? = none
+    print(x)
+}
+
+fn main() {
+    reserved()
+    print(Foo__Bar { a: 1 })
+}
+
+//! error `Foo__Bar` is not a name a program can use
+//! error `Http__Request` is not a name a program can use
+//! error `Foo__Bar` is not a name a program can use
