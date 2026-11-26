@@ -171,7 +171,7 @@ pub unsafe extern "C" fn koo_sync_hooks(acquired: usize, releasing: usize) {
 
 /// Says that what is at an address is about to be let go of, for another thread.
 #[inline]
-unsafe fn handing<T>(what: *mut T) {
+pub(crate) unsafe fn handing<T>(what: *mut T) {
     let hook = HANDING.load(Relaxed);
     if hook != 0 {
         let hook: extern "C" fn(*mut u8) = unsafe { core::mem::transmute(hook) };
@@ -181,7 +181,7 @@ unsafe fn handing<T>(what: *mut T) {
 
 /// Says that what is at an address is this thread's now.
 #[inline]
-unsafe fn handed<T>(what: *mut T) {
+pub(crate) unsafe fn handed<T>(what: *mut T) {
     let hook = HANDED.load(Relaxed);
     if hook != 0 {
         let hook: extern "C" fn(*mut u8) = unsafe { core::mem::transmute(hook) };

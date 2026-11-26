@@ -1171,9 +1171,11 @@ pub unsafe extern "C" fn koo_eprint(s: *const Header) {
 /// Standard output without a line feed.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn koo_write(s: *const Header) {
-    PRINTING.lock();
-    unsafe { stdout_write(bytes(s)) }
-    PRINTING.unlock();
+    unsafe {
+        printing();
+        stdout_write(bytes(s));
+        printed();
+    }
 }
 
 #[unsafe(no_mangle)]
@@ -1271,6 +1273,20 @@ unsafe fn threads_after_fork() {
 /// inside a line.
 static PRINTING: thread::Lock = thread::Lock::new();
 
+/// Takes the output buffer for the calling thread. A program built to be checked for
+/// races is told, since the checker does not watch the support library and would take
+/// two threads' printing for a race.
+unsafe fn printing() {
+    PRINTING.lock();
+    unsafe { actor::handed(core::ptr::addr_of_mut!(STDOUT)) };
+}
+
+/// Lets go of the output buffer.
+unsafe fn printed() {
+    unsafe { actor::handing(core::ptr::addr_of_mut!(STDOUT)) };
+    PRINTING.unlock();
+}
+
 unsafe fn stdout_write(bytes: &[u8]) {
     let out = unsafe { &mut *core::ptr::addr_of_mut!(STDOUT) };
     if bytes.len() > out.data.len() - out.len {
@@ -1287,22 +1303,22 @@ unsafe fn stdout_write(bytes: &[u8]) {
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn koo_flush() {
-    PRINTING.lock();
+    unsafe { printing() };
     let out = unsafe { &mut *core::ptr::addr_of_mut!(STDOUT) };
     write_all(1, &out.data[..out.len]);
     out.len = 0;
-    PRINTING.unlock();
+    unsafe { printed() };
 }
 
 /// `print(s)`: the text and a line feed.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn koo_print(s: *const Header) {
-    PRINTING.lock();
     unsafe {
+        printing();
         stdout_write(bytes(s));
         stdout_write(b"\n");
+        printed();
     }
-    PRINTING.unlock();
 }
 
 /// Reports an error returned from `main` and exits with status 1 (Section 6.1).
