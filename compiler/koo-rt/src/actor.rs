@@ -1070,6 +1070,11 @@ pub unsafe fn run_what_waits() {
         {
             return;
         }
+        // (With a stack to come back by, as the threads this one stands in for have:
+        // a told method that calls itself without end is then a panic in its actor.)
+        if (*me).landing == 0 {
+            landing_stack();
+        }
         for _ in 0..4096 {
             RUNNING.lock();
             if RUN.len == 0 {
@@ -2262,7 +2267,11 @@ mod remote {
     #[allow(static_mut_refs)]
     unsafe fn drop_conn(index: usize) {
         unsafe {
-            CROWDED.store(false, Relaxed);
+            // (There is room again, if there was none: the thread that waits for
+            // messages left the listener alone meanwhile, and is told to look again.)
+            if CROWDED.swap(false, Relaxed) {
+                wake();
+            }
             // Whoever waits at the other end learns at once, whoever else has the socket.
             shutdown(CONNS[index].fd, 2);
             close(CONNS[index].fd);
@@ -2425,7 +2434,7 @@ mod remote {
                 // way: a worker keeps connections by for the next that asks, and will
                 // make another when it finds this one gone. If every one is in use,
                 // those that wait to be taken wait until one is done.
-                let made_room = |_: ()| -> bool {
+                let made_room = |full: bool| -> bool {
                     SERVED.lock();
                     // The one that has lain unused the longest: one that was taken a
                     // moment ago has an asker about to write to it.
@@ -2443,6 +2452,10 @@ mod remote {
                     }
                     if let Some(idle) = idle {
                         drop_conn(idle);
+                    } else if full {
+                        // Said with the lock, so that a thread which makes room a
+                        // moment later is not unsaid by this one.
+                        CROWDED.store(true, Relaxed);
                     }
                     served_unlock();
                     idle.is_some()
@@ -2452,13 +2465,12 @@ mod remote {
                 SERVED.lock();
                 let full = CONN_COUNT >= MOST_CLIENTS;
                 served_unlock();
-                if full && !made_room(()) {
-                    CROWDED.store(true, Relaxed);
+                if full && !made_room(true) {
                     break;
                 }
                 let mut fd = accept(LISTENER.load(Acquire), core::ptr::null_mut(), core::ptr::null_mut());
                 // 23 and 24 are the system's words for no more files.
-                if fd < 0 && matches!(error(), 23 | 24) && made_room(()) {
+                if fd < 0 && matches!(error(), 23 | 24) && made_room(false) {
                     fd = accept(LISTENER.load(Acquire), core::ptr::null_mut(), core::ptr::null_mut());
                 }
                 let mut room = false;
@@ -2761,7 +2773,9 @@ mod remote {
                         CONNS[index].early = false;
                         CONNS[index].turn = TURNS;
                         TURNS += 1;
-                        CROWDED.store(false, Relaxed);
+                        if CROWDED.swap(false, Relaxed) {
+                            wake();
+                        }
                     }
                 }
                 let mut next: Option<usize> = None;
@@ -3099,9 +3113,13 @@ mod remote {
             // A process that is there and cannot take a connection this moment, because
             // as many as it lets wait are waiting, is tried for two seconds; one that
             // took the connection and let go of it, three times.
-            let (mut attempt, mut refusals) = (0, 0);
+            let (mut attempt, mut refusals, mut fresh) = (0, 0, false);
             while attempt < 3 && refusals < 100 {
-                let fd = connection(name, attempt > 0);
+                // (After a connection that led nowhere the ones kept are let go of,
+                // once: not again on every try while the process has no room, which
+                // would close what the worker's other handlers have given back since.)
+                let fd = connection(name, fresh);
+                fresh = false;
                 // A process that is there is waited for, however long it has no room:
                 // those whose connections it has taken are waiting no less.
                 if fd == BUSY_THERE {
@@ -3117,6 +3135,7 @@ mod remote {
                     if fd >= 0 {
                         give_back(name, fd, false);
                         attempt += 1;
+                        fresh = true;
                     } else {
                         refusals += 1;
                     }

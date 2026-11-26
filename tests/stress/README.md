@@ -42,6 +42,7 @@ Each directory is one search, as it left its files:
 | `review` | Small programs that confirm what a reading of the code suspected |
 | `review3` | The same for the last reading: connections a worker keeps, a full table, a busy supervising process, told messages with no thread to run them |
 | `hunt3` | The last search, on Linux: one worker taking every connection, answers cut short by a stop, limits on processes and files, a long answer to a busy worker, a flood at the resolver, local peers that forge messages (`two.sh` runs a server alone in one container and a script beside it) |
+| `review4` | A reading of the fixes for all of that: long answers to workers that are busy, a told method that runs out of stack |
 
 They were written to be run from a scratch directory, and say so in their paths:
 `KOO_ROOT` stands for the repository, and `PASSWORD` for the password of a throwaway

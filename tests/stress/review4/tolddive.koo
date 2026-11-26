@@ -1,0 +1,32 @@
+// A told method that calls itself without end, where no thread can be started for it.
+import std/time
+
+fn depth(n: int) -> int {
+    if n <= 0 { return 0 }
+    return depth(n - 1) + 1
+}
+
+actor Digger {
+    var dug: int = 0
+
+    fn dig() {
+        dug = depth(100000000)
+    }
+
+    fn note() {
+        dug += 1
+    }
+
+    fn seen() -> int {
+        return dug
+    }
+}
+
+fn main() {
+    digger := Digger.start()
+    digger.send.dig()
+    time.sleep(200ms)
+    digger.send.note()
+    time.sleep(200ms)
+    print("after the dig the actor has {digger.seen()}")
+}

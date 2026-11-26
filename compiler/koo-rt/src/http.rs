@@ -944,7 +944,10 @@ mod imp {
                 .count();
             let open = CONNS.len - FREE.len;
             if CROWDED {
-                CROWDED = handlers > MOST_PLACES - 40 || open + 8 > MOST_OPEN || !a_place_to_spare();
+                // (It takes them again a little below the most it may have open: a
+                // quarter below where files are so few that eight would be all of them.)
+                CROWDED =
+                    handlers > MOST_PLACES - 40 || open + (MOST_OPEN / 4).min(8) > MOST_OPEN || !a_place_to_spare();
             } else {
                 CROWDED = handlers >= MOST_PLACES - 24 || open >= MOST_OPEN || !a_place_to_spare();
             }
@@ -2051,6 +2054,9 @@ mod imp {
             }
             end_places();
             if !CHILD {
+                // The program goes on without workers to leave room for.
+                WORKERS_WANTED = 0;
+                thread::RESERVE.store(0, core::sync::atomic::Ordering::Relaxed);
                 for &child in &CHILDREN[..CHILD_COUNT] {
                     kill(child, SIGTERM);
                 }
@@ -2160,6 +2166,9 @@ mod imp {
             }
             MAX_BODY = max_body.clamp(0, 1 << 30) as usize;
             LOG = log != 0;
+            // (Nothing of a server that ran before in this program is in this one's way.)
+            NO_SOCKETS = false;
+            CROWDED = false;
             // At every address of the machine, of the newer kind and the older: one
             // socket of the newer kind takes both, where the system has the newer; where
             // it has not, or will not listen so, the socket is of the older kind, as it
