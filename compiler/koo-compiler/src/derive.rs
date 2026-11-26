@@ -354,7 +354,12 @@ impl<'a> Deriver<'a> {
                 let read = self.reader(element);
                 let _ = write!(
                     body,
-                    "    var items: {written} = []\n    var first := true\n    j__open(text, var at, 91)?\n    \
+                    "    var items: {written} = []\n    \
+                     if __is_bytes(items) and __json_is_wire() {{\n        \
+                     packed := j__str(text, var at)?\n        \
+                     whole: {written} = __wire_bytes_decode(packed)\n        \
+                     return whole\n    }}\n    \
+                     var first := true\n    j__open(text, var at, 91)?\n    \
                      while j__more(text, var at, 93, var first)? {{\n        \
                      item := {read} else e => fail j__in(e, \"/{{items.len}}\")\n        \
                      items.push(item)\n    }}\n    return items\n"

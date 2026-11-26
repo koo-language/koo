@@ -1752,6 +1752,12 @@ fn a_stopping_server_answers_what_it_has_in_hand() {
             got.ends_with("\r\n\r\n[97, 195, 191]\n"),
             "with {workers} workers: {got}"
         );
+        // Bytes inside other things cross as they are too, wherever they are held.
+        let got = get(port, "/parcel");
+        assert!(
+            got.ends_with("\r\n\r\ntrue 256 [120] [104,101,108,100] [true, false, true] [0, 1, 255]\n"),
+            "with {workers} workers: {got}"
+        );
         for _ in 0..4 {
             let got = get(port, "/after");
             assert!(

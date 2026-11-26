@@ -1027,6 +1027,16 @@ fn (self: string) _json_write(out: var string) { out += __json_quote(self) }
 fn (self: string) to_json() -> string { return __json_quote(self) }
 
 fn (self: [T]) _json_write(out: var string) {
+    // Bytes that one process of a program sends another go as one text, and not as
+    // the array of numbers that they are in JSON, which is several times longer and
+    // is read a number at a time: an upload handed to an actor is not a thing to make
+    // slow.
+    if __is_bytes(self) and __json_is_wire() {
+        out += "\""
+        out += __wire_bytes(self)
+        out += "\""
+        return
+    }
     out += "["
     for i in 0..self.len {
         if i > 0 { out += "," }
@@ -1045,6 +1055,11 @@ fn (self: [T]) to_json() -> string {
 /// list as well as an object (`orders: [Order] = req.json()?`).
 fn List<T>._json_read(text: string, at: var int) -> [T] ! JsonError {
     var items: [T] = []
+    if __is_bytes(items) and __json_is_wire() {
+        packed := j__str(text, var at)?
+        whole: [T] = __wire_bytes_decode(packed)
+        return whole
+    }
     var first := true
     j__open(text, var at, 91)?
     while j__more(text, var at, 93, var first)? {

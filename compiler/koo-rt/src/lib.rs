@@ -1598,8 +1598,14 @@ pub unsafe extern "C" fn koo_json_number(text: *const Header, at: i64) -> i64 {
         return -1;
     };
     let int = if whole { number.parse::<i64>().ok() } else { None };
-    let Ok(float) = number.parse::<f64>() else {
-        return -1;
+    // A whole number that fits is not read a second time, as a float, which is the
+    // slower reading by far: most numbers in JSON are whole.
+    let float = match int {
+        Some(int) => int as f64,
+        None => match number.parse::<f64>() {
+            Ok(float) => float,
+            Err(_) => return -1,
+        },
     };
     unsafe {
         let me = thread::me();

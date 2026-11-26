@@ -332,6 +332,18 @@ pub const INTRINSICS: &[Intrinsic] = &[
         params: &[],
         ret: I::Bool,
     },
+    // Bytes as one process of a program writes them for another: a list that the
+    // prelude knows to be of bytes (`__is_bytes`), in a function written for any list.
+    Intrinsic {
+        name: "wire_bytes",
+        params: &[I::Cell],
+        ret: I::Str,
+    },
+    Intrinsic {
+        name: "wire_bytes_decode",
+        params: &[I::Str],
+        ret: I::Cell,
+    },
     // Logging (`std/log`, `koo-rt/src/log.rs`).
     Intrinsic {
         name: "log_on",

@@ -107,6 +107,19 @@ pub unsafe extern "C" fn koo_hex_decode(text: *const Header) -> *mut Header {
     }
 }
 
+/// Bytes as one process of a program writes them for another, and reads them: Base64,
+/// which is a third longer than the bytes, where JSON's own form for them, an array
+/// of numbers, is three and a half times as long and is read a number at a time.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn koo_wire_bytes(data: *const Header) -> *mut Header {
+    unsafe { koo_base64(data, false) }
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn koo_wire_bytes_decode(text: *const Header) -> *mut Header {
+    unsafe { koo_base64_decode(text, false) }
+}
+
 /// Base64. With `url`, the alphabet that is safe in an address, with `-` and `_`, and
 /// no `=` at the end.
 #[unsafe(no_mangle)]

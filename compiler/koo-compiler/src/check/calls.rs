@@ -186,6 +186,14 @@ impl<'a> Checker<'a> {
                         kind => Expr { kind, ..less },
                     };
                 }
+                if self.body_in_prelude && name.name == "__is_bytes" && args.len() == 1 {
+                    // Whether a value is a list of bytes, which is known here: the body
+                    // of a function with type parameters is checked for each type it is
+                    // used with, so that one written for every list can do for bytes
+                    // what it does for no other.
+                    let value = self.expr(&args[0].value, None);
+                    return self.mk(ExprKind::Bool(value.ty == Ty::list(Ty::Byte)), Ty::Bool, span);
+                }
                 if self.body_in_prelude && name.name == "__repr" && args.len() == 1 {
                     let value = self.expr(&args[0].value, None);
                     return self.mk_call(ExprKind::Builtin(Builtin::Repr, vec![value]), Ty::Str, span);

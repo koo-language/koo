@@ -10,6 +10,22 @@ error Refused
 
 type Reading = { value: float }
 
+// Bytes wherever a value may have them: as they are, perhaps there and perhaps not, in
+// a list, in a map, in a structure with a type parameter, and beside lists of other
+// things a byte might be taken for.
+type Held<T> = { items: [T] }
+type Parcel = {
+    data: [byte],
+    perhaps: [byte]?,
+    absent: [byte]?,
+    parts: [[byte]],
+    named: [string: [byte]],
+    held: Held<byte>,
+    nothing: [byte],
+    flags: [bool],
+    small: [int],
+}
+
 actor Visits {
     var seen: int = 0
 
@@ -26,6 +42,11 @@ actor Visits {
     // Bytes go to another process and back as they are.
     fn same_bytes(bytes: [byte]) -> [byte] {
         return bytes
+    }
+
+    // And so do bytes inside other things, in every place a value may have them.
+    fn same_parcel(parcel: Parcel) -> Parcel {
+        return parcel
     }
 
     fn same_tag(tag: Tag) -> Tag {
@@ -211,6 +232,26 @@ fn main() ! http.Error {
         return http.text("{back.weight} {back.to_json()} {Tag.from_json(back.to_json())?.weight} {back._uses}\n")
     })
     app.get("/bytes", req -> http.text("{visits.same_bytes("a\u{ff}".bytes())}\n"))
+    app.get("/parcel", req -> {
+        var every: [byte] = []
+        for i in 0..256 {
+            every.push(byte.from(i) else byte.from(0) else panic("a byte"))
+        }
+        sent := Parcel {
+            data: every,
+            perhaps: "p\u{ff}".bytes(),
+            absent: none,
+            parts: [every, [], "x".bytes()],
+            named: ["a": "1".bytes(), "b": every],
+            held: Held<byte> { items: "held".bytes() },
+            nothing: [],
+            flags: [true, false, true],
+            small: [0, 1, 255],
+        }
+        back := visits.same_parcel(sent)
+        // To anyone but another process of the program, bytes are numbers, as before.
+        return http.text("{back == sent} {back.data.len} {back.parts[2]} {back.held.items.to_json()} {back.flags} {back.small}\n")
+    })
     app.get("/ratio", req -> {
         done := float.parse(req.query("done") else "0") else 0.0
         total := float.parse(req.query("total") else "0") else 0.0
