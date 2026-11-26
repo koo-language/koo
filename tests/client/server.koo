@@ -32,6 +32,12 @@ actor Visits {
     fn same(x: float) -> float {
         return x
     }
+
+    // The first actor a server starts, taking its time.
+    fn linger(millis: int) -> int {
+        time.sleep(1ms * millis)
+        return seen
+    }
 }
 
 // Actors that handlers start: one for each name that is asked for, kept by another
@@ -90,6 +96,11 @@ actor Sloth {
     fn trip(n: int) -> int {
         empty: [int] = []
         return empty[n]
+    }
+
+    // As deep as it is asked to go, in the actor's own method.
+    fn dive(n: int) -> int {
+        return depth(n)
     }
 }
 
@@ -201,6 +212,9 @@ fn main() ! http.Error {
     sloth := Sloth.start()
     app.get("/sloth/:millis", req -> http.text("{sloth.nap(int.parse(req.param("millis")) else 0)}\n"))
     app.get("/trip", req -> http.text("{sloth.trip(3)}\n"))
+    app.get("/dive/:n", req -> http.text("{sloth.dive(int.parse(req.param("n")) else 0)}\n"))
+    app.get("/linger/:millis", req -> http.text("{visits.linger(int.parse(req.param("millis")) else 0)}\n"))
+    app.post("/through", req -> http.bytes(visits.same_bytes(req.bytes())))
     app.get("/slow", req -> {
         time.sleep(2s)
         return http.text("late\n")

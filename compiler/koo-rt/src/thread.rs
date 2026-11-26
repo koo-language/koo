@@ -225,6 +225,9 @@ pub struct Thread {
     pub answer_kind_len: usize,
     /// Whether the thread is in the middle of talking to another process (`actor.rs`).
     pub talking: bool,
+    /// The top of a stack the thread comes back by when its own is exhausted in a
+    /// message to an actor, or 0 if it has none.
+    pub landing: usize,
     /// The message from another process that the thread is answering: the connection
     /// it came on and one more, turned about once the connection is to be let go of,
     /// or 0 for none; its kind; the message, its length, and where its method ends.
@@ -558,7 +561,7 @@ extern "C" fn stack_signal(signal: i32, info: *const u8, context: *const u8) {
             // talking to another process, when its stack ran out.
             if free
                 && crate::actor::quiet()
-                && let Some((function, top)) = crate::http::landing()
+                && let Some((function, top)) = crate::http::landing().or_else(|| crate::actor::landing())
                 && resume_at(context, function, top)
             {
                 return;

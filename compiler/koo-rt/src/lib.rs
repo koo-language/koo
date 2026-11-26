@@ -1268,6 +1268,9 @@ static mut STDOUT: Stdout = Stdout {
 
 /// In a process just forked: what a thread of the parent held is let go of.
 unsafe fn threads_after_fork() {
+    // What waited to be printed is the parent's to print, and the lock on it may have
+    // been a thread's that is not here.
+    unsafe { (*core::ptr::addr_of_mut!(STDOUT)).len = 0 };
     PRINTING.unlock();
     unsafe { thread::after_fork() };
 }

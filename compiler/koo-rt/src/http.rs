@@ -1759,6 +1759,8 @@ mod imp {
                     let Some(slot) = CHILDREN[..CHILD_COUNT].iter().position(|child| *child == gone) else {
                         continue;
                     };
+                    // What is waiting to be printed is printed here, not by the worker too.
+                    koo_flush();
                     // The threads that answer for the actors go on meanwhile, but leave
                     // their connections as they are until the new process has its own.
                     super::super::actor::forking(true);
@@ -1875,7 +1877,7 @@ mod imp {
     #[allow(static_mut_refs)]
     pub unsafe fn landing() -> Option<(usize, usize)> {
         unsafe {
-            if SERVING == 0 || SERVING != thread::this_thread() || CONNS.len == 0 || CURRENT.answered || OUT_OF_STACK {
+            if SERVING == 0 || SERVING != thread::this_thread() || CONNS.len == 0 || CURRENT.answered {
                 return None;
             }
             let index = CURRENT.conn;
@@ -2297,6 +2299,15 @@ mod imp {
         }
     }
 
+    /// Whether the loop could go on in another place if this one began a request.
+    #[allow(static_mut_refs)]
+    unsafe fn a_place_to_spare() -> bool {
+        unsafe {
+            (PLACE_COUNT < MOST_PLACES && !ENDING)
+                || (0..PLACE_COUNT).any(|place| place != HERE && PLACES[place].doing == Doing::Parked)
+        }
+    }
+
     /// A place to run the loop while this one waits: one that was left in it, or a new one.
     #[allow(static_mut_refs)]
     unsafe fn another_place() -> Option<usize> {
@@ -2541,7 +2552,11 @@ mod imp {
                     PLACES[HERE].doing = Doing::Driving;
                     continue;
                 }
-                while READY.len > 0 {
+                // A place is kept for this loop: with every other in a handler, no new
+                // request is begun here, so that a handler that waits can always be
+                // left, and what it waits for, which may be another handler of this
+                // worker, is attended to.
+                while READY.len > 0 && (!SIDE_BY_SIDE || a_place_to_spare()) {
                     READY.len -= 1;
                     let index = *READY.ptr.add(READY.len) as usize;
                     let c = conn(index);
