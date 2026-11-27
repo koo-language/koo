@@ -1776,6 +1776,43 @@ fn threads_begin_talking_at_once() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// Sixteen threads that share the three connections of one pool, for 320 conversations:
+/// each hears its own answer, and the other end never has more than three connections.
+#[test]
+fn threads_share_a_pool() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let (_listener, address, open) = tcp_server();
+    let watching = open.clone();
+    let most = std::sync::Arc::new(std::sync::atomic::AtomicI64::new(0));
+    let seen = most.clone();
+    let done = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let over = done.clone();
+    let watcher = std::thread::spawn(move || {
+        use std::sync::atomic::Ordering::SeqCst;
+        while !over.load(SeqCst) {
+            seen.fetch_max(watching.load(SeqCst), SeqCst);
+            std::thread::sleep(std::time::Duration::from_micros(200));
+        }
+    });
+    let output = Command::new(env!("CARGO_BIN_EXE_koo"))
+        .arg("run")
+        .arg(root.join("tests/net/shared.koo"))
+        .env("ADDRESS", &address)
+        .output()
+        .expect("koo runs");
+    done.store(true, std::sync::atomic::Ordering::SeqCst);
+    watcher.join().unwrap();
+    assert!(
+        output.status.success() && String::from_utf8_lossy(&output.stdout) == "320 right, 0 wrong\n",
+        "{}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let most = most.load(std::sync::atomic::Ordering::SeqCst);
+    assert!(most <= 3, "a pool of three had {most} connections open at once");
+    assert_eq!(open_connections(&open, |open| open == 0), 0, "connections left open");
+}
+
 /// The same inside a server: the handlers of every worker, and an actor that with
 /// several workers is in another process, each have their conversations on connections
 /// of their own process, also where the pool was made before there were workers; and a

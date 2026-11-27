@@ -39,6 +39,52 @@ for program in $(grep -l "^actor \|parallel\|spawn" tests/run/*.koo); do
     fi
 done
 echo "$programs programs, $failed with races"
+# The programs whose threads talk to another program over TCP, on connections that the
+# support library keeps in tables all its threads share: at the same moment for the
+# first time (`first.koo`), and through one pool of three (`shared.koo`). What they talk
+# to answers each line with a number and the line.
+python3 - "$out/port.txt" <<'PY' &
+import socket, sys, threading
+server = socket.socket()
+server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+server.bind(("127.0.0.1", 0))
+server.listen(64)
+open(sys.argv[1], "w").write(str(server.getsockname()[1]))
+def answer(connection, number):
+    lines = connection.makefile("rwb")
+    for line in lines:
+        lines.write(str(number).encode() + b" " + line.split(b" ", 1)[-1])
+        lines.flush()
+number = 0
+while True:
+    connection, _ = server.accept()
+    number += 1
+    threading.Thread(target=answer, args=(connection, number), daemon=True).start()
+PY
+peer=$!
+for attempt in 1 2 3 4 5 6 7 8 9 10; do [ -s "$out/port.txt" ] && break; sleep 0.2; done
+for program in tests/net/first.koo tests/net/shared.koo; do
+    talked=0
+    if KOO_RUNTIME="$out/libkoo_rt.a" "$koo" build --sanitize=thread "$program" -o "$out/program" > "$out/built.txt" 2>&1; then
+        for round in 1 2 3 4 5; do
+            ADDRESS="127.0.0.1:$(cat "$out/port.txt")" timeout 300 "$out/program" > "$out/said.txt" 2>&1 < /dev/null
+            if grep -q "ThreadSanitizer" "$out/said.txt" || ! grep -q "^16 of 16 right$\|^320 right, 0 wrong$" "$out/said.txt"; then
+                echo "FAIL  $program"
+                grep -A16 "ThreadSanitizer" "$out/said.txt" | head -40
+                grep -v "ThreadSanitizer" "$out/said.txt" | head -5
+                failed=$((failed + 1))
+                talked=1
+                break
+            fi
+        done
+        [ $talked = 0 ] && echo "pass  $program"
+    else
+        echo "FAIL  $program was not built"
+        head -5 "$out/built.txt"
+        failed=$((failed + 1))
+    fi
+done
+kill $peer 2>/dev/null
 # And a server under load (`check.py`), whose process that keeps the actors answers on
 # many threads at once. The sanitizer makes it many times slower, so what the check
 # says of times is of no account here, nor is a stack that runs out tried: what counts

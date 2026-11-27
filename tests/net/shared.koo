@@ -1,0 +1,65 @@
+// Sixteen actors, each on its own thread, that have twenty conversations apiece on the
+// connections of one pool of three (`threads_share_a_pool` in the tests, and the check
+// for races inside the support library).
+import std/net
+import std/os
+import std/time
+
+actor Heard {
+    var right: int = 0
+    var wrong: [string] = []
+
+    fn add(asked: string, answer: string) {
+        if (on, text) := answer.cut(" ") {
+            if text == asked {
+                right += 1
+                return
+            }
+        }
+        wrong.push("{asked}: {answer}")
+    }
+
+    fn count() -> int {
+        return right + wrong.len
+    }
+
+    fn said() -> string {
+        return "{right} right, {wrong.len} wrong{if wrong.len > 0 { ": {wrong[0]}" } else { "" }}"
+    }
+}
+
+actor Asker {
+    pool: net.Pool
+    heard: Heard
+
+    fn ask(n: int) {
+        for round in 0..20 {
+            asked := "{n}-{round}"
+            answer := pool.with(conn -> {
+                conn.write("echo {asked}\n")?
+                return conn.read_line()?
+            })
+            match answer {
+                line => heard.send.add(asked, line)
+                ! e => heard.send.add(asked, "{e.kind}: {e.message}")
+            }
+        }
+    }
+}
+
+fn main() ! net.Error {
+    pool := net.pool(os.env("ADDRESS") else "127.0.0.1:1", size: 3)?
+    heard := Heard.start()
+    var askers: [Asker] = []
+    for i in 0..16 {
+        askers.push(Asker.start(pool: pool, heard: heard))
+    }
+    for i in 0..16 {
+        askers[i].send.ask(i)
+    }
+    for attempt in 0..4000 {
+        if heard.count() == 320 { break }
+        time.sleep(5ms)
+    }
+    print(heard.said())
+}
