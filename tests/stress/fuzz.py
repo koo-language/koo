@@ -201,9 +201,16 @@ def cache(connection, mine):
         head = lines.readline()
         if not head:
             return
+        words = []
         for _ in range(int(head.strip()[1:] or b"0")):
             lines.readline()
-            lines.readline()
+            words.append(lines.readline().strip())
+        # (The word with which a client sees that the server is there, when it connects,
+        # is answered as a server answers it: a program that cannot connect does not
+        # start, and what is thrown at it is for after it has.)
+        if words[:1] == [b"PING"]:
+            send(connection, b"+PONG\r\n", mine)
+            continue
         reply = mine.choice([b"$5\r\nvalue\r\n", b"$-1\r\n", b"+OK\r\n", b":42\r\n", b"-ERR no\r\n",
                              b"*2\r\n$1\r\na\r\n*1\r\n:1\r\n", b"$0\r\n\r\n"])
         send(connection, reply, mine)
