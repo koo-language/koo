@@ -418,6 +418,9 @@ impl<'a> Checker<'a> {
                             self.error_near(name.span, message, &name.name, known, None);
                             return Pattern::Wildcard;
                         };
+                        if path.len() == 1 {
+                            self.kept_variant(*id, span);
+                        }
                         let defs = self.program.enums[*id].variants[variant].fields.clone();
                         // A bare `Name` matches the variant whatever its fields.
                         let kept = self.kept_field(ty);

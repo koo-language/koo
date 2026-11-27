@@ -154,7 +154,11 @@ impl Checker<'_> {
                         },
                         _ => 0,
                     };
-                    let name = named(expr).unwrap_or_else(|| format!("value{}", names.len() + 1));
+                    // (By the names the program writes: a type of a package in the
+                    // path is `orders.State`, as it is printed.)
+                    let name = named(expr)
+                        .map(|name| crate::check::printed_name(&name))
+                        .unwrap_or_else(|| format!("value{}", names.len() + 1));
                     names.push(self.mk(ExprKind::Str(name), Ty::Str, expr.span));
                     kinds.push(self.mk(ExprKind::Int(kind), Ty::Int, expr.span));
                     shown.push(value);

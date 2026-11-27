@@ -120,6 +120,16 @@ pub enum Maybe<T> {
     Nothing
 }
 
+// `Hashable` is the language's here, whatever the program that imports this calls a
+// type of its own.
+pub fn tally<K: Hashable>(keys: [K]) -> int {
+    var seen: [K: int] = [:]
+    for key in keys {
+        seen[key] = 1
+    }
+    return seen.len
+}
+
 pub fn just(n: int) -> Maybe<int> {
     return Maybe<int>.Just { value: n }
 }

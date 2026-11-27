@@ -38,6 +38,19 @@ fn main() {
     }
     print(stock.theirs())
     print(Other.make())
+    print(item.hush())
+    tally := stock.Tally.start()
+    tally.send.wipe(5)
+    print(stock.job()._run())
+    match stock.level() {
+        Low => print("low")
+        _ => print("other")
+    }
+    remade: stock.Item = made()
+}
+
+fn made<T>() -> T {
+    return T.make()
 }
 
 // Another name for a type of the package is the type still: it is given no methods
@@ -67,7 +80,7 @@ fn (self: Other) shout() -> string {
 //! error unknown function `pkg_stock__label`
 //! stderr main.koo:21:11
 //! error the package `stock` has no function `nothing`
-//! stderr it has `label`, `moved`, `theirs`, `wrong`
+//! stderr it has `job`, `label`, `level`, `moved`, `theirs`, `wrong`
 //! error `stock.Item` has no field `_tag`
 //! stderr main.koo:24:28
 //! error this `match` on `stock.Mode` has no arm for a variant it may be given later
@@ -83,8 +96,18 @@ fn (self: Other) shout() -> string {
 //! stderr main.koo:36:33
 //! error `stock.Item.make` is not offered by its package
 //! stderr main.koo:40:17
+//! error `stock.Item.hush` is not offered by its package
+//! stderr main.koo:41:16
+//! error `stock.Tally.wipe` is not offered by its package
+//! stderr main.koo:43:16
+//! error `stock.Job` has no method `_run`
+//! stderr main.koo:44:23
+//! error this is a variant of `stock.Level`, which its package does not offer
+//! stderr main.koo:46:9
+//! error `stock.Item.make` is not offered by its package
+//! stderr main.koo:53:14
 //! error a function cannot be declared on `stock.Item`, a type of another package
-//! stderr main.koo:47:18
+//! stderr main.koo:60:18
 //! error unknown function `mine`
 //! stderr stock.koo:24:12
 //! error unknown type `Mine`

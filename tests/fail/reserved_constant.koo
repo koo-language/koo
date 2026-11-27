@@ -1,0 +1,7 @@
+// A name with `__` in it is the library's, for a constant as for a function.
+max__n := 3
+
+fn main() {
+    print(1)
+}
+//! error a name with `__` in it is reserved for the standard library

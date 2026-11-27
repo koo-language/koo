@@ -68,9 +68,14 @@ fn main() {
     }
     print(Pair<stock.Item> { both: [shelf.items[0]] })
     print(count)
+    print("{stock.tally(["a", "a", "b"])} {Hashable { n: 1 }.n}")
 }
 
 type Pair<T> = { both: [T] }
+
+// A name the language has a meaning for, given another here: the package keeps the
+// language's.
+type Hashable = { n: int }
 //= tools: 2x saw @30, 450x nail @40
 //= main's 3
 //= 1x
@@ -97,3 +102,4 @@ type Pair<T> = { both: [T] }
 //= just 3
 //= Pair<stock.Item> { both: [stock.Item { name: "saw", count: 1, state: Fresh }] }
 //= stock.Count#0
+//= 2 1

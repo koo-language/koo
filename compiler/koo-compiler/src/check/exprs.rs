@@ -516,6 +516,7 @@ impl<'a> Checker<'a> {
                 .iter()
                 .position(|v| v.name == super::bare(&name.name));
             if let Some(variant) = variant {
+                self.kept_variant(*id, span);
                 return self.variant_value(*id, variant, span);
             }
         }
@@ -1303,6 +1304,9 @@ impl<'a> Checker<'a> {
                         .map(|v| Target::Variant(*id, v)),
                     _ => None,
                 };
+                if let Some(Target::Variant(id, _)) = variant {
+                    self.kept_variant(id, ty.span);
+                }
                 match variant {
                     Some(target) => Some(target),
                     None => match self.literal_type(ty, expected) {

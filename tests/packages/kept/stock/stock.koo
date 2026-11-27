@@ -62,3 +62,36 @@ pub fn theirs() -> int {
 fn other() -> int {
     return Item.make()
 }
+
+// Routes by which what is kept might be had all the same, each of which is closed:
+// a method given under another name for the type, a message told and not asked, a
+// field that holds a function, the variants of an enum that is not offered.
+type Same = Item
+
+fn (self: Same) hush() -> string {
+    return self.name
+}
+
+pub actor Tally {
+    var sum: int = 0
+
+    fn wipe(to: int) {
+        sum = to
+    }
+
+    pub fn total() -> int {
+        return sum
+    }
+}
+
+pub type Job = { name: string, _run: fn() -> int }
+
+pub fn job() -> Job {
+    return Job { name: "j", _run: () -> 41 }
+}
+
+enum Level { Low, High }
+
+pub fn level() -> Level {
+    return Level.Low
+}

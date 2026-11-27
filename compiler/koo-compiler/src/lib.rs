@@ -55,6 +55,19 @@ pub fn compile_sources(sources: &SourceMap, tests: bool) -> Result<String, Vec<D
     let mut types: HashMap<&str, HashMap<String, String>> = HashMap::new();
     let mut kept: HashSet<String> = HashSet::new();
     let mut bound: Vec<Vec<(String, &str)>> = Vec::new();
+    let library_types: HashSet<&str> = prelude
+        .file
+        .items
+        .iter()
+        .filter_map(|item| match &item.kind {
+            ItemKind::Type(decl) => Some(decl.name.name.as_str()),
+            ItemKind::Enum(decl) => Some(decl.name.name.as_str()),
+            ItemKind::Error(decl) => Some(decl.name.name.as_str()),
+            ItemKind::Interface(decl) => Some(decl.name.name.as_str()),
+            ItemKind::Actor(decl) => Some(decl.name.name.as_str()),
+            _ => None,
+        })
+        .collect();
     // And the names of the types of the program's own files.
     let mut programs_types: Vec<String> = Vec::new();
     for file in sources.files().iter().filter(|_| several) {
@@ -79,7 +92,17 @@ pub fn compile_sources(sources: &SourceMap, tests: bool) -> Result<String, Vec<D
                 _ => continue,
             };
             if file.package.is_empty() {
-                programs_types.push(name.name.clone());
+                // (Not a name the library has too: in a package that is the
+                // library's, as it is in any program.)
+                if !library_types.contains(name.name.as_str()) && !check::known_everywhere(&name.name) {
+                    programs_types.push(name.name.clone());
+                    // And the types the compiler makes for an actor of the program.
+                    if matches!(item.kind, ItemKind::Actor(_)) {
+                        programs_types.push(derive::send_type(&name.name));
+                        programs_types.push(derive::try_type(&name.name));
+                        programs_types.push(derive::state_type(&name.name));
+                    }
+                }
                 continue;
             }
             let full = check::type_in_package(&file.package, &name.name);
@@ -275,7 +298,10 @@ fn shown(mut diagnostics: Vec<Diagnostic>, sources: &SourceMap, bound: &[Vec<(St
             diagnostic.span.start.saturating_sub(at.base) as usize,
             diagnostic.span.end.saturating_sub(at.base) as usize,
         );
-        if at.src.get(from..to).is_some_and(|written| written.contains("__")) {
+        let a_name = |written: &str| {
+            written.contains("__") && written.bytes().all(|byte| byte.is_ascii_alphanumeric() || byte == b'_')
+        };
+        if at.src.get(from..to).is_some_and(a_name) {
             continue;
         }
         let here = sources.files()[file].package.as_str();

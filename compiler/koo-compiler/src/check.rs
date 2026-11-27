@@ -145,6 +145,17 @@ pub(crate) fn bare(name: &str) -> &str {
     name.rsplit_once("__").map_or(name, |(_, last)| last)
 }
 
+/// Whether a name of a type means something in every program before any declares it:
+/// a type or an interface that the compiler itself knows.
+pub fn known_everywhere(name: &str) -> bool {
+    is_builtin_type(name)
+        || koo_syntax::token::is_primitive(name)
+        || matches!(
+            name,
+            "Ordered" | "Hashable" | "Equatable" | "Decimal" | "Failure" | "Self"
+        )
+}
+
 pub fn package_shown(package: &str) -> &str {
     let numbered = package
         .strip_prefix("pkg")
@@ -413,6 +424,8 @@ pub(crate) struct Checker<'a> {
     /// of its own files.
     packages: Packages,
     programs_own: std::collections::HashSet<String>,
+    /// Whether the function whose signature is being declared is `pub`.
+    declaring_pub: bool,
     /// The file of the function being checked.
     file: usize,
 }
@@ -482,6 +495,7 @@ impl<'a> Checker<'a> {
             file_bases: vec![0],
             packages: Packages::default(),
             programs_own: std::collections::HashSet::new(),
+            declaring_pub: true,
             file: 0,
         };
         // The prelude error types this compiler knows (Section 4.1).
@@ -577,6 +591,12 @@ impl<'a> Checker<'a> {
     /// and is nobody's reaching in.
     pub(crate) fn offered(&mut self, owner: &str, name: &ast::Ident) {
         let owner = owner.split('<').next().unwrap_or(owner);
+        // (What `handle.send` and `handle.try_send` are is the actor's, for this.)
+        let owner = owner
+            .strip_prefix("Actor")
+            .and_then(|rest| rest.strip_suffix("Send").or_else(|| rest.strip_suffix("Try")))
+            .filter(|actor| self.type_names.contains_key(*actor))
+            .unwrap_or(owner);
         if self.body_in_prelude || !self.packages.private.contains(&format!("{owner}.{}", name.name)) {
             return;
         }
@@ -587,6 +607,26 @@ impl<'a> Checker<'a> {
                 "what a package offers to those who import it is declared `pub` (Section 4.6)",
             );
         }
+    }
+
+    /// Says that a variant written alone is of an enum that its package has not
+    /// offered, if it is, and is written outside the package: a variant is as visible
+    /// as its enum (Section 4.6). Returns whether it said so.
+    pub(crate) fn kept_variant(&mut self, id: EnumId, span: Span) -> bool {
+        let name = self.program.enums[id].name.clone();
+        let base = name.split('<').next().unwrap_or(&name);
+        if self.body_in_prelude
+            || !self.packages.private.contains(base)
+            || package_of_name(base).is_none_or(|package| package == self.package_here())
+        {
+            return false;
+        }
+        self.error_help(
+            span,
+            format!("this is a variant of `{base}`, which its package does not offer"),
+            "a variant is offered when its enum is: the package declares the enum `pub` (Section 4.6)",
+        );
+        true
     }
 
     /// Whether a name is one that a package keeps to itself, asked for from outside it.
@@ -1157,6 +1197,7 @@ impl<'a> Checker<'a> {
                 if !item.attrs.is_empty() {
                     self.unsupported(item.attrs[0].span, "attributes on functions are");
                 }
+                self.declaring_pub = item.public;
                 if let Some(id) = self.signature(decl) {
                     bodies.push((id, decl));
                 }
@@ -1729,6 +1770,20 @@ impl<'a> Checker<'a> {
     }
 
     fn constant(&mut self, decl: &ast::ConstDecl) {
+        // (As for a function: only the name the compiler gave a package's constant
+        // has `__` in it.)
+        let own = format!("{}__", self.package_here());
+        let plain = match decl.name.name.strip_prefix(&own) {
+            Some(plain) if own.len() > 2 => plain,
+            _ => decl.name.name.as_str(),
+        };
+        if plain.contains("__") && !self.in_prelude {
+            self.error(
+                decl.name.span,
+                "a name with `__` in it is reserved for the standard library",
+            );
+            return;
+        }
         let ty = decl.ty.as_ref().map(|ty| self.resolve_type(ty));
         let Some(mut value) = self.const_expr(&decl.value, ty.as_ref()) else {
             return;
@@ -1888,6 +1943,20 @@ impl<'a> Checker<'a> {
                         "methods and type-level functions are declared on the types of this package (Sections 4.6 and 6.1)",
                     );
                     return None;
+                }
+                // What a package has not offered of a type is kept under the type's own
+                // name, by whatever name the declaration writes it.
+                if !self.in_prelude && !self.declaring_pub && !self.package_here().is_empty() {
+                    let own = match &ty {
+                        Ty::Struct(id) => Some(&self.program.structs[*id].name),
+                        Ty::Enum(id) => Some(&self.program.enums[*id].name),
+                        Ty::Error(id) => Some(&self.program.errors[*id].name),
+                        _ => None,
+                    };
+                    if let Some(own) = own {
+                        let base = own.split('<').next().unwrap_or(own);
+                        self.packages.private.insert(format!("{base}.{}", sig.name.name));
+                    }
                 }
                 // The prelude's `Http__App.get` is `http.App.get` to the program.
                 let on = self.ty_name(&ty);

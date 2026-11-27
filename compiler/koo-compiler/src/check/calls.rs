@@ -611,6 +611,16 @@ impl<'a> Checker<'a> {
         span: Span,
         expected: Option<&Ty>,
     ) -> Expr {
+        // (Through a type parameter too, what a package keeps of a type is kept.)
+        let own = match on {
+            Ty::Struct(id) => Some(self.program.structs[*id].name.clone()),
+            Ty::Enum(id) => Some(self.program.enums[*id].name.clone()),
+            Ty::Error(id) => Some(self.program.errors[*id].name.clone()),
+            _ => None,
+        };
+        if let Some(own) = own {
+            self.offered(&own, name);
+        }
         if let Some(owner) = self.owner_of(on)
             && let Some(&id) = self.type_fns.get(&(owner, name.name.clone()))
         {
@@ -876,6 +886,7 @@ impl<'a> Checker<'a> {
             && let Some(index) = fields.iter().position(|field| field.name == name.name)
             && matches!(fields[index].ty, Ty::Fn(_))
             && (self.body_in_prelude || !self.is_prelude_type(&receiver.ty))
+            && !(name.name.starts_with('_') && self.kept_field(&receiver.ty))
         {
             let ty = fields[index].ty.clone();
             let function = self.mk(ExprKind::Field(Box::new(receiver), index), ty, name.span);
