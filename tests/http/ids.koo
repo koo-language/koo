@@ -1,0 +1,33 @@
+// A server that can be watched. It counts what it does, and says so to whoever asks
+// (`a_server_counts_what_it_does`). And each request has a name (`requests_have_names`): the one it came with in
+// `X-Request-Id`, or one the server gives it. The handler can ask for it, the answer
+// says it, and so does every line that is logged while the request is answered.
+import std/http
+import std/log
+import std/os
+
+actor Clerk {
+    fn note(what: string) -> string {
+        log.info("the clerk noted {what}")
+        return what
+    }
+}
+
+fn main() ! http.Error {
+    clerk := Clerk.start()
+    var app := http.App.new()
+    app.get("/id", req -> {
+        log.info("asked for its name")
+        return http.text("{req.id()}\n")
+    })
+    app.get("/own", req -> http.text("own\n").header("X-Request-Id", "said-by-the-handler"))
+    app.get("/fails", req -> {
+        value := int.parse("x")?
+        return http.text("{value}\n")
+    })
+    app.get("/panics", req -> http.text("{[1][int.parse(req.id()) else 5]}\n"))
+    // What the server has counted, all its workers together.
+    app.get("/metrics", req -> http.text(http.metrics()))
+    app.get("/clerk", req -> http.text("{clerk.note(req.id())}\n"))
+    app.serve(workers: int.parse(os.env("WORKERS") else "") else 1, log: true)?
+}

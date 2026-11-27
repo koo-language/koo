@@ -778,6 +778,21 @@ pub const INTRINSICS: &[Intrinsic] = &[
         ret: I::Int,
     },
     Intrinsic {
+        name: "http_request_id",
+        params: &[I::Int],
+        ret: I::Str,
+    },
+    Intrinsic {
+        name: "http_request_now",
+        params: &[],
+        ret: I::Str,
+    },
+    Intrinsic {
+        name: "http_metrics",
+        params: &[],
+        ret: I::Str,
+    },
+    Intrinsic {
         name: "http_method",
         params: &[I::Int],
         ret: I::Str,

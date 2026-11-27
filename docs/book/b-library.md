@@ -397,6 +397,7 @@ A handler is a `fn(http.Request) -> http.Response ! Failure`.
 | `req.rest() -> string?` | what `*` at the end of the route matched |
 | `req.query(name: string) -> string?` | a parameter of the query |
 | `req.header(name: string) -> string?` | a header |
+| `req.id() -> string` | the name the request goes by: what its `X-Request-Id` said, if that is at most 64 letters, digits, `.`, `_`, `:` and `-`, or else sixteen digits the server gives it. The answer says it in `X-Request-Id` unless the handler sets that header itself, and with `KOO_LOG=json` every line written while the request is answered has it as `request` |
 | `req.cookie(name: string) -> string?` | a cookie |
 | `req.body() -> string` | the body; a byte that is not text in UTF-8 is replaced by U+FFFD |
 | `req.bytes() -> [byte]` | the body as the bytes it is |
@@ -406,6 +407,7 @@ A handler is a `fn(http.Request) -> http.Response ! Failure`.
 | `http.Response` | |
 | --- | --- |
 | `http.text(body: string, status: int = 200)` | plain text |
+| `http.metrics() -> string` | what the server has counted of itself, all its workers together, as the text that Prometheus reads: `koo_http_requests_total{status="2xx"}` and the other classes, `koo_http_request_duration_seconds` (a histogram), `koo_http_requests_abandoned_total`, `koo_http_handler_panics_total`, `koo_http_workers_started_total`. Empty before the program has served |
 | `http.html(body: string, status: int = 200)` | HTML |
 | `http.json(value: T, status: int = 200)` | a value as JSON |
 | `http.send(body: string, content_type: string, status: int = 200)` | a body of a given type |

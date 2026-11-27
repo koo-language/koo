@@ -207,6 +207,16 @@ pub unsafe fn said(level: &[u8], plain: &[u8], message: &[u8], fields: &[(&[u8],
                 Field::Digits(digits) => line.push(digits),
             }
         }
+        // A line written while a request is being answered says which request, as
+        // the lines the program logs do: a panic in a handler, as much as its answer.
+        if !fields.iter().any(|(name, _)| *name == b"request") {
+            let (name, len) = crate::http::name_now();
+            if len > 0 {
+                line.push(b",\"request\":\"");
+                escaped(&mut line, &name[..len]);
+                line.push(b"\"");
+            }
+        }
         line.push(b"}\n");
         write_all(2, line.bytes());
         line.release();

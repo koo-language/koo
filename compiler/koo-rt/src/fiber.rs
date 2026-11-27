@@ -18,6 +18,14 @@ unsafe extern "C" {
     fn mprotect(address: *mut u8, length: usize, protection: i32) -> i32;
 }
 
+/// Memory that this process and those it forks afterwards all read and write: `size`
+/// bytes of zeros, or nothing if the system has none to give.
+pub unsafe fn shared(size: usize) -> *mut u8 {
+    let anonymous = if cfg!(target_os = "macos") { 0x1000 } else { 0x20 };
+    let at = unsafe { mmap(core::ptr::null_mut(), size, 1 | 2, 1 | anonymous, -1, 0) };
+    if at as isize == -1 { core::ptr::null_mut() } else { at }
+}
+
 /// The size of a stack, and of the part at its low end that cannot be touched, so that
 /// a handler that calls itself without end is stopped and does not write over another.
 pub const STACK: usize = 8 << 20;

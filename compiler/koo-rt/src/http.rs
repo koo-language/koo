@@ -54,6 +54,9 @@ mod stub {
     pub unsafe fn await_turn(_: i64) -> bool {
         false
     }
+    pub unsafe fn name_now() -> ([u8; 64], usize) {
+        ([0; 64], 0)
+    }
     pub unsafe fn give_turns() {}
     pub unsafe fn asking(_: bool) {}
     pub unsafe fn leave_if_out_of_grace() {}
@@ -64,6 +67,18 @@ mod stub {
     #[unsafe(no_mangle)]
     pub unsafe extern "C" fn koo_http_given_up() -> bool {
         false
+    }
+    #[unsafe(no_mangle)]
+    pub unsafe extern "C" fn koo_http_request_id(_: i64) -> *mut Header {
+        unsafe { none() }
+    }
+    #[unsafe(no_mangle)]
+    pub unsafe extern "C" fn koo_http_request_now() -> *mut Header {
+        unsafe { none() }
+    }
+    #[unsafe(no_mangle)]
+    pub unsafe extern "C" fn koo_http_metrics() -> *mut Header {
+        unsafe { none() }
     }
     #[unsafe(no_mangle)]
     pub unsafe extern "C" fn koo_http_timeout(_: i64) {}
@@ -722,6 +737,143 @@ mod imp {
         rest: Range,
         /// When the request was complete, for the log.
         at: i64,
+        /// The name the request goes by, in the log and to whoever made it: what its
+        /// `X-Request-Id` said, or one made here. See `named`.
+        name: [u8; MOST_NAME],
+        name_len: usize,
+    }
+
+    /// The longest name of a request that is taken from the one who sends it.
+    const MOST_NAME: usize = 64;
+
+    /// What a server counts of itself, for whoever watches it (`koo_http_metrics`).
+    /// The counts are in memory that the process which watches shares with its workers,
+    /// made before they are started, so that each adds to the same numbers and any of
+    /// them can say what all have done; a worker that is replaced takes nothing with it.
+    #[repr(C)]
+    struct Counts {
+        /// Requests answered, by the hundred of the status: 1xx to 5xx, and the rest.
+        answered: [AtomicU64; 6],
+        /// Of those, the ones whose client had left before the answer (logged as 499).
+        left: AtomicU64,
+        /// How long answers took: how many within each of `WITHIN`, and all together,
+        /// in microseconds.
+        within: [AtomicU64; WITHIN.len()],
+        took: AtomicU64,
+        timed: AtomicU64,
+        /// Handlers that panicked, and workers started (the first ones among them).
+        panics: AtomicU64,
+        workers: AtomicU64,
+    }
+
+    /// The limits of the histogram of how long answers take, in microseconds.
+    const WITHIN: [u64; 11] = [
+        1_000, 5_000, 10_000, 25_000, 50_000, 100_000, 250_000, 500_000, 1_000_000, 2_500_000, 10_000_000,
+    ];
+
+    use core::sync::atomic::AtomicU64;
+    static COUNTS: core::sync::atomic::AtomicPtr<Counts> = core::sync::atomic::AtomicPtr::new(core::ptr::null_mut());
+
+    /// The counts, once there are any: from the first time a server listens.
+    fn counts() -> Option<&'static Counts> {
+        unsafe { COUNTS.load(core::sync::atomic::Ordering::Acquire).as_ref() }
+    }
+
+    /// Counts one answer: its status, and how long it took if that is known.
+    unsafe fn count(status: i64, since: i64) {
+        let Some(counts) = counts() else { return };
+        use core::sync::atomic::Ordering::Relaxed;
+        let hundred = match status / 100 {
+            hundred @ 1..=5 => hundred as usize - 1,
+            _ => 5,
+        };
+        counts.answered[hundred].fetch_add(1, Relaxed);
+        if status == 499 {
+            counts.left.fetch_add(1, Relaxed);
+        }
+        if since != 0 {
+            let micros = ((nanos() - since) / 1000).max(0) as u64;
+            for (at, limit) in WITHIN.iter().enumerate() {
+                if micros <= *limit {
+                    counts.within[at].fetch_add(1, Relaxed);
+                }
+            }
+            counts.took.fetch_add(micros, Relaxed);
+            counts.timed.fetch_add(1, Relaxed);
+        }
+    }
+
+    /// What the server has counted, as the text that Prometheus and what speaks as it
+    /// does read: a handler answers a scrape with it, `http.text(http.metrics())`.
+    #[unsafe(no_mangle)]
+    pub unsafe extern "C" fn koo_http_metrics() -> *mut Header {
+        unsafe {
+            use core::sync::atomic::Ordering::Relaxed;
+            let mut out = crate::pg::Buf::new();
+            let mut line = |text: core::fmt::Arguments| {
+                let mut one = Buffer::new();
+                let _ = one.write_fmt(text);
+                out.push(&one.data[..one.len]);
+            };
+            if let Some(counts) = counts() {
+                line(format_args!(
+                    "# HELP koo_http_requests_total Requests answered, by the class of their status.\n"
+                ));
+                line(format_args!("# TYPE koo_http_requests_total counter\n"));
+                for (at, class) in ["1xx", "2xx", "3xx", "4xx", "5xx", "other"].iter().enumerate() {
+                    let count = counts.answered[at].load(Relaxed);
+                    line(format_args!("koo_http_requests_total{{status=\"{class}\"}} {count}\n"));
+                }
+                line(format_args!(
+                    "# HELP koo_http_requests_abandoned_total Requests whose client left before the answer.\n"
+                ));
+                line(format_args!("# TYPE koo_http_requests_abandoned_total counter\n"));
+                line(format_args!(
+                    "koo_http_requests_abandoned_total {}\n",
+                    counts.left.load(Relaxed)
+                ));
+                line(format_args!(
+                    "# HELP koo_http_request_duration_seconds How long answers took, from the whole request to the answer.\n"
+                ));
+                line(format_args!("# TYPE koo_http_request_duration_seconds histogram\n"));
+                for (at, limit) in WITHIN.iter().enumerate() {
+                    let (whole, part) = (limit / 1_000_000, limit % 1_000_000 / 1000);
+                    let count = counts.within[at].load(Relaxed);
+                    line(format_args!(
+                        "koo_http_request_duration_seconds_bucket{{le=\"{whole}.{part:03}\"}} {count}\n"
+                    ));
+                }
+                let (timed, took) = (counts.timed.load(Relaxed), counts.took.load(Relaxed));
+                line(format_args!(
+                    "koo_http_request_duration_seconds_bucket{{le=\"+Inf\"}} {timed}\n"
+                ));
+                line(format_args!(
+                    "koo_http_request_duration_seconds_sum {}.{:06}\n",
+                    took / 1_000_000,
+                    took % 1_000_000
+                ));
+                line(format_args!("koo_http_request_duration_seconds_count {timed}\n"));
+                line(format_args!(
+                    "# HELP koo_http_handler_panics_total Handlers that panicked.\n"
+                ));
+                line(format_args!("# TYPE koo_http_handler_panics_total counter\n"));
+                line(format_args!(
+                    "koo_http_handler_panics_total {}\n",
+                    counts.panics.load(Relaxed)
+                ));
+                line(format_args!(
+                    "# HELP koo_http_workers_started_total Worker processes started, the first ones and those that replaced others.\n"
+                ));
+                line(format_args!("# TYPE koo_http_workers_started_total counter\n"));
+                line(format_args!(
+                    "koo_http_workers_started_total {}\n",
+                    counts.workers.load(Relaxed)
+                ));
+            }
+            let text = new_str(out.bytes());
+            out.release();
+            text
+        }
     }
 
     static mut LISTEN: i32 = -1;
@@ -790,6 +942,8 @@ mod imp {
         param_count: 0,
         rest: EMPTY,
         at: 0,
+        name: [0; MOST_NAME],
+        name_len: 0,
     };
     static mut DATE: [u8; 29] = [0; 29];
     static mut DATE_AT: i64 = -1;
@@ -1243,6 +1397,16 @@ mod imp {
             out.extend(b"Date: ");
             out.extend(date());
             out.extend(b"\r\n");
+            // The name of the request, for whoever made it to quote; unless the
+            // handler has said one of its own.
+            let said = extra
+                .split(|byte| *byte == b'\n')
+                .any(|line| line.len() > 13 && line[..13].eq_ignore_ascii_case(b"x-request-id:"));
+            if CURRENT.name_len > 0 && CURRENT.conn == index && !said {
+                out.extend(b"X-Request-Id: ");
+                out.extend(&CURRENT.name[..CURRENT.name_len]);
+                out.extend(b"\r\n");
+            }
             if !keep {
                 out.extend(b"Connection: close\r\n");
             } else if CURRENT.old {
@@ -1315,11 +1479,46 @@ mod imp {
         }
     }
 
+    /// Gives a request the name it goes by: the one it came with, in `X-Request-Id`, so
+    /// that what several services write of one piece of work can be found together;
+    /// or, if it came with none, or with one that is not fit to be written into a log
+    /// and a header as it is (longer than 64 characters, or of other characters than
+    /// letters, digits and `.`, `_`, `:`, `-`), sixteen digits of chance.
+    unsafe fn named(current: &mut Current, data: &[u8]) {
+        let given = current.headers[..current.header_count]
+            .iter()
+            .find(|(name, _)| data[name.start..name.end].eq_ignore_ascii_case(b"x-request-id"))
+            .map(|(_, value)| &data[value.start..value.end])
+            .filter(|value| {
+                !value.is_empty()
+                    && value.len() <= MOST_NAME
+                    && value
+                        .iter()
+                        .all(|byte| byte.is_ascii_alphanumeric() || b"._:-".contains(byte))
+            });
+        match given {
+            Some(value) => {
+                current.name[..value.len()].copy_from_slice(value);
+                current.name_len = value.len();
+            }
+            None => {
+                let mut chance = [0u8; 8];
+                unsafe { crate::codec::random(&mut chance) };
+                for (at, byte) in chance.iter().enumerate() {
+                    current.name[2 * at] = b"0123456789abcdef"[(byte >> 4) as usize];
+                    current.name[2 * at + 1] = b"0123456789abcdef"[(byte & 15) as usize];
+                }
+                current.name_len = 16;
+            }
+        }
+    }
+
     /// One line of the log: the request, the status of its answer, and how long the
     /// answer took. `known` says whether the request was read far enough to name.
     #[allow(static_mut_refs)]
     unsafe fn log(status: i64, size: usize, known: bool) {
         unsafe {
+            count(status, if known { CURRENT.at } else { 0 });
             if !LOG {
                 return;
             }
@@ -1347,6 +1546,7 @@ mod imp {
                     (&b"status"[..], Field::Number(status)),
                     (&b"bytes"[..], Field::Number(size as i64)),
                     (&b"ms"[..], Field::Digits(&took.data[..took.len])),
+                    (&b"request"[..], Field::Text(&CURRENT.name[..CURRENT.name_len])),
                 ];
                 said(b"info", &out.data[..out.len], &out.data[..message], &fields);
             } else {
@@ -1532,6 +1732,9 @@ mod imp {
         };
         let current = unsafe { &mut CURRENT };
         current.header_count = 0;
+        // (Nameless until it is read whole: what is answered to half a request, or to
+        // one that is no request, has not the name of the one before it.)
+        current.name_len = 0;
         let mut length: Option<usize> = None;
         let mut chunked = false;
         let mut keep = !old;
@@ -1669,12 +1872,13 @@ mod imp {
         current.head_only = method == b"HEAD";
         current.keep = keep;
         current.old = old;
-        current.at = if unsafe { LOG } { nanos() } else { 0 };
+        current.at = nanos();
         unsafe {
             NEXT_ID += 1;
             current.id = NEXT_ID;
             current.generation = c.generation;
             c.handling = true;
+            named(current, core::slice::from_raw_parts(c.input.ptr, c.input.len));
         }
         Parsed::Request(unsafe { route(method, &target[..path_len], target_at) })
     }
@@ -1916,6 +2120,11 @@ mod imp {
                     if child == 0 {
                         become_worker();
                         return 1;
+                    }
+                    if child > 0
+                        && let Some(counts) = counts()
+                    {
+                        counts.workers.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
                     }
                     super::super::actor::forking(false);
                     if child > 0 {
@@ -2566,6 +2775,11 @@ mod imp {
                     .saturating_sub(16)
                     .max(8);
             }
+            // What the server counts of itself, in memory its workers will share.
+            if COUNTS.load(core::sync::atomic::Ordering::Acquire).is_null() {
+                let made = crate::fiber::shared(core::mem::size_of::<Counts>()) as *mut Counts;
+                COUNTS.store(made, core::sync::atomic::Ordering::Release);
+            }
             // (A program that asks whether it is to stop, and was told before its server
             // began, is not untold: the server ends as soon as it has begun.)
             if !WATCHING.load(core::sync::atomic::Ordering::Acquire) {
@@ -2600,6 +2814,11 @@ mod imp {
             super::super::actor::before_fork();
             for _ in 0..workers {
                 let child = fork();
+                if child > 0
+                    && let Some(counts) = counts()
+                {
+                    counts.workers.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+                }
                 if child == 0 {
                     // A queue belongs to the process that made it, so each worker
                     // makes its own.
@@ -2953,6 +3172,9 @@ mod imp {
     #[unsafe(no_mangle)]
     pub unsafe extern "C" fn koo_http_panicked() {
         unsafe {
+            if let Some(counts) = counts() {
+                counts.panics.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+            }
             crate::thread::me().json_wire = false;
             crate::thread::me().json_base = 0;
             PANICS += 1;
@@ -3248,6 +3470,42 @@ mod imp {
     #[allow(static_mut_refs)]
     pub unsafe extern "C" fn koo_http_id() -> i64 {
         unsafe { CURRENT.id }
+    }
+
+    /// The name a request goes by (see `named`). What is asked of another request
+    /// than the one being answered is empty.
+    #[unsafe(no_mangle)]
+    #[allow(static_mut_refs)]
+    pub unsafe extern "C" fn koo_http_request_id(id: i64) -> *mut Header {
+        unsafe {
+            if id != CURRENT.id {
+                return new_str(b"");
+            }
+            new_str(&CURRENT.name[..CURRENT.name_len])
+        }
+    }
+
+    /// The name of the request that the calling thread is answering, for a line of the
+    /// program's log; empty on any thread that is answering none: a thread of an
+    /// actor's, or the program before and after it serves.
+    #[unsafe(no_mangle)]
+    pub unsafe extern "C" fn koo_http_request_now() -> *mut Header {
+        unsafe {
+            let (name, len) = name_now();
+            new_str(&name[..len])
+        }
+    }
+
+    /// The same, for the lines the library writes itself: the name, and how long it is.
+    #[allow(static_mut_refs)]
+    pub unsafe fn name_now() -> ([u8; MOST_NAME], usize) {
+        unsafe {
+            let here = SERVER.load(core::sync::atomic::Ordering::Acquire) == thread::this_thread();
+            if !here || CURRENT.answered || CURRENT.id == 0 {
+                return ([0; MOST_NAME], 0);
+            }
+            (CURRENT.name, CURRENT.name_len)
+        }
     }
 
     #[unsafe(no_mangle)]

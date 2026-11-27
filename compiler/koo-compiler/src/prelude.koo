@@ -1570,6 +1570,11 @@ fn (self: Http__Request) query(name: string) -> string? {
     return __http_query(self._id, name)
 }
 
+/// The name the request goes by: what its `X-Request-Id` said, or one the server gave
+/// it. It is in every line the server and the program log for the request, and in
+/// the answer's `X-Request-Id`.
+fn (self: Http__Request) id() -> string { return __http_request_id(self._id) }
+
 /// The value of a header. The name is matched whatever its case.
 fn (self: Http__Request) header(name: string) -> string? {
     if not __http_header_has(self._id, name) { return none }
@@ -1674,6 +1679,12 @@ fn (self: Http__Response) with_status(status: int) -> Http__Response {
 }
 
 /// A response of plain text.
+/// What the server has counted of itself, all its workers together, as the text that
+/// Prometheus reads: requests answered by the class of their status, how long they
+/// took, those whose client left, handlers that panicked, workers started. A route
+/// gives it to whoever scrapes: `app.get("/metrics", req -> http.text(http.metrics()))`.
+fn http__metrics() -> string { return __http_metrics() }
+
 fn http__text(body: string, status: int = 200) -> Http__Response {
     return Http__Response { status, content_type: "text/plain; charset=utf-8", headers: "", body }
 }
@@ -2342,6 +2353,11 @@ fn l__write(level: string, message: Log__Message) {
             } else {
                 line += __json_quote(shown)
             }
+        }
+        // A line written while a request is being answered says which.
+        request := __http_request_now()
+        if request != "" and not written.contains("request") {
+            line += ",\"request\":" + __json_quote(request)
         }
         line += "}"
     } else {

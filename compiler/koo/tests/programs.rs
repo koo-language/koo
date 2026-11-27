@@ -2667,6 +2667,141 @@ fn a_program_is_told_to_stop() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// Every request has a name: the one it came with in `X-Request-Id`, if that is fit to
+/// be written down as it is, or one the server gives it. The handler has it, the answer
+/// says it, and so does every line logged while the request is answered: the
+/// program's, the server's own, a failure's and a panic's.
+#[test]
+fn requests_have_names() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let dir = std::env::temp_dir().join(format!("koo-ids-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let executable = dir.join("ids");
+    let built = Command::new(env!("CARGO_BIN_EXE_koo"))
+        .arg("build")
+        .arg(root.join("tests/http/ids.koo"))
+        .arg("-o")
+        .arg(&executable)
+        .output()
+        .expect("koo runs");
+    assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
+    for workers in ["1", "3"] {
+        let port = std::net::TcpListener::bind("127.0.0.1:0")
+            .unwrap()
+            .local_addr()
+            .unwrap()
+            .port();
+        let log = dir.join(format!("log-{workers}.txt"));
+        let child = Command::new(&executable)
+            .env("PORT", port.to_string())
+            .env("WORKERS", workers)
+            .env("KOO_LOG", "json")
+            .stdout(std::process::Stdio::null())
+            .stderr(std::fs::File::create(&log).unwrap())
+            .spawn()
+            .expect("the server starts");
+        let server = Server(child);
+        for _ in 0..200 {
+            if std::net::TcpStream::connect(("127.0.0.1", port)).is_ok() {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(25));
+        }
+        // What is answered: the name in the answer's head (each time it is there), and the body.
+        let ask = |path: &str, name: Option<&str>| {
+            let named = name.map_or(String::new(), |name| format!("X-Request-Id: {name}\r\n"));
+            let answer = http(
+                port,
+                &format!("GET {path} HTTP/1.1\r\nHost: test\r\n{named}Connection: close\r\n\r\n"),
+            );
+            let said: Vec<String> = answer
+                .lines()
+                .take_while(|line| !line.is_empty())
+                .filter_map(|line| line.strip_prefix("X-Request-Id: ").map(str::to_string))
+                .collect();
+            let body = answer.rsplit("\r\n\r\n").next().unwrap_or("").trim().to_string();
+            (said, body)
+        };
+        let made = |name: &str| name.len() == 16 && name.bytes().all(|byte| byte.is_ascii_hexdigit());
+        // The name it came with is its name.
+        assert_eq!(
+            ask("/id", Some("abc-123")),
+            (vec!["abc-123".to_string()], "abc-123".to_string())
+        );
+        // With none, or with one that is not fit to be written down, it is given one.
+        let long = "x".repeat(65);
+        for unfit in [None, Some("has space"), Some("quo\"te"), Some(long.as_str())] {
+            let (said, body) = ask("/id", unfit);
+            assert!(
+                said.len() == 1 && said[0] == body && made(&body),
+                "{unfit:?}: {said:?} {body}"
+            );
+        }
+        // A handler that says a name of its own is the only one to say one.
+        assert_eq!(ask("/own", Some("abc-124")).0, ["said-by-the-handler"]);
+        // What is not found has a name too.
+        assert_eq!(ask("/nowhere", Some("abc-125")).0, ["abc-125"]);
+        ask("/fails", Some("f-1"));
+        ask("/panics", Some("p-1"));
+        // What the server has counted, whichever worker is asked: so far six
+        // requests answered 200 (the one that asks is not counted until it is
+        // answered), one 404, two 500, of which one was a panic; and each was timed.
+        let (_, counted) = ask("/metrics", None);
+        let count_of = |name: &str| -> Option<f64> {
+            counted
+                .lines()
+                .find_map(|line| line.strip_prefix(name)?.strip_prefix(' ')?.parse().ok())
+        };
+        let started = if workers == "1" { 0.0 } else { 3.0 };
+        for (name, expected) in [
+            ("koo_http_requests_total{status=\"2xx\"}", 6.0),
+            ("koo_http_requests_total{status=\"4xx\"}", 1.0),
+            ("koo_http_requests_total{status=\"5xx\"}", 2.0),
+            ("koo_http_requests_abandoned_total", 0.0),
+            ("koo_http_handler_panics_total", 1.0),
+            ("koo_http_workers_started_total", started),
+            ("koo_http_request_duration_seconds_count", 9.0),
+            ("koo_http_request_duration_seconds_bucket{le=\"+Inf\"}", 9.0),
+            ("koo_http_request_duration_seconds_bucket{le=\"10.000\"}", 9.0),
+        ] {
+            assert_eq!(
+                count_of(name),
+                Some(expected),
+                "with {workers} workers, `{name}` in:\n{counted}"
+            );
+        }
+        assert!(
+            count_of("koo_http_request_duration_seconds_sum").is_some_and(|seconds| seconds > 0.0 && seconds < 5.0),
+            "{counted}"
+        );
+        drop(server);
+        let written = std::fs::read_to_string(&log).unwrap();
+        let lines_of = |name: &str| -> Vec<&str> {
+            written
+                .lines()
+                .filter(|line| line.contains(&format!("\"request\":\"{name}\"")))
+                .collect()
+        };
+        let has = |name: &str, what: &str| lines_of(name).iter().any(|line| line.contains(what));
+        assert!(
+            has("abc-123", "\"message\":\"asked for its name\"") && has("abc-123", "\"message\":\"GET /id 200\""),
+            "with {workers} workers:\n{written}"
+        );
+        assert!(
+            has("f-1", "\"level\":\"error\"") && has("f-1", "ParseError") && has("f-1", "GET /fails 500"),
+            "with {workers} workers:\n{written}"
+        );
+        assert!(
+            has("p-1", "panic: index out of range") && has("p-1", "GET /panics 500"),
+            "with {workers} workers:\n{written}"
+        );
+        assert!(has("abc-125", "GET /nowhere 404"), "with {workers} workers:\n{written}");
+        // And a name is one request's: no line of another says it.
+        assert_eq!(lines_of("abc-123").len(), 2, "with {workers} workers:\n{written}");
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 /// What the environment says of a server is how many workers it has, and nothing else
 /// about it: one worker has a process watching over it as two have, and is started
 /// again when it is killed.
@@ -3335,6 +3470,13 @@ fn a_servers_lines_are_json() {
     // How long a request took is different every time.
     let mut found = String::new();
     for line in std::fs::read_to_string(&log).unwrap().lines() {
+        // (Without the name of its request, which is another each time: that every
+        // such line has one is `requests_have_names`.)
+        let named = line.find(",\"request\":\"").map(|at| (at, line[at + 12..].find('"')));
+        let line = match named {
+            Some((at, Some(end))) => format!("{}{}", &line[..at], &line[at + 12 + end + 1..]),
+            _ => line.to_string(),
+        };
         let line = match (line.find("\"ms\":"), line.ends_with('}')) {
             (Some(at), true) => format!("{}\"ms\":0}}", &line[..at]),
             _ => line.to_string(),

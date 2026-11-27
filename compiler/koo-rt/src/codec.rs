@@ -273,7 +273,7 @@ pub unsafe extern "C" fn koo_url_decode(text: *const Header) -> *mut Header {
 /// Fills `out` from the system's source of randomness, the one fit for keys. A thread
 /// asks the system for 256 bytes at a time and hands them out; a process that was
 /// forked asks afresh, so that it does not hand out what its parent did.
-unsafe fn random(out: &mut [u8]) {
+pub(crate) unsafe fn random(out: &mut [u8]) {
     unsafe {
         let thread = me();
         for byte in out {
