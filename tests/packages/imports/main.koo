@@ -69,6 +69,10 @@ fn main() {
     print(Pair<stock.Item> { both: [shelf.items[0]] })
     print(count)
     print("{stock.tally(["a", "a", "b"])} {Hashable { n: 1 }.n}")
+    match stock.level(9) {
+        High => print("high, which is {stock.Lv.High}")
+        _ => print("low")
+    }
 }
 
 type Pair<T> = { both: [T] }
@@ -103,3 +107,4 @@ type Hashable = { n: int }
 //= Pair<stock.Item> { both: [stock.Item { name: "saw", count: 1, state: Fresh }] }
 //= stock.Count#0
 //= 2 1
+//= high, which is High

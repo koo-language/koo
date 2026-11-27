@@ -47,7 +47,10 @@ fn main() {
         _ => print("other")
     }
     remade: stock.Item = made()
+    print(item.echo(3))
 }
+
+type Hashable = { n: int }
 
 fn made<T>() -> T {
     return T.make()
@@ -80,7 +83,7 @@ fn (self: Other) shout() -> string {
 //! error unknown function `pkg_stock__label`
 //! stderr main.koo:21:11
 //! error the package `stock` has no function `nothing`
-//! stderr it has `job`, `label`, `level`, `moved`, `theirs`, `wrong`
+//! stderr it has `job`, `label`, `level`, `moved`, `theirs`, `theirs_too`, `wrong`
 //! error `stock.Item` has no field `_tag`
 //! stderr main.koo:24:28
 //! error this `match` on `stock.Mode` has no arm for a variant it may be given later
@@ -104,13 +107,17 @@ fn (self: Other) shout() -> string {
 //! stderr main.koo:44:23
 //! error this is a variant of `stock.Level`, which its package does not offer
 //! stderr main.koo:46:9
+//! error `stock.Item.echo` is not offered by its package
+//! stderr main.koo:50:16
 //! error `stock.Item.make` is not offered by its package
-//! stderr main.koo:53:14
+//! stderr main.koo:56:14
 //! error a function cannot be declared on `stock.Item`, a type of another package
-//! stderr main.koo:60:18
+//! stderr main.koo:63:18
 //! error unknown function `mine`
 //! stderr stock.koo:24:12
 //! error unknown type `Mine`
 //! stderr stock.koo:59:12
 //! error expected `int`, found `Item`
 //! stderr stock.koo:63:12
+//! error unknown type `Hashable`
+//! stderr stock.koo:107:12

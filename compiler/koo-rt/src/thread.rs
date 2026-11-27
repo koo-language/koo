@@ -872,10 +872,14 @@ fn allowed() -> usize {
 /// has just finished with one, again and again, while the one that waits is woken
 /// only to find it taken, until its whole wait is over.
 ///
-/// Only such handlers take turns. Anything else that asks, a thread of its own, or a
-/// method of an actor on the server's thread, which cannot be left, takes what is
-/// free when it asks and waits as threads do: it could not be made to wait for a
-/// handler's turn without holding up the very thread the handler needs.
+/// A thread of its own, in a process that has such handlers, takes its turn among them:
+/// it holds up nobody by waiting, and if it did not, the threads that answer for actors
+/// would have every connection that came back before a handler looked. What takes no
+/// turn is what runs on the handlers' own thread and cannot be left, a method of an
+/// actor in a server of one process: it takes what is free when it asks, since to make
+/// it wait for a handler's turn would be to stop the thread the handler needs. And
+/// where there are no such handlers at all, nothing takes turns, and threads have
+/// what is free as they always did.
 ///
 /// It is used under the lock of what is waited for.
 pub struct Turns {

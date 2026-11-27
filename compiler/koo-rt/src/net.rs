@@ -367,6 +367,11 @@ pub unsafe extern "C" fn koo_net_take(address: *const Header, name: *const Heade
         // (see `thread::Turns`).
         let mut number = 0u64;
         let handler = crate::http::leaves();
+        // (On the handlers' own thread and not to be left, a method of an actor in a
+        // server of one process takes no turn; a thread of its own, where there are
+        // handlers, has its turn among them.)
+        let bound = handler.is_none() && crate::http::on_server();
+        let queued = handler.is_some() || (crate::http::has_handlers() && !bound);
         let place = if once {
             match reserve(ALONE, false) {
                 Some(index) => Err(index),
@@ -386,7 +391,7 @@ pub unsafe extern "C" fn koo_net_take(address: *const Header, name: *const Heade
                 let now = koo_now_nanos();
                 // (And a connection that is free is for the handler that has waited
                 // longest.)
-                let turn = handler.is_none() || POOLS[pool].turns.mine(number, now);
+                let turn = !queued || POOLS[pool].turns.mine(number, now);
                 let mut kept = None;
                 for (index, conn) in CONNS.iter_mut().enumerate() {
                     if !turn || conn.fd < 0 || conn.out || conn.pool != pool {
@@ -449,12 +454,17 @@ pub unsafe extern "C" fn koo_net_take(address: *const Header, name: *const Heade
                     Some(place) => {
                         POOLS[pool].turns.wait(&mut number, until, place);
                         NET.unlock();
-                        if !crate::http::await_turn(2_000_000) {
-                            fiber::pause(1_000_000);
+                        // (And sleeps a moment as a thread does, if there was no
+                        // other place to go on in after all.)
+                        if !crate::http::await_turn(2_000_000) && !fiber::pause(1_000_000) {
+                            koo_sleep(1_000_000);
                         }
                     }
                     // Anything else looks again in a moment.
                     None => {
+                        if queued {
+                            POOLS[pool].turns.wait(&mut number, until, usize::MAX);
+                        }
                         NET.unlock();
                         if !fiber::pause(1_000_000) {
                             koo_sleep(1_000_000);

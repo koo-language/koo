@@ -2950,6 +2950,91 @@ fn the_environment_says_how_many_workers() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// One small pool of connections to a database, wanted by the handlers of a server of
+/// one process and by its actors. A method of an actor that a handler asks runs on the
+/// handlers' own thread: where every connection is a handler's that waits, it is given
+/// one more for its statement, since to wait would be to wait for handlers that go on
+/// only when it does (the whole server stood still for the pool's wait). And what
+/// actors were told runs on threads of their own, which take their turn with the
+/// handlers and do not have every connection that comes back before a handler looks.
+#[test]
+fn a_pool_is_shared_by_handlers_and_actors() {
+    let Some(url) = book_database() else {
+        eprintln!("KOO_TEST_POSTGRES is not set: a pool shared by handlers and actors is not checked");
+        return;
+    };
+    let _alone = DATABASE.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let dir = std::env::temp_dir().join(format!("koo-turns-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let executable = dir.join("turns");
+    let built = Command::new(env!("CARGO_BIN_EXE_koo"))
+        .arg("build")
+        .arg(root.join("tests/http/turns.koo"))
+        .arg("-o")
+        .arg(&executable)
+        .output()
+        .expect("koo runs");
+    assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
+    let start = |pool: &str| {
+        let port = std::net::TcpListener::bind("127.0.0.1:0")
+            .unwrap()
+            .local_addr()
+            .unwrap()
+            .port();
+        let child = Command::new(&executable)
+            .env("DATABASE_URL", &url)
+            .env("PORT", port.to_string())
+            .env("POOL", pool)
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .expect("the server starts");
+        for _ in 0..200 {
+            if std::net::TcpStream::connect(("127.0.0.1", port)).is_ok() {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(25));
+        }
+        (Server(child), port)
+    };
+    let body = |answer: String| answer.rsplit("\r\n\r\n").next().unwrap_or("").trim().to_string();
+    // A pool of one, which a handler holds for most of a second: the actor's method is
+    // answered at once, and so is a request that wants nothing of the pool.
+    {
+        let (_server, port) = start("1");
+        let slow = std::thread::spawn(move || get(port, "/slow/0.8"));
+        std::thread::sleep(std::time::Duration::from_millis(150));
+        let began = std::time::Instant::now();
+        let asked = body(get(port, "/actor"));
+        let ping = body(get(port, "/ping"));
+        let took = began.elapsed();
+        assert!(
+            asked == "1" && ping == "pong" && took < std::time::Duration::from_millis(500),
+            "the actor said `{asked}` and the server `{ping}`, after {took:?}"
+        );
+        assert_eq!(body(slow.join().unwrap()), "slept");
+    }
+    // A pool of two, and three actors each told to run two hundred statements, on
+    // their own threads, which is three seconds of them: a handler's statement has
+    // its turn among them, and is not answered only when they are done.
+    {
+        let (_server, port) = start("2");
+        assert_eq!(body(get(port, "/churn/200")), "told");
+        std::thread::sleep(std::time::Duration::from_millis(100));
+        for _ in 0..5 {
+            let began = std::time::Instant::now();
+            let quick = body(get(port, "/quick"));
+            let took = began.elapsed();
+            assert!(
+                quick == "2" && took < std::time::Duration::from_millis(800),
+                "a handler's statement among the actors' was answered `{quick}` after {took:?}"
+            );
+        }
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 /// A handler is given so long for a request, thirty seconds unless `serve` is told
 /// otherwise: here half a second. One that waits longer is let wait for nothing more
 /// and its client is answered 503, the log saying which request; one that computes is

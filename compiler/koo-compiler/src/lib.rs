@@ -94,7 +94,7 @@ pub fn compile_sources(sources: &SourceMap, tests: bool) -> Result<String, Vec<D
             if file.package.is_empty() {
                 // (Not a name the library has too: in a package that is the
                 // library's, as it is in any program.)
-                if !library_types.contains(name.name.as_str()) && !check::known_everywhere(&name.name) {
+                if !library_types.contains(name.name.as_str()) {
                     programs_types.push(name.name.clone());
                     // And the types the compiler makes for an actor of the program.
                     if matches!(item.kind, ItemKind::Actor(_)) {
@@ -109,10 +109,19 @@ pub fn compile_sources(sources: &SourceMap, tests: bool) -> Result<String, Vec<D
             if !item.public {
                 kept.insert(full.clone());
             }
+            // (And the types the compiler makes for an actor, by the names a program
+            // of one package has for them.)
+            if matches!(item.kind, ItemKind::Actor(_)) {
+                for made in [derive::send_type, derive::try_type, derive::state_type] {
+                    own.insert(made(&name.name), made(&full));
+                }
+            }
             own.insert(name.name.clone(), full);
         }
     }
     let mut packages = check::Packages::default();
+    // The types that a `pub` name for them offers, though they are not `pub` themselves.
+    let mut offered: Vec<String> = Vec::new();
     for (number, file) in sources.files().iter().enumerate() {
         packages.of.push(file.package.clone());
         packages.imports.push(file.imports.clone());
@@ -137,6 +146,10 @@ pub fn compile_sources(sources: &SourceMap, tests: bool) -> Result<String, Vec<D
                     .collect(),
                 kept: kept.clone(),
                 used: Default::default(),
+                constraints: ["Ordered", "Hashable", "Equatable"]
+                    .into_iter()
+                    .map(String::from)
+                    .collect(),
             };
             let parsed = koo_syntax::parse_file_renamed(&file.src, file.base, &renames);
             packages.used.push(renames.used.into_inner().unwrap());
@@ -208,7 +221,17 @@ pub fn compile_sources(sources: &SourceMap, tests: bool) -> Result<String, Vec<D
                         }
                         decl.name.name.clone()
                     }
-                    ItemKind::Type(decl) => decl.name.name.clone(),
+                    ItemKind::Type(decl) => {
+                        // Another name for a type, offered, offers what the type is:
+                        // the variants of an enum it names are to be had by it.
+                        if item.public
+                            && let koo_syntax::ast::TypeBody::Alias(named) = &decl.body
+                            && let Some(of) = of_type(named)
+                        {
+                            offered.push(of);
+                        }
+                        decl.name.name.clone()
+                    }
                     ItemKind::Error(decl) => decl.name.name.clone(),
                     ItemKind::Interface(decl) => decl.name.name.clone(),
                     ItemKind::Actor(decl) => {
@@ -231,6 +254,9 @@ pub fn compile_sources(sources: &SourceMap, tests: bool) -> Result<String, Vec<D
         diagnostics.append(&mut parsed.diagnostics);
         package.imports.append(&mut parsed.file.imports);
         package.items.append(&mut parsed.file.items);
+    }
+    for name in &offered {
+        packages.private.remove(name);
     }
     if !diagnostics.is_empty() {
         return Err(shown(diagnostics, sources, &bound));
@@ -298,26 +324,38 @@ fn shown(mut diagnostics: Vec<Diagnostic>, sources: &SourceMap, bound: &[Vec<(St
             diagnostic.span.start.saturating_sub(at.base) as usize,
             diagnostic.span.end.saturating_sub(at.base) as usize,
         );
-        let a_name = |written: &str| {
+        // (A name with `__` that the program wrote itself is said as it wrote it: it
+        // is set aside while the rest of the message is put right.)
+        let own = at.src.get(from..to).filter(|written| {
             written.contains("__") && written.bytes().all(|byte| byte.is_ascii_alphanumeric() || byte == b'_')
-        };
-        if at.src.get(from..to).is_some_and(a_name) {
-            continue;
-        }
+        });
         let here = sources.files()[file].package.as_str();
-        let written = |package: &str| -> String {
+        let written = |package: &str| -> Option<String> {
+            // (Only a package the program has: any other such name is the program's.)
+            if !sources.files().iter().any(|file| file.package == package) {
+                return None;
+            }
             if package == here {
-                return String::new();
+                return Some(String::new());
             }
             let named = bound
                 .get(file)
                 .and_then(|names| names.iter().find(|(_, of)| *of == package));
-            match named {
+            Some(match named {
                 Some((binding, _)) => format!("{binding}."),
                 None => format!("{}.", check::package_shown(package)),
+            })
+        };
+        let say = |text: &mut String| {
+            *text = match own {
+                Some(own) => text
+                    .split(own)
+                    .map(|part| check::rewrite_names(part, &written))
+                    .collect::<Vec<_>>()
+                    .join(own),
+                None => check::rewrite_names(text, &written),
             }
         };
-        let say = |text: &mut String| *text = check::rewrite_names(text, &written);
         say(&mut diagnostic.message);
         if let Some(label) = &mut diagnostic.label {
             say(label);

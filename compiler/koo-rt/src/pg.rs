@@ -182,8 +182,13 @@ impl Message<'_> {
 
 struct Conn {
     fd: i32,
-    /// Whether a thread has it, or is making it.
+    /// Whether a thread has it, or is making it; and which, as a thread is known to
+    /// the server (`http::waits_elsewhere`).
     busy: bool,
+    holder: usize,
+    /// Whether it is one more than the pool was to have, for one statement and no
+    /// longer (see `check_out`).
+    beyond: bool,
     /// The transaction that is open on it, counted from one for each connection, or
     /// zero; and the thread that began it, which alone may use it.
     transaction: u32,
@@ -232,6 +237,8 @@ struct Db {
 const NO_CONN: Conn = Conn {
     fd: -1,
     busy: false,
+    holder: 0,
+    beyond: false,
     transaction: 0,
     began: 0,
     serial: 0,
@@ -1673,27 +1680,46 @@ unsafe fn check_out(db: &mut Db) -> Option<&mut Conn> {
         // take turns; anything else takes what is free (see `thread::Turns`).
         let mut number = 0u64;
         let handler = crate::http::leaves();
+        let me_here = me() as *mut thread::Thread as usize;
+        // On the handlers' own thread and not to be left: a method of an actor, in a
+        // server of one process. And whether this one takes turns at all.
+        let bound = handler.is_none() && crate::http::on_server();
+        let queued = handler.is_some() || (crate::http::has_handlers() && !bound);
         let slot = loop {
-            // A connection that is free is for the handler that has waited longest.
-            let turn = handler.is_none() || db.turns.mine(number, koo_now_nanos());
+            // A connection that is free is for whoever has waited longest.
+            let turn = !queued || db.turns.mine(number, koo_now_nanos());
             if turn && let Some(index) = db.conns.iter().position(|conn| conn.fd >= 0 && !conn.busy) {
                 db.conns[index].busy = true;
+                db.conns[index].holder = me_here;
                 db.turns.done(number);
                 POOL.unlock();
                 return Some(&mut db.conns[index]);
             }
             let open = db.conns.iter().filter(|conn| conn.fd >= 0 || conn.busy).count();
-            if turn
-                && open < db.limit
+            // Every connection in use by a handler of this very thread, which waits
+            // somewhere, and this thread not to be left: to wait would be to wait for
+            // handlers that go on only when this thread does. There is one connection
+            // more than the pool was to have, for this statement and no longer.
+            let stuck = bound
+                && open >= db.limit
+                && db.conns.iter().any(|conn| conn.busy)
+                && db
+                    .conns
+                    .iter()
+                    .filter(|conn| conn.busy)
+                    .all(|conn| crate::http::waits_elsewhere(conn.holder));
+            if ((turn && open < db.limit) || stuck)
                 && let Some(index) = db.conns.iter().position(|conn| conn.fd < 0 && !conn.busy)
             {
                 db.conns[index].busy = true;
+                db.conns[index].holder = me_here;
+                db.conns[index].beyond = stuck;
                 db.turns.done(number);
                 break index;
             }
             // Every connection is in use. If each is in a transaction that this very
             // thread began, none will ever come back: the thread waits for itself.
-            let mine = me() as *mut thread::Thread as usize;
+            let mine = me_here;
             let all_mine = db.conns.iter().any(|conn| conn.busy)
                 && db
                     .conns
@@ -1738,15 +1764,22 @@ unsafe fn check_out(db: &mut Db) -> Option<&mut Conn> {
                 Some(place) => {
                     db.turns.wait(&mut number, until, place);
                     POOL.unlock();
-                    if !crate::http::await_turn(2_000_000) {
-                        fiber::pause(1_000_000);
-                    }
+                    let left_it = crate::http::await_turn(2_000_000) || fiber::pause(1_000_000);
                     POOL.lock();
+                    // (A handler that could not be left after all, there being no
+                    // other place to go on in, sleeps a moment as a thread does.)
+                    if !left_it {
+                        POOL.wait_for(1);
+                    }
                 }
                 // Anything else sleeps until one is given back: with the lock held
                 // from the look to the sleep, so that one given back between the two
-                // is not missed.
+                // is not missed. A thread of its own, where there are handlers, has
+                // its turn among them.
                 None => {
+                    if queued {
+                        db.turns.wait(&mut number, until, usize::MAX);
+                    }
                     POOL.wait_for(left);
                 }
             }
@@ -1769,10 +1802,12 @@ unsafe fn check_out(db: &mut Db) -> Option<&mut Conn> {
 unsafe fn give_back(conn: &mut Conn, broken: bool) {
     unsafe {
         POOL.lock();
-        if broken {
+        if broken || conn.beyond {
             hang_up(conn, false);
         }
         conn.busy = false;
+        conn.holder = 0;
+        conn.beyond = false;
         // The handler whose turn it is at this connection's pool, if one waits.
         let at = conn as *const Conn as usize;
         let next = DBS

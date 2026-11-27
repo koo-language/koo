@@ -61,6 +61,12 @@ mod stub {
     pub unsafe fn leaves() -> Option<usize> {
         None
     }
+    pub unsafe fn on_server() -> bool {
+        false
+    }
+    pub fn has_handlers() -> bool {
+        false
+    }
     pub unsafe fn asking(_: bool) {}
     pub unsafe fn leave_if_out_of_grace() {}
     #[unsafe(no_mangle)]
@@ -3175,6 +3181,17 @@ mod imp {
     #[allow(static_mut_refs)]
     pub unsafe fn leaves() -> Option<usize> {
         unsafe { may_leave().then_some(HERE) }
+    }
+
+    /// Whether the calling thread is the one that runs this process's handlers.
+    pub unsafe fn on_server() -> bool {
+        unsafe { SIDE_BY_SIDE && SERVER.load(core::sync::atomic::Ordering::Acquire) == thread::this_thread() }
+    }
+
+    /// Whether this process has handlers that are left for one another while they wait.
+    #[allow(static_mut_refs)]
+    pub fn has_handlers() -> bool {
+        unsafe { SIDE_BY_SIDE && SERVER.load(core::sync::atomic::Ordering::Acquire) != 0 }
     }
 
     /// The thread does other work for so long. See `fiber::pause`.

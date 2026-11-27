@@ -95,3 +95,14 @@ enum Level { Low, High }
 pub fn level() -> Level {
     return Level.Low
 }
+
+// A method with a type parameter of its own, given under another name for the type.
+fn (self: Same) echo<T>(x: T) -> T {
+    return x
+}
+
+// A name the language gives a meaning where a type parameter is constrained is, as a
+// type, the program's own there, and no more this package's to use than any other.
+pub fn theirs_too() -> int {
+    return Hashable { n: 41 }.n
+}

@@ -71,7 +71,7 @@ pub fn package_of_name(name: &str) -> Option<String> {
 /// compiler are written as a program writes them: `Pkg_orders__Order` is `orders.Order`
 /// and `pkg_orders__place` is `orders.place`, where `written` says what stands for the
 /// package, with its dot, or nothing for a package's own names in its own files.
-pub fn rewrite_names(text: &str, written: &dyn Fn(&str) -> String) -> String {
+pub fn rewrite_names(text: &str, written: &dyn Fn(&str) -> Option<String>) -> String {
     if !text.contains("kg") {
         return text.to_string();
     }
@@ -92,12 +92,18 @@ pub fn rewrite_names(text: &str, written: &dyn Fn(&str) -> String) -> String {
             .or_else(|| name.strip_prefix("pkg"))
             .filter(|after| after.trim_start_matches(|c: char| c.is_ascii_digit()).starts_with('_'))
             .and_then(|after| after.split_once("__"));
-        match inside {
+        let put = match inside {
             Some((package, member)) if !member.is_empty() => {
-                out.push_str(&written(&format!("pkg{package}")));
+                written(&format!("pkg{package}")).map(|package| (package, member))
+            }
+            _ => None,
+        };
+        match put {
+            Some((package, member)) => {
+                out.push_str(&package);
                 out.push_str(member);
             }
-            _ => out.push_str(name),
+            None => out.push_str(name),
         }
         rest = &rest[end..];
     }
@@ -136,7 +142,7 @@ pub fn printed_name(name: &str) -> String {
 /// The same, where there is no file to say what its imports are called: a package is
 /// called what its directory is.
 pub fn shown_names(text: &str) -> String {
-    rewrite_names(text, &|package| format!("{}.", package_shown(package)))
+    rewrite_names(text, &|package| Some(format!("{}.", package_shown(package))))
 }
 
 /// The name of a variant as it was declared: a name written alone that is also the
@@ -1902,6 +1908,27 @@ impl<'a> Checker<'a> {
 
     fn signature(&mut self, decl: &'a ast::FnDecl) -> Option<FnId> {
         let sig = &decl.sig;
+        // A method with type parameters of its own, given under another name for its
+        // type and not offered, is kept under the type's own name like any other
+        // (the others are seen to below, where the type is known).
+        if !self.in_prelude
+            && !self.declaring_pub
+            && !self.package_here().is_empty()
+            && let ast::FnTarget::Method { ty: Some(ty), .. } | ast::FnTarget::TypeLevel(ty) = &sig.target
+            && let ast::TypeKind::Named { path, .. } = &ty.kind
+            && let [written] = path.as_slice()
+        {
+            let own = match self.type_names.get(&written.name) {
+                Some(TypeName::Alias(Ty::Struct(id))) => Some(self.program.structs[*id].name.clone()),
+                Some(TypeName::Alias(Ty::Enum(id))) => Some(self.program.enums[*id].name.clone()),
+                Some(TypeName::Alias(Ty::Error(id))) => Some(self.program.errors[*id].name.clone()),
+                _ => None,
+            };
+            if let Some(own) = own {
+                let base = own.split('<').next().unwrap_or(&own).to_string();
+                self.packages.private.insert(format!("{base}.{}", sig.name.name));
+            }
+        }
         if self.declare_template(decl) {
             return None;
         }

@@ -76,6 +76,10 @@ pub struct Renames {
     /// The names of imports that the file names a type through, which are filled in
     /// as it is read.
     pub used: std::sync::Mutex<Vec<String>>,
+    /// The names the language gives a meaning where a type parameter is constrained
+    /// (`K: Hashable`): there they are the language's, whatever type of that name the
+    /// package or the program has, as they are in a program of one package.
+    pub constraints: std::collections::HashSet<String>,
 }
 
 /// Parses a source file of a program of several packages, reading the names of types
@@ -102,7 +106,19 @@ type Renamed<'a> = Option<&'a Renames>;
 fn rename(tokens: &mut Vec<Token>, renames: &Renames, found: &mut Vec<Diagnostic>) {
     let mut out: Vec<Token> = Vec::with_capacity(tokens.len());
     let mut at = 0;
+    // Whether what is being read is what a type parameter is to satisfy: after
+    // `<T:` or `, T:`, names joined by `+`.
+    let mut constraining = false;
     while at < tokens.len() {
+        constraining = match &tokens[at].kind {
+            Tok::Colon => {
+                out.len() >= 2
+                    && matches!(out[out.len() - 1].kind, Tok::UpperIdent(_))
+                    && matches!(out[out.len() - 2].kind, Tok::Lt | Tok::Comma)
+            }
+            Tok::UpperIdent(_) | Tok::Plus => constraining,
+            _ => false,
+        };
         // A name after a dot is not the package's own type: it is a variant of an enum
         // (`Shape.Circle`), or what is dealt with just below.
         let dotted = out.last().is_some_and(|before| before.kind == Tok::Dot);
@@ -134,7 +150,7 @@ fn rename(tokens: &mut Vec<Token>, renames: &Renames, found: &mut Vec<Diagnostic
         }
         let mut token = tokens[at].clone();
         match &mut token.kind {
-            Tok::UpperIdent(name) if !dotted => {
+            Tok::UpperIdent(name) if !(dotted || constraining && renames.constraints.contains(name.as_str())) => {
                 if let Some(new) = renames.own.get(name.as_str()) {
                     *name = new.clone();
                 }

@@ -130,6 +130,16 @@ pub fn tally<K: Hashable>(keys: [K]) -> int {
     return seen.len
 }
 
+// An enum that is not offered by its own name is offered by another that is `pub`.
+enum Level { Low, High }
+
+pub type Lv = Level
+
+pub fn level(n: int) -> Lv {
+    if n > 5 { return Level.High }
+    return Level.Low
+}
+
 pub fn just(n: int) -> Maybe<int> {
     return Maybe<int>.Just { value: n }
 }
