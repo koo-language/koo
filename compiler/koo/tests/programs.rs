@@ -1492,10 +1492,15 @@ fn send_all(stream: &mut std::net::TcpStream, mut data: &[u8]) {
 }
 
 fn http(port: u16, request: &str) -> String {
+    http_within(port, request, 5)
+}
+
+/// The same, waiting so many seconds for the answer.
+fn http_within(port: u16, request: &str, seconds: u64) -> String {
     use std::io::Read;
     let mut stream = std::net::TcpStream::connect(("127.0.0.1", port)).expect("the server accepts");
     stream
-        .set_read_timeout(Some(std::time::Duration::from_secs(5)))
+        .set_read_timeout(Some(std::time::Duration::from_secs(seconds)))
         .unwrap();
     send_all(&mut stream, request.as_bytes());
     let mut answer = Vec::new();
@@ -3491,13 +3496,15 @@ fn a_stopping_server_answers_what_it_has_in_hand() {
             // The first actor a server starts is held up for like any other: while
             // forty wait for it, those who ask another are answered at once. (The
             // forty are two seconds of waiting, one after another, where the machine
-            // is quick: each is given five to be answered in, and a machine that
-            // makes a wait of 100 ms last 125 would have none to spare with four.)
+            // is quick; a busy machine makes a wait of 50 ms last much longer, and
+            // macOS's CI once took more than five for them, so they are given twenty.
+            // What is held to time is the twenty asks beside them.)
             let lingering: Vec<_> = (0..40)
                 .map(|_| {
                     std::thread::spawn(move || {
                         let began = std::time::Instant::now();
-                        (get(port, "/linger/50"), began.elapsed())
+                        let asked = "GET /linger/50 HTTP/1.1\r\nHost: test\r\nConnection: close\r\n\r\n";
+                        (http_within(port, asked, 20), began.elapsed())
                     })
                 })
                 .collect();
