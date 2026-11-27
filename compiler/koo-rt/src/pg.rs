@@ -35,6 +35,10 @@ unsafe extern "C" {
     fn inet_pton(family: i32, text: *const u8, address: *mut u8) -> i32;
     fn fcntl(fd: i32, command: i32, ...) -> i32;
     fn getsockopt(fd: i32, level: i32, name: i32, value: *mut i32, len: *mut u32) -> i32;
+    fn getpeername(fd: i32, address: *mut u8, len: *mut u32) -> i32;
+    fn pipe(ends: *mut i32) -> i32;
+    fn read(fd: i32, data: *mut u8, len: usize) -> isize;
+    fn write(fd: i32, data: *const u8, len: usize) -> isize;
 }
 
 #[repr(C)]
@@ -193,6 +197,13 @@ struct Conn {
     /// While the connection is being set up: when the server must have answered, on
     /// the clock that only goes forward. Zero once it is ready.
     until: i64,
+    /// What the server said of itself when the connection was made: the number of the
+    /// process that serves it there and a key, by which the server is told to stop a
+    /// statement (`stop_statement`). And whether it said so.
+    backend: [u8; 8],
+    known: bool,
+    /// Whether a statement is with the server and its answer has not all come.
+    asked: bool,
 }
 
 struct Db {
@@ -226,6 +237,9 @@ const NO_CONN: Conn = Conn {
     at: 0,
     tls: core::ptr::null_mut(),
     until: 0,
+    backend: [0; 8],
+    known: false,
+    asked: false,
 };
 
 const NO_DB: Db = Db {
@@ -953,6 +967,13 @@ unsafe fn send(conn: &Conn, data: &[u8]) -> bool {
 /// parent, which are still the parent's.
 unsafe fn hang_up(conn: &mut Conn, polite: bool) {
     unsafe {
+        // A connection that is let go of in the middle of a statement, because whoever
+        // sent it will not wait for the answer: the server is told to stop the
+        // statement, which it would otherwise go on with to its end, for nobody.
+        if conn.asked && conn.known && conn.fd >= 0 {
+            stop_statement(conn);
+        }
+        conn.asked = false;
         if !conn.tls.is_null() {
             tls::close(conn.tls, polite);
             conn.tls = core::ptr::null_mut();
@@ -960,6 +981,122 @@ unsafe fn hang_up(conn: &mut Conn, polite: bool) {
         if conn.fd >= 0 {
             close(conn.fd);
             conn.fd = -1;
+        }
+    }
+}
+
+// ---- telling the server to stop a statement -----------------------------------------------
+//
+// PostgreSQL stops a statement when it is told to on another connection: one that says
+// only that, with the number and the key the server gave the first connection, and is
+// then closed. Making that connection may wait, and where a statement is given up there
+// must be no waiting (a handler of a server whose client has left is let wait for
+// nothing), so a thread of its own does it: it sleeps until it is given a statement to
+// stop, and nothing waits for it.
+
+struct Stop {
+    address: [u8; 28],
+    address_len: u32,
+    backend: [u8; 8],
+}
+
+static STOPPING: thread::Lock = thread::Lock::new();
+static mut STOPS: [Stop; 64] = [const {
+    Stop {
+        address: [0; 28],
+        address_len: 0,
+        backend: [0; 8],
+    }
+}; 64];
+static mut STOP_COUNT: usize = 0;
+/// The pipe by which the thread is woken, and the process whose thread it is.
+static mut STOP_PIPE: [i32; 2] = [-1; 2];
+static STOPPER: AtomicI32 = AtomicI32::new(0);
+
+/// Hands the statement that is with the server on a connection to the thread that
+/// tells servers to stop. If there is no thread to be had, or it has sixty-four
+/// statements to stop already, the statement runs to its end, as it did before.
+#[allow(static_mut_refs)]
+unsafe fn stop_statement(conn: &Conn) {
+    unsafe {
+        let mut stop = Stop {
+            address: [0; 28],
+            address_len: 28,
+            backend: conn.backend,
+        };
+        if getpeername(conn.fd, stop.address.as_mut_ptr(), &mut stop.address_len) != 0 || stop.address_len > 28 {
+            return;
+        }
+        STOPPING.lock();
+        let pid = getpid();
+        if STOPPER.load(Acquire) != pid {
+            // The first in this process: a worker of a server has none of the threads
+            // of the process that started it, nor what that one had still to do.
+            let mut ends = [-1i32; 2];
+            if pipe(ends.as_mut_ptr()) != 0 {
+                STOPPING.unlock();
+                return;
+            }
+            STOP_PIPE = ends;
+            STOP_COUNT = 0;
+            if !thread::start(stopper) {
+                close(ends[0]);
+                close(ends[1]);
+                STOP_PIPE = [-1; 2];
+                STOPPING.unlock();
+                return;
+            }
+            STOPPER.store(pid, Release);
+        }
+        if STOP_COUNT < STOPS.len() {
+            STOPS[STOP_COUNT] = stop;
+            STOP_COUNT += 1;
+            let _ = write(STOP_PIPE[1], [1u8].as_ptr(), 1);
+        }
+        STOPPING.unlock();
+    }
+}
+
+/// The thread: for each statement it is given, a connection to the server that says
+/// to stop it and nothing else. Two seconds for each, and no word of how it went: the
+/// server answers nothing, and a statement that has ended meanwhile is none the worse.
+#[allow(static_mut_refs)]
+extern "C" fn stopper(_: *mut u8) -> *mut u8 {
+    unsafe {
+        loop {
+            let mut woken = [0u8; 16];
+            if read(STOP_PIPE[0], woken.as_mut_ptr(), woken.len()) <= 0 && *errno_location() != EINTR {
+                return core::ptr::null_mut();
+            }
+            loop {
+                STOPPING.lock();
+                if STOP_COUNT == 0 {
+                    STOPPING.unlock();
+                    break;
+                }
+                STOP_COUNT -= 1;
+                let stop = core::ptr::read(&STOPS[STOP_COUNT]);
+                STOPPING.unlock();
+                // The kind of address is its first two bytes, or on macOS its second.
+                let family = if cfg!(target_os = "macos") {
+                    stop.address[1] as i32
+                } else {
+                    u16::from_ne_bytes([stop.address[0], stop.address[1]]) as i32
+                };
+                let fd = socket(family, SOCK_STREAM, 0);
+                if fd < 0 {
+                    continue;
+                }
+                // Sixteen bytes: their number, the word for this, and the two numbers.
+                let mut said = [0u8; 16];
+                said[..8].copy_from_slice(&[0, 0, 0, 16, 0x04, 0xd2, 0x16, 0x2e]);
+                said[8..].copy_from_slice(&stop.backend);
+                let until = koo_now_nanos() + 2_000_000_000;
+                if connect_within(fd, stop.address.as_ptr(), stop.address_len, 2000) {
+                    send_within(fd, &said, until);
+                }
+                close(fd);
+            }
         }
     }
 }
@@ -1450,9 +1587,17 @@ unsafe fn establish(conn: &mut Conn, db: &Db) -> bool {
         }
         let mut ready = sent && authenticate(conn, db);
         // What the server says of itself, up to the word that it is ready.
+        conn.known = false;
+        conn.asked = false;
         while ready {
             match message(conn) {
                 Some((b'Z', _)) => break,
+                Some((b'K', body)) if body.len() == 8 => {
+                    let mut backend = [0u8; 8];
+                    backend.copy_from_slice(body);
+                    conn.backend = backend;
+                    conn.known = true;
+                }
                 Some((b'E', body)) => {
                     server_error(body);
                     outcome().kind = CONNECTION;
@@ -1485,6 +1630,9 @@ unsafe fn adopt() {
             POOL.open();
             for db in DBS.iter_mut() {
                 for conn in db.conns.iter_mut() {
+                    // (A statement that was with the server when this process was
+                    // forked is the other process's, and is not this one's to stop.)
+                    conn.asked = false;
                     hang_up(conn, false);
                     conn.busy = false;
                     conn.transaction = 0;
@@ -1885,6 +2033,7 @@ unsafe fn exchange(conn: &mut Conn, request: &[u8], out: &mut Outcome) -> Result
         if !send(conn, request) {
             return Err(true);
         }
+        conn.asked = true;
         let mut ok = true;
         // The statement is with the server. If the connection ends now, the server may
         // have done the statement or not, and it is not sent again; unless all the
@@ -1972,7 +2121,10 @@ unsafe fn exchange(conn: &mut Conn, request: &[u8], out: &mut Outcome) -> Result
                         return Err(false);
                     }
                 }
-                b'Z' => return Ok(ok),
+                b'Z' => {
+                    conn.asked = false;
+                    return Ok(ok);
+                }
                 _ => {}
             }
         }

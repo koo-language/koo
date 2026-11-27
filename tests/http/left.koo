@@ -55,6 +55,11 @@ fn main() ! sql.Error | http.Error {
         row := db.query_row("select count(*)::int as n from left_notes")?
         return http.text("{row.int("n")?}\n")
     })
+    // How many statements that sleep the database is in the middle of, for anybody.
+    app.get("/sleeping", req -> {
+        row := db.query_row("select count(*)::int as n from pg_stat_activity where state = 'active' and query like 'select pg_sleep%' and pid <> pg_backend_pid()")?
+        return http.text("{row.int("n")?}\n")
+    })
     app.get("/quick", req -> {
         db.exec("select 1")?
         return http.text("quick\n")

@@ -2283,6 +2283,20 @@ fn a_client_that_leaves_gives_back_its_connection() {
         leave(port, &vec!["/slow/4".to_string(); 6], 300);
         std::thread::sleep(std::time::Duration::from_millis(200));
         quick_is_quick(port, workers, "six clients left");
+        // And the database is told to stop the statements that nobody waits for: it
+        // is not still in the middle of them a second later, as it would be for four.
+        let mut sleeping = String::new();
+        for _ in 0..30 {
+            sleeping = body(get(port, "/sleeping"));
+            if sleeping == "0" {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+        assert_eq!(
+            sleeping, "0",
+            "with {workers} workers, statements the database is still at for clients that left"
+        );
         // A transaction whose client leaves in the middle of it is undone, now and
         // when its statement would have ended.
         let count = || body(get(port, "/count"));
