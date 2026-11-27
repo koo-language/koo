@@ -1,0 +1,21 @@
+// A package gives methods to its own types, and to no other's; and a type it has not
+// declared `pub` is not to be named outside it (Section 4.6).
+
+import ./words
+
+fn (self: words.Word) to_string() -> string {
+    return "mine now"
+}
+
+fn main() {
+    print(words.loud("a"))
+    kept: words.Kept = words.keep()
+}
+//! error a program gives methods to its own types, not to a package's
+//! stderr main.koo:6:11
+//! error `words.Kept` is not offered by its package
+//! stderr main.koo:12:11
+//! stderr what a package offers to those who import it is declared `pub`
+//! error a package gives methods to its own types alone
+//! stderr words.koo:1:11
+//! stderr make it a function that takes the value as a parameter

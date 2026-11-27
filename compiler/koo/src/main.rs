@@ -6,7 +6,7 @@
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode};
 
-use koo_syntax::{Diagnostic, SourceMap, dump, parse_file};
+use koo_syntax::{Diagnostic, SourceMap, Sourced, dump, parse_file};
 
 /// The support library, built by `build.rs` and linked into every program.
 static RUNTIME: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/libkoo_rt.a"));
@@ -242,7 +242,7 @@ fn read(path: &str) -> Option<String> {
 fn sources(path: &str, tests: bool) -> Option<SourceMap> {
     let location = Path::new(path);
     if !location.is_dir() {
-        return Some(SourceMap::single(path, &read(path)?));
+        return with_packages(vec![(path.to_string(), read(path)?)]);
     }
     let entries = match std::fs::read_dir(location) {
         Ok(entries) => entries,
@@ -267,7 +267,178 @@ fn sources(path: &str, tests: bool) -> Option<SourceMap> {
         let source = read(&file)?;
         files.push((file, source));
     }
-    Some(SourceMap::new(files))
+    with_packages(files)
+}
+
+/// The files of a program with those of the packages it imports from directories
+/// (Section 8.2), and of the packages those import. A package is a directory of `.koo`
+/// files named by its path from the file that imports it; it is read once however
+/// many import it, and has a name in the compiler that no other package has.
+fn with_packages(own: Vec<(String, String)>) -> Option<SourceMap> {
+    let mut loader = Packages {
+        files: Vec::new(),
+        known: Vec::new(),
+        loading: Vec::new(),
+    };
+    // The directory of the program itself, which none of its packages may import.
+    let home = Path::new(&own[0].0).parent().map(|at| at.to_path_buf());
+    let home =
+        home.and_then(|at| std::fs::canonicalize(if at.as_os_str().is_empty() { Path::new(".") } else { &at }).ok());
+    loader.loading.extend(home.clone());
+    let mut files = Vec::new();
+    for (name, src) in own {
+        let at = home.clone().unwrap_or_default();
+        let imports = loader.imports_of(&name, &at, &src)?;
+        files.push(Sourced {
+            name,
+            src,
+            package: String::new(),
+            imports,
+        });
+    }
+    files.append(&mut loader.files);
+    Some(SourceMap::of(files))
+}
+
+/// A path without the `.` steps that joining one to another leaves in it, and with
+/// each `..` taken with the step before it: `app/./stock` and `app/x/../stock` are
+/// `app/stock`.
+fn tidy(path: &Path) -> PathBuf {
+    let path = if path.as_os_str().is_empty() {
+        Path::new(".")
+    } else {
+        path
+    };
+    use std::path::Component;
+    let mut out = PathBuf::new();
+    for part in path.components() {
+        match part {
+            Component::CurDir => {}
+            Component::ParentDir if matches!(out.components().next_back(), Some(Component::Normal(_))) => {
+                out.pop();
+            }
+            other => out.push(other),
+        }
+    }
+    if out.as_os_str().is_empty() {
+        out.push(".");
+    }
+    out
+}
+
+struct Packages {
+    files: Vec<Sourced>,
+    /// The directories read so far, and the name of the package of each.
+    known: Vec<(PathBuf, String)>,
+    /// The directories whose packages are being read: one that is asked for again
+    /// before it is done imports itself, by whatever way round.
+    loading: Vec<PathBuf>,
+}
+
+impl Packages {
+    /// The packages a file imports from directories: each path as the file writes it,
+    /// and the name of the package found there. A path that leads to no directory is
+    /// left out, and the compiler says so where the import is written.
+    fn imports_of(&mut self, file: &str, at: &Path, src: &str) -> Option<Vec<(String, String)>> {
+        let mut found = Vec::new();
+        for import in &parse_file(src).file.imports {
+            let koo_syntax::ast::ImportKind::Package { path, .. } = &import.kind else {
+                continue;
+            };
+            if !path.starts_with("./") && !path.starts_with("../") {
+                continue;
+            }
+            // The path is from where the file is, which is `at`; what is shown is
+            // from where it was said to be.
+            let from = Path::new(file).parent().unwrap_or(Path::new(""));
+            let Ok(directory) = std::fs::canonicalize(at.join(path)) else {
+                continue;
+            };
+            if !directory.is_dir() {
+                continue;
+            }
+            if self.loading.contains(&directory) {
+                eprintln!(
+                    "koo: {file}: `import {path}` imports a package that imports this one: \
+                     packages may not import one another in a cycle (Section 8.2)"
+                );
+                return None;
+            }
+            let package = match self.known.iter().find(|(known, _)| *known == directory) {
+                Some((_, package)) => package.clone(),
+                None => self.read(&directory, &tidy(&from.join(path)))?,
+            };
+            found.push((path.clone(), package));
+        }
+        Some(found)
+    }
+
+    /// Reads the package of a directory, and those it imports. `shown` is the path to
+    /// it as the messages give it.
+    fn read(&mut self, directory: &Path, shown: &Path) -> Option<String> {
+        let last = directory
+            .file_name()
+            .map(|name| name.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        // The name the package has in the compiler is made of the directory's letters
+        // and digits, with one `_` for whatever is between them and none at an end:
+        // `__` is what sets a package's name apart from the names of its things.
+        let mut name = String::new();
+        for c in last.chars() {
+            if c.is_ascii_alphanumeric() {
+                name.push(c);
+            } else if !name.is_empty() && !name.ends_with('_') {
+                name.push('_');
+            }
+        }
+        let last = match name.trim_end_matches('_') {
+            "" => "package".to_string(),
+            name => name.to_string(),
+        };
+        // `pkg_orders`, and `pkg2_orders` for a second directory of that name: a name
+        // that begins as no package of the library does.
+        let alike = self
+            .known
+            .iter()
+            .filter(|(_, known)| koo_compiler::check::package_shown(known) == last)
+            .count();
+        let package = match alike {
+            0 => format!("pkg_{last}"),
+            more => format!("pkg{}_{last}", more + 1),
+        };
+        self.known.push((directory.to_path_buf(), package.clone()));
+        let mut names: Vec<String> = match std::fs::read_dir(directory) {
+            Ok(entries) => entries
+                .filter_map(|entry| entry.ok()?.file_name().into_string().ok())
+                .filter(|name| name.ends_with(".koo") && !name.starts_with('.') && !name.ends_with("_test.koo"))
+                .collect(),
+            Err(err) => {
+                eprintln!("koo: cannot read {}: {err}", shown.display());
+                return None;
+            }
+        };
+        names.sort();
+        if names.is_empty() {
+            eprintln!("koo: there are no `.koo` files in {}", shown.display());
+            return None;
+        }
+        self.loading.push(directory.to_path_buf());
+        for name in names {
+            // Read where the directory is, which a link may have led to, and shown by
+            // the path that was written.
+            let file = shown.join(&name).to_string_lossy().into_owned();
+            let src = read(&directory.join(&name).to_string_lossy())?;
+            let imports = self.imports_of(&file, directory, &src)?;
+            self.files.push(Sourced {
+                name: file,
+                src,
+                package: package.clone(),
+                imports,
+            });
+        }
+        self.loading.pop();
+        Some(package)
+    }
 }
 
 fn parse(args: &[String]) -> ExitCode {

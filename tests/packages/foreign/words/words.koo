@@ -1,0 +1,15 @@
+fn (self: string) shout() -> string {
+    return self + "!"
+}
+
+pub fn loud(word: string) -> string {
+    return word.shout()
+}
+
+type Kept = { n: int }
+
+pub fn keep() -> Kept {
+    return Kept { n: 1 }
+}
+
+pub type Word = { text: string }

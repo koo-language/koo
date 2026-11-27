@@ -217,7 +217,8 @@ impl<'a> Checker<'a> {
                     // The functions of tasks, which are not built: but a name that is not
                     // kept for them, and that the program has given a function, is its own.
                     "all" | "race" | "with_timeout" | "isolate"
-                        if !self.free_fns.contains_key(&name.name) && !self.generic_fns.contains_key(&name.name) =>
+                        if !self.free_fns.contains_key(&self.plain(&name.name))
+                            && !self.generic_fns.contains_key(&self.plain(&name.name)) =>
                     {
                         self.unsupported(callee.span, "tasks are");
                         self.unknown(span)
@@ -229,11 +230,11 @@ impl<'a> Checker<'a> {
                         }
                         self.unknown(span)
                     }
-                    _ if self.generic_fns.contains_key(&name.name) => {
-                        let template = self.generic_fns[&name.name];
+                    _ if self.generic_fns.contains_key(&self.plain(&name.name)) => {
+                        let template = self.generic_fns[&self.plain(&name.name)];
                         self.generic_call(template, None, HashMap::new(), args, span, expected)
                     }
-                    _ => match self.free_fns.get(&name.name) {
+                    _ => match self.free_fns.get(&self.plain(&name.name)) {
                         Some(&id) => self.user_call(id, None, args, span),
                         None => {
                             let (known, habit) = (self.function_names(), super::suggest::function_habit(&name.name));
@@ -275,6 +276,17 @@ impl<'a> Checker<'a> {
                     // The package's own name, which `as` may have replaced in this file.
                     let own = import.2.clone();
                     let function = format!("{own}__{}", name.name);
+                    if self.kept_to_its_package(&function, &own) {
+                        self.error_help(
+                            name.span,
+                            format!("`{}.{}` is not offered by its package", module.name, name.name),
+                            "what a package offers to those who import it is declared `pub` (Section 4.6)",
+                        );
+                        for arg in args {
+                            self.expr(&arg.value, None);
+                        }
+                        return self.unknown(span);
+                    }
                     if let Some(&template) = self.generic_fns.get(&function) {
                         return self.generic_call(template, None, HashMap::new(), args, span, expected);
                     }
@@ -434,6 +446,7 @@ impl<'a> Checker<'a> {
         span: Span,
         expected: Option<&Ty>,
     ) -> Expr {
+        self.offered(&type_name.name, name);
         // Another name for a type has the functions of the type it names (Section 6.7).
         if let Some(TypeName::Alias(named)) = self.type_names.get(&type_name.name).cloned() {
             let primitive = match named {
@@ -632,10 +645,15 @@ impl<'a> Checker<'a> {
         span: Span,
         expected: Option<&Ty>,
     ) -> Expr {
+        // `orders.Box<int>.new()`: a generic type of a package the file imports.
+        if let Some(of) = self.unqualified(generic) {
+            return self.generic_type_call(&of, type_args, name, args, span, expected);
+        }
         let ast::ExprKind::Name(generic_name) = &generic.kind else {
             self.unsupported(generic.span, "types from other packages are");
             return self.unknown(span);
         };
+        self.offered(&generic_name.name, name);
         let is_list = generic_name.name == "List";
         let builtin = is_list && matches!(name.name.as_str(), "new" | "with_size" | "with_capacity");
         if !builtin {
@@ -823,6 +841,17 @@ impl<'a> Checker<'a> {
                 self.expr(&arg.value, None);
             }
             return self.unknown(span);
+        }
+        // A method that its package has not offered, of whatever kind: of a struct, of
+        // a type with parameters, of an actor.
+        let on = match super::exprs::peel(&receiver.ty) {
+            Ty::Struct(id) => Some(self.program.structs[*id].name.clone()),
+            Ty::Enum(id) => Some(self.program.enums[*id].name.clone()),
+            Ty::Error(id) => Some(self.program.errors[*id].name.clone()),
+            _ => None,
+        };
+        if let Some(on) = on {
+            self.offered(&on, name);
         }
         if let Some(owner) = self.owner_of(&receiver.ty)
             && let Some(&id) = self.methods.get(&(owner, name.name.clone()))

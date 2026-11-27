@@ -115,7 +115,9 @@ An *import*
 
     import std/io
 
-makes the functions of a standard package available in the file that contains it, under the last part of the package's name: `io.read_line()`. `import std/io as files` gives the package another name in that file, `files.read_line()`. The packages are `std/io`, `std/os`, `std/time`, `std/http` and `std/test`. An import that its file does not use is an error.
+makes the functions of a standard package available in the file that contains it, under the last part of the package's name: `io.read_line()`. `import std/io as files` gives the package another name in that file, `files.read_line()`. The standard packages are listed in Appendix B. An import that its file does not use is an error.
+
+An import whose path begins with `./` or `../` is of a package of the program's own: the directory at that path from the file that imports it, all of whose `.koo` files (but for its tests) are the package. What the package declares with `pub` is used through the import's name: `orders.place(...)`, `orders.limit`, the type `orders.Order`, the variant `orders.State.Paid`. Everything else of the package is its own, and so, even of a `pub` type, are the fields whose names begin with an underscore and the methods not declared `pub`. A package gives methods to its own types only, and nobody else gives them any. Its files see one another's declarations and those of the packages they import, never those of the program that imports them, and packages do not import one another in a circle. A `match` on an enumeration of another package ends with an arm `_ => ...`, since the package may add a variant, unless the enumeration is declared `@closed`.
 
 A *constant*
 

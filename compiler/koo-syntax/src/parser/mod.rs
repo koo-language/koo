@@ -43,43 +43,128 @@ pub struct Parsed {
 
 /// Parses a complete source file: imports, then declarations.
 pub fn parse_file(src: &str) -> Parsed {
-    parse(src, false, 0, false)
+    parse(src, false, 0, false, None)
 }
 
 /// Parses a source file of the standard library, or one the compiler writes for a
 /// program: there alone a name of a type may have `__` in it, which sets a name of the
 /// library's apart from every name a program can write.
 pub fn parse_library(src: &str) -> Parsed {
-    parse(src, false, 0, true)
+    parse(src, false, 0, true, None)
 }
 
 /// Parses a source file that begins at offset `base` of its package (see `SourceMap`):
 /// every span in the result counts from the start of the package.
 pub fn parse_file_at(src: &str, base: u32) -> Parsed {
-    parse(src, false, base, false)
+    parse(src, false, base, false, None)
+}
+
+/// The names of types that a file of a program of several packages is read with
+/// (Section 8.2). Each type of a package has a name in the program with the package in
+/// it, which is no other package's: every later stage then sees one program whose
+/// names are all different, and the places in the text are still those of what was
+/// written.
+#[derive(Debug, Default)]
+pub struct Renames {
+    /// The types of the file's own package, by the names it writes them with.
+    pub own: HashMap<String, String>,
+    /// The types of the packages the file imports, by the name each import binds
+    /// and then by the type's name in its package: `orders.Order`.
+    pub imported: HashMap<String, HashMap<String, String>>,
+    /// The types (by their names in the program) that their packages do not offer.
+    pub kept: std::collections::HashSet<String>,
+    /// The names of imports that the file names a type through, which are filled in
+    /// as it is read.
+    pub used: std::sync::Mutex<Vec<String>>,
+}
+
+/// Parses a source file of a program of several packages, reading the names of types
+/// as `renames` gives them.
+pub fn parse_file_renamed(src: &str, base: u32, renames: &Renames) -> Parsed {
+    parse(src, false, base, false, Some(renames))
 }
 
 /// Parses a fragment, as found in documentation: declarations and statements in any order,
 /// where a function may be a signature without a body.
 pub fn parse_fragment(src: &str) -> Parsed {
-    parse(src, true, 0, false)
+    parse(src, true, 0, false, None)
 }
 
 /// The stack the parser runs on. `MAX_NESTING` levels of the deepest recursion fit in it
 /// with room to spare, in unoptimized builds too.
 const PARSER_STACK: usize = 64 * 1024 * 1024;
 
-fn parse(src: &str, fragment: bool, base: u32, library: bool) -> Parsed {
+type Renamed<'a> = Option<&'a Renames>;
+
+/// Gives the names of types among some tokens the names they are to be read as, also
+/// in what a string has between braces. `orders.Order`, three tokens, becomes the one
+/// name that the type has in the program.
+fn rename(tokens: &mut Vec<Token>, renames: &Renames, found: &mut Vec<Diagnostic>) {
+    let mut out: Vec<Token> = Vec::with_capacity(tokens.len());
+    let mut at = 0;
+    while at < tokens.len() {
+        // A name after a dot is not the package's own type: it is a variant of an enum
+        // (`Shape.Circle`), or what is dealt with just below.
+        let dotted = out.last().is_some_and(|before| before.kind == Tok::Dot);
+        if !dotted
+            && let Tok::Ident(binding) = &tokens[at].kind
+            && let Some(types) = renames.imported.get(binding.as_str())
+            && tokens
+                .get(at + 1)
+                .is_some_and(|dot| dot.kind == Tok::Dot && !dot.nl_before)
+            && let Some(Tok::UpperIdent(name)) = tokens.get(at + 2).map(|token| &token.kind)
+            && !tokens[at + 2].nl_before
+            && let Some(full) = types.get(name.as_str())
+        {
+            let span = tokens[at].span.to(tokens[at + 2].span);
+            if renames.kept.contains(full) {
+                found.push(
+                    Diagnostic::new(span, format!("`{binding}.{name}` is not offered by its package"))
+                        .with_help("what a package offers to those who import it is declared `pub` (Section 4.6)"),
+                );
+            }
+            renames.used.lock().unwrap().push(binding.clone());
+            out.push(Token {
+                kind: Tok::UpperIdent(full.clone()),
+                span,
+                nl_before: tokens[at].nl_before,
+            });
+            at += 3;
+            continue;
+        }
+        let mut token = tokens[at].clone();
+        match &mut token.kind {
+            Tok::UpperIdent(name) if !dotted => {
+                if let Some(new) = renames.own.get(name.as_str()) {
+                    *name = new.clone();
+                }
+            }
+            Tok::Str(pieces) => {
+                for piece in pieces {
+                    if let StrPiece::Interp { tokens, .. } = piece {
+                        rename(tokens, renames, found);
+                    }
+                }
+            }
+            _ => {}
+        }
+        out.push(token);
+        at += 1;
+    }
+    *tokens = out;
+}
+
+fn parse(src: &str, fragment: bool, base: u32, library: bool, renamed: Renamed) -> Parsed {
     // The parser is recursive, and the thread it is called on may have a small stack, so
     // it runs on a thread of its own. Where a thread cannot be started it runs in place.
     std::thread::scope(|scope| {
         let spawned = std::thread::Builder::new()
             .name("koo-parser".to_string())
             .stack_size(PARSER_STACK)
-            .spawn_scoped(scope, || parse_in_place(src, fragment, base, library));
+            .spawn_scoped(scope, || parse_in_place(src, fragment, base, library, renamed));
         match spawned {
             Ok(handle) => handle.join().unwrap_or_else(|panic| std::panic::resume_unwind(panic)),
-            Err(_) => parse_in_place(src, fragment, base, library),
+            Err(_) => parse_in_place(src, fragment, base, library, renamed),
         }
     })
 }
@@ -105,8 +190,8 @@ fn reserved_names(tokens: &[Token], found: &mut Vec<Diagnostic>) {
     }
 }
 
-fn parse_in_place(src: &str, fragment: bool, base: u32, library: bool) -> Parsed {
-    let lexed = lex_at(src, base);
+fn parse_in_place(src: &str, fragment: bool, base: u32, library: bool, renamed: Renamed) -> Parsed {
+    let mut lexed = lex_at(src, base);
     let index = LineIndex::at(src, base);
     let docs = lexed
         .docs
@@ -118,6 +203,11 @@ fn parse_in_place(src: &str, fragment: bool, base: u32, library: bool) -> Parsed
     let mut reserved: Vec<Diagnostic> = Vec::new();
     if !library {
         reserved_names(&lexed.tokens, &mut reserved);
+    }
+    // (After that: the names a package's types are read as have `__` in them, and are
+    // the compiler's doing and not the program's.)
+    if let Some(renames) = renamed {
+        rename(&mut lexed.tokens, renames, &mut reserved);
     }
     let mut parser = Parser::new(lexed.tokens, fragment);
     parser.diags.extend(reserved);

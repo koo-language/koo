@@ -1,0 +1,99 @@
+// A program of several packages (Section 8.2): `stock` and `prices` are directories
+// beside this file, each a package of its own, and `stock` imports `prices` too. Each
+// of the two has a package `util` inside it, and the two are different packages.
+//
+//     koo run tests/packages/imports
+
+import ./stock
+import ./prices as p
+
+// Names the package `stock` also has, for other things: each has its own.
+fn label(n: int) -> string {
+    return "main's {n}"
+}
+
+limit := 3
+
+fn main() {
+    var shelf := stock.Shelf.new("tools")
+    shelf.add(stock.Item { name: "saw", count: 2 })
+    shelf.add(stock.Item { name: "nail", count: 900 }, tag: "small")
+    print(shelf.summary())
+    print(label(limit))
+    print(stock.label(1))
+    print(stock.most)
+    print(p.price("saw"))
+    name := stock.label
+    print(name(2))
+    match shelf.take("saw", 5) {
+        left => print("left {left}")
+        ! e => print("short: {e}")
+    }
+    match shelf.take("saw", 1) {
+        left => print("left {left}")
+        ! e => print("short: {e}")
+    }
+    event := stock.Event.Item { what: "moved" }
+    match event {
+        stock.Event.Item { what } => print("item {what}")
+        _ => print("other")
+    }
+    print(event)
+    print(stock.Event.Emptied.to_json())
+    print(shelf.items[0])
+    print(shelf.items[0].to_json())
+    match stock.Item.from_json("\{\"name\":\"bolt\",\"count\":9}") {
+        item => print("{item.name} {item.count} {item.state}")
+        ! e => print("bad: {e.message}")
+    }
+    print(stock.first([7, 8]))
+    box := stock.Box<string> { inside: "hat" }
+    print(box.open())
+    print(stock.Box<int>.of(4).open())
+    print(stock.describe(shelf.items[1]))
+    match stock.Final.Yes {
+        stock.Final.Yes => print("yes")
+        stock.Final.No => print("no")
+    }
+    count := stock.Count.start()
+    count.add(2)
+    count.add(3)
+    print(count.total())
+    print(stock.which())
+    print(p.which())
+    print(stock.kept_by_key())
+    match stock.just(3) {
+        Just { value } => print("just {value}")
+        Nothing => print("nothing")
+    }
+    print(Pair<stock.Item> { both: [shelf.items[0]] })
+    print(count)
+}
+
+type Pair<T> = { both: [T] }
+//= tools: 2x saw @30, 450x nail @40
+//= main's 3
+//= 1x
+//= 500
+//= 30
+//= 2x
+//= short: stock.Short { wanted: 5, had: 2 }
+//= left 1
+//= item moved
+//= Item { what: "moved" }
+//= {"type":"emptied"}
+//= stock.Item { name: "saw", count: 1, state: Fresh }
+//= {"name":"saw","count":1,"state":"fresh"}
+//= bolt 9 Fresh
+//= 7
+//= hat
+//= 4
+//= item nail [small]
+//= yes
+//= 5 after 2 steps of 1
+//= stock's util
+//= prices' util
+//= two kept
+//= just 3
+//= Pair<stock.Item> { both: [stock.Item { name: "saw", count: 1, state: Fresh }] }
+//= stock.Count#0

@@ -271,6 +271,23 @@ impl Ring {
     }
 }
 
+/// The name of a kind of actor as a program writes it, in the parts it is said in: an
+/// actor of a package of the program's own has the package in its name here, which
+/// keeps it apart from another package's of the same name, `Pkg_orders__Counter`, and
+/// is `orders.Counter` to whoever reads what the program writes.
+unsafe fn kind_shown<'a>(kind: usize) -> [&'a [u8]; 3] {
+    unsafe {
+        let name = kind_name(kind);
+        if name.starts_with(b"Pkg")
+            && let Some(at) = name.windows(2).position(|pair| pair == b"__")
+            && let Some(under) = name[..at].iter().position(|byte| *byte == b'_')
+        {
+            return [&name[under + 1..at], b".", &name[at + 2..]];
+        }
+        [name, b"", b""]
+    }
+}
+
 unsafe fn kind_name<'a>(kind: usize) -> &'a [u8] {
     unsafe {
         if kind < KIND_COUNT.load(Acquire) {
@@ -491,9 +508,12 @@ unsafe fn stopped(what: &[u8]) -> ! {
 
 unsafe fn cycle(slot: *mut Slot, what: &[u8]) -> ! {
     unsafe {
+        let [package, dot, kind] = kind_shown((*slot).kind as usize);
         die(&[
             b"`",
-            kind_name((*slot).kind as usize),
+            package,
+            dot,
+            kind,
             b"` is asked `",
             what,
             b"` while it waits for the answer to this very message: it would wait for ever. \
@@ -717,9 +737,12 @@ unsafe fn leave_letter(id: i64, job: *mut Job, wait: Option<&[u8]>) -> bool {
             WAITS.unlock();
             if for_ever {
                 drop_job(job);
+                let [package, dot, kind] = kind_shown((*slot).kind as usize);
                 die(&[
                     b"`",
-                    kind_name((*slot).kind as usize),
+                    package,
+                    dot,
+                    kind,
                     b"` cannot be told `",
                     method,
                     b"`: its mailbox is full, and what would make room in it is waiting for this message \
@@ -1349,9 +1372,12 @@ pub unsafe extern "C" fn koo_actor_end(id: i64, which: i64) -> *mut Header {
                 die(&[b"an actor was stopped twice"]);
             };
             if (*slot).holder.load(Acquire) == (*me).index {
+                let [package, dot, kind] = kind_shown((*slot).kind as usize);
                 die(&[
                     b"`",
-                    kind_name((*slot).kind as usize),
+                    package,
+                    dot,
+                    kind,
                     b"` was stopped from inside one of its own messages",
                 ]);
             }
@@ -1489,7 +1515,11 @@ unsafe fn restart(slot: *mut Slot, index: u32) -> *mut Header {
         MAKING.unlock();
         let mut out = Buffer::new();
         out.push(b"koo: the actor `");
-        out.push(kind_name((*slot).kind as usize));
+        let mut shown = Buffer::new();
+        for part in kind_shown((*slot).kind as usize) {
+            out.push(part);
+            shown.push(part);
+        }
         let state = if often {
             // What it started with stays where it is, for the end of the program to forget.
             (*slot).generation.fetch_add(1, AcqRel);
@@ -1505,7 +1535,7 @@ unsafe fn restart(slot: *mut Slot, index: u32) -> *mut Header {
         // Without the `koo: ` it begins with and the newline it ends with, for a log
         // that is JSON.
         let message = &out.data[5..out.len - 1];
-        let fields = [(&b"actor"[..], crate::log::Field::Text(kind_name((*slot).kind as usize)))];
+        let fields = [(&b"actor"[..], crate::log::Field::Text(&shown.data[..shown.len]))];
         crate::log::said(b"error", &out.data[..out.len], message, &fields);
         state
     }

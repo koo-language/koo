@@ -418,14 +418,15 @@ impl<'a> Checker<'a> {
                 }
                 return self.mk(ExprKind::Local(local), ty, span);
             }
-            if let Some(constant) = self.consts.get(&name.name) {
+            let plain = self.plain(&name.name);
+            if let Some(constant) = self.consts.get(&plain) {
                 let mut constant = constant.clone();
                 constant.span = span;
                 return constant;
             }
             if let Some(&id) = self
                 .free_fns
-                .get(&name.name)
+                .get(&plain)
                 .filter(|_| !name.name.contains("__") || self.body_in_prelude)
             {
                 // A named function is a value of its function type (Section 4.11).
@@ -499,7 +500,7 @@ impl<'a> Checker<'a> {
                 }));
                 return self.mk(ExprKind::FnRef(id), ty, span);
             }
-            if self.generic_fns.contains_key(&name.name) || matches!(name.name.as_str(), "print" | "panic") {
+            if self.generic_fns.contains_key(&plain) || matches!(name.name.as_str(), "print" | "panic") {
                 self.unsupported(span, "generic and built-in functions used as values are");
             } else {
                 let (known, habit) = (self.names_in_scope(), super::suggest::name_habit(&name.name));
@@ -513,7 +514,7 @@ impl<'a> Checker<'a> {
             let variant = self.program.enums[*id]
                 .variants
                 .iter()
-                .position(|v| v.name == name.name);
+                .position(|v| v.name == super::bare(&name.name));
             if let Some(variant) = variant {
                 return self.variant_value(*id, variant, span);
             }
@@ -543,7 +544,7 @@ impl<'a> Checker<'a> {
                     .program
                     .enums
                     .iter()
-                    .filter(|e| e.variants.iter().any(|v| v.name == name.name))
+                    .filter(|e| e.variants.iter().any(|v| v.name == super::bare(&name.name)))
                     .map(|e| e.name.clone())
                     .collect();
                 match owners.first() {
@@ -580,6 +581,41 @@ impl<'a> Checker<'a> {
     }
 
     fn field(&mut self, base: &ast::Expr, name: &ast::Ident, span: Span, expected: Option<&Ty>) -> Expr {
+        // `orders.limit`: a constant of a package the file imports, or a function of
+        // it as a value.
+        if let ast::ExprKind::Name(module) = &base.kind
+            && !self.body_in_prelude
+            && !name.is_upper()
+            && self.resolve_local(&module.name).is_none()
+            && let Some(import) = self.modules.get(&(self.file, module.name.clone()))
+        {
+            let own = import.2.clone();
+            let full = format!("{own}__{}", name.name);
+            let known = self.consts.contains_key(&full) || self.free_fns.contains_key(&full);
+            if known {
+                self.modules.get_mut(&(self.file, module.name.clone())).unwrap().1 = true;
+                if self.kept_to_its_package(&full, &own) {
+                    self.error_help(
+                        name.span,
+                        format!("`{}.{}` is not offered by its package", module.name, name.name),
+                        "what a package offers to those who import it is declared `pub` (Section 4.6)",
+                    );
+                    return self.unknown(span);
+                }
+                let written = ast::Expr {
+                    kind: ast::ExprKind::Name(ast::Ident {
+                        name: full,
+                        span: name.span,
+                    }),
+                    span,
+                };
+                // The name is the compiler's own here, and is looked for as it is.
+                let prelude = std::mem::replace(&mut self.body_in_prelude, true);
+                let value = self.expr(&written, expected);
+                self.body_in_prelude = prelude;
+                return value;
+            }
+        }
         // `sql.Isolation.Serializable`: a variant of an enum of a standard package.
         if let ast::ExprKind::Field {
             base: package,
@@ -688,7 +724,7 @@ impl<'a> Checker<'a> {
         } else {
             name.name.as_str()
         };
-        let hidden = private || (self.is_opaque(&base.ty) && !self.body_in_prelude);
+        let hidden = private || (self.is_opaque(&base.ty) && !self.body_in_prelude) || self.kept_field(&base.ty);
         if hidden && name.name.starts_with('_') {
             let found = self.ty_name(&base.ty);
             self.error(name.span, format!("`{found}` has no field `{}`", name.name));
@@ -1137,7 +1173,44 @@ impl<'a> Checker<'a> {
 
     /// The type that a type name in an expression names: `Order`, `Stack<int>`, or a
     /// generic type whose arguments the expected type supplies.
+    /// An expression that names a type of an imported package, `orders.Order`, with
+    /// the name the type has in the program in its place; and one that begins with such
+    /// a name (`orders.State.Paid`, `orders.Box<int>`) likewise. Nothing for any other.
+    pub(super) fn unqualified(&mut self, written: &ast::Expr) -> Option<ast::Expr> {
+        let kind = match &written.kind {
+            ast::ExprKind::Field { base, name } => {
+                if let ast::ExprKind::Name(package) = &base.kind
+                    && name.is_upper()
+                    && self.resolve_local(&package.name).is_none()
+                    && let Some(full) = self.package_type(&[package.clone(), name.clone()])
+                {
+                    ast::ExprKind::Name(ast::Ident {
+                        name: full,
+                        span: written.span,
+                    })
+                } else {
+                    ast::ExprKind::Field {
+                        base: Box::new(self.unqualified(base)?),
+                        name: name.clone(),
+                    }
+                }
+            }
+            ast::ExprKind::TypeApp { base, args } => ast::ExprKind::TypeApp {
+                base: Box::new(self.unqualified(base)?),
+                args: args.clone(),
+            },
+            _ => return None,
+        };
+        Some(ast::Expr {
+            kind,
+            span: written.span,
+        })
+    }
+
     pub(super) fn literal_type(&mut self, ty: &ast::Expr, expected: Option<&Ty>) -> Option<Ty> {
+        if let Some(of) = self.unqualified(ty) {
+            return self.literal_type(&of, expected);
+        }
         match &ty.kind {
             ast::ExprKind::Name(name) => {
                 if let Some(bound) = self.type_env.get(&name.name) {
@@ -1215,20 +1288,9 @@ impl<'a> Checker<'a> {
             Error(ErrorId),
             Variant(EnumId, usize),
         }
-        // `http.Response { ... }`: a struct of a standard package.
-        if let ast::ExprKind::Field { base, name } = &ty.kind
-            && let ast::ExprKind::Name(package) = &base.kind
-            && name.is_upper()
-            && self.resolve_local(&package.name).is_none()
-            && let Some(full) = self.package_type(&[package.clone(), name.clone()])
-        {
-            let of = ast::Expr {
-                kind: ast::ExprKind::Name(ast::Ident {
-                    name: full,
-                    span: ty.span,
-                }),
-                span: ty.span,
-            };
+        // `http.Response { ... }`, `orders.State.Paid { ... }`, `orders.Box<int> { ... }`:
+        // a type of a package the file imports.
+        if let Some(of) = self.unqualified(ty) {
             return self.struct_literal(&of, fields, span, expected);
         }
         let target = match &ty.kind {
@@ -1237,7 +1299,7 @@ impl<'a> Checker<'a> {
                     Some(Ty::Enum(id)) => self.program.enums[*id]
                         .variants
                         .iter()
-                        .position(|v| v.name == name.name)
+                        .position(|v| v.name == super::bare(&name.name))
                         .map(|v| Target::Variant(*id, v)),
                     _ => None,
                 };
@@ -1353,7 +1415,12 @@ impl<'a> Checker<'a> {
         let hidden = |checker: &Self, name: &str| {
             name.starts_with('_')
                 && !checker.body_in_prelude
-                && matches!(target, Target::Struct(id) if id < checker.prelude_types.0)
+                && (matches!(target, Target::Struct(id) if id < checker.prelude_types.0)
+                    || match target {
+                        Target::Struct(id) => checker.kept_field(&Ty::Struct(id)),
+                        Target::Error(id) => checker.kept_field(&Ty::Error(id)),
+                        Target::Variant(id, _) => checker.kept_field(&Ty::Enum(id)),
+                    })
         };
         let mut given: HashMap<usize, Expr> = HashMap::new();
         for field in fields {

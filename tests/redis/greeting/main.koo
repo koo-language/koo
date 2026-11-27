@@ -1,9 +1,10 @@
 // What the Redis client says first on a connection, to a server of the tests that
 // writes down what it is told (`a_redis_is_greeted` in the tests).
 import std/os
+import ../../../packages/redis
 
-fn main() ! RedisError {
-    cache := redis_connect(os.env("REDIS_URL") else "", pool: 2)?
+fn main() ! redis.Error {
+    cache := redis.connect(os.env("REDIS_URL") else "", pool: 2)?
     print("{cache.get("k")?}")
     shown := "{cache} {[cache]}"
     print("{shown.contains("p@ss")} {shown.contains("as koo")}")

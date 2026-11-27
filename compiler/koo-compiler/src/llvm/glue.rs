@@ -458,16 +458,16 @@ impl Gen<'_> {
     }
 
     /// Appends `name { field: value, ... }` for the fields at `base`, a struct of `struct_ty`.
-    fn fmt_fields(&mut self, name: &str, struct_ty: &str, base: &str, fields: &[FieldDef], offset: usize) {
-        // A type of a standard package is shown as a program writes it, `http.Response`,
-        // and without what the package keeps to itself.
-        let library = name
-            .split_once("__")
+    fn fmt_fields(&mut self, owner: &str, name: &str, struct_ty: &str, base: &str, fields: &[FieldDef], offset: usize) {
+        // A type of a package, the library's or the program's, is shown as a program
+        // writes it, `http.Response`, and without what the package keeps to itself:
+        // `owner` is the type whose fields these are, which for a variant is its enum.
+        let library = owner
+            .split('<')
+            .next()
+            .and_then(|head| head.split_once("__"))
             .filter(|(_, rest)| rest.starts_with(char::is_uppercase));
-        let shown = match library {
-            Some((package, rest)) => format!("{}.{rest}", package.to_ascii_lowercase()),
-            None => name.to_string(),
-        };
+        let shown = crate::check::printed_name(name);
         let name = shown.as_str();
         let seen: Vec<(usize, &FieldDef)> = fields
             .iter()
@@ -603,11 +603,12 @@ impl Gen<'_> {
             Ty::Struct(id) => {
                 let def = self.p.structs[*id].clone();
                 let struct_ty = self.llty(ty);
-                self.fmt_fields(&def.name, &struct_ty, "%p", &def.fields, 0);
+                self.fmt_fields(&def.name, &def.name, &struct_ty, "%p", &def.fields, 0);
             }
             Ty::Enum(id) => {
                 let enum_ty = self.llty(ty);
                 let variants = self.p.enums[*id].variants.clone();
+                let of = self.p.enums[*id].name.clone();
                 let tag = self.value("load i64, ptr %p");
                 let end = self.new_label("end");
                 let labels: Vec<String> = variants.iter().map(|_| self.new_label("variant")).collect();
@@ -621,7 +622,7 @@ impl Gen<'_> {
                     self.label(&labels[index]);
                     let variant_ty = self.variant_ty(*id, index);
                     let payload = self.field_ptr(&enum_ty, "%p", 1);
-                    self.fmt_fields(&variant.name, &variant_ty, &payload, &variant.fields, 0);
+                    self.fmt_fields(&of, &variant.name, &variant_ty, &payload, &variant.fields, 0);
                     self.br(&end);
                 }
                 self.label(&end);
@@ -630,7 +631,7 @@ impl Gen<'_> {
                 let def = self.p.errors[*id].clone();
                 let box_ty = self.error_box_ty(*id);
                 let value = self.value("load ptr, ptr %p");
-                self.fmt_fields(&def.name, &box_ty, &value, &def.fields, 2);
+                self.fmt_fields(&def.name, &def.name, &box_ty, &value, &def.fields, 2);
             }
             Ty::Failure => {
                 let value = self.value("load ptr, ptr %p");

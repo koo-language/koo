@@ -610,7 +610,7 @@ Each of the first four takes a `timeout:`, thirty seconds unless it is said, and
 
 A handler that waits in a conversation is left where it is, like one that waits for a database, while its worker answers other requests; and a handler whose client has left, or whose time is over (Section 10.7), is not let wait here either, and its connection is closed. A pool is a value, an address with a name and two numbers, and may be given to an actor or kept in a structure; the connections themselves belong to the process that made them, so that each worker of a server has its own, also to a pool that `main` made before there were workers. (In a server of one process, which `workers: 1` asks for, an actor's method runs on the server's own thread, and one that needs a connection while every connection of the pool is with a handler waiting on that thread would wait for ever: it is given one more than the pool's size, for that conversation.)
 
-In the directory `packages/redis` of Koo's source there is a client for Redis written this way, in some three hundred and fifty lines of Koo: `redis_connect`, and `get`, `set`, `incr`, `expire`, lists, several commands done as one, and any command by its name. Until one package of a program can import another, it is used by copying the file beside the program's own.
+In the directory `packages/redis` of Koo's source there is a client for Redis written this way, in some three hundred and fifty lines of Koo: `redis.connect`, and `get`, `set`, `incr`, `expire`, lists, several commands done as one, and any command by its name. It is a package (Section 4.4): a program has it by having the directory, and says `import ./redis`.
 
 ## 10.10 What Is Not There
 

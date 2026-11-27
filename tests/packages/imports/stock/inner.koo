@@ -1,0 +1,20 @@
+// A second file of the package `stock`: it shares the names of the first, and has
+// imports of its own.
+
+import ../prices as cost
+
+limit := 450
+step := 1
+
+fn bounded(n: int) -> int {
+    if n > limit { return limit }
+    return n
+}
+
+fn helper_index() -> int {
+    return 0
+}
+
+fn worth(item: Item) -> string {
+    return " @{cost.price(item.name)}"
+}

@@ -1,0 +1,125 @@
+// What the package offers is `pub`; the rest is its own (Section 4.6).
+
+import ./util
+
+pub most := 500
+
+pub enum State { Fresh, Worn }
+
+pub type Item = { name: string, count: int, state: State = State.Fresh, _tag: string = "" }
+
+// A variant with the name of a type of the package: `Event.Item` is the variant.
+pub enum Event {
+    Item { what: string }
+    Emptied
+}
+
+@closed
+pub enum Final { Yes, No }
+
+pub error Short { wanted: int, had: int }
+
+pub type Shelf = { name: string, items: [Item] }
+
+pub type Box<T> = { inside: T }
+
+pub interface Named {
+    fn title() -> string
+}
+
+pub actor Count {
+    var sum: int = 0
+    var steps: int = 0
+
+    pub fn add(n: int) {
+        sum += bounded(n)
+        steps += step
+    }
+
+    pub fn total() -> string {
+        return "{sum} after {steps} steps of {step}"
+    }
+}
+
+pub fn Shelf.new(name: string) -> Shelf {
+    return Shelf { name, items: [] }
+}
+
+pub fn (self: var Shelf) add(item: Item, tag: string = "plain") {
+    self.items.push(Item { name: item.name, count: bounded(item.count), _tag: tag })
+}
+
+pub fn (self: Shelf) summary() -> string {
+    names := self.items.map((item) -> label(item.count) + " " + item.name + worth(item))
+    return "{self.name}: {names.join(", ")}"
+}
+
+pub fn (self: var Shelf) take(name: string, count: int) -> int ! Short {
+    for i in 0..self.items.len {
+        if self.items[i].name == name {
+            if self.items[i].count < count {
+                fail Short { wanted: count, had: self.items[i].count }
+            }
+            self.items[i].count -= count
+            return self.items[i].count
+        }
+    }
+    fail Short { wanted: count, had: 0 }
+}
+
+pub fn (self: Item) title() -> string {
+    return "item {self.name} [{self._tag}]"
+}
+
+pub fn (self: Box<T>) open() -> T {
+    return self.inside
+}
+
+pub fn Box<T>.of(inside: T) -> Box<T> {
+    return Box<T> { inside }
+}
+
+pub fn label(n: int) -> string {
+    return "{n}x"
+}
+
+pub fn first<T>(list: [T]) -> T {
+    return list[helper_index()]
+}
+
+pub fn describe(thing: Named) -> string {
+    return thing.title()
+}
+
+pub fn which() -> string {
+    return util.name()
+}
+
+// What is not `pub` is still the package's to use, and the language's: a key of a map
+// is hashed by a method the package keeps, and a variant named as a type of the package
+// is, written alone where an `Event` is expected, the variant.
+type Key = { n: int }
+
+fn (self: Key) hash() -> int {
+    return self.n
+}
+
+pub fn kept_by_key() -> string {
+    var seen: [Key: string] = [:]
+    seen[Key { n: 2 }] = "two"
+    event: Event = Item { what: "kept" }
+    match event {
+        Item { what } => return "{seen[Key { n: 2 }] else "none"} {what}"
+        Emptied => return "emptied"
+    }
+}
+
+@closed
+pub enum Maybe<T> {
+    Just { value: T }
+    Nothing
+}
+
+pub fn just(n: int) -> Maybe<int> {
+    return Maybe<int>.Just { value: n }
+}

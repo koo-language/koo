@@ -218,8 +218,11 @@ impl<'a> Checker<'a> {
                     return Pattern::Wildcard;
                 };
                 let defs = self.program.errors[id].fields.clone();
+                // What a package keeps of its error is not had by a pattern either.
+                let kept = self.kept_field(&Ty::Error(id));
+                let hidden: Vec<bool> = defs.iter().map(|def| kept && def.name.starts_with('_')).collect();
                 let fields = match fields {
-                    Some(fields) => self.field_patterns(fields, *rest, &defs, name, &[]),
+                    Some(fields) => self.field_patterns(fields, *rest, &defs, name, &hidden),
                     None => Vec::new(),
                 };
                 Pattern::Err {
@@ -403,7 +406,7 @@ impl<'a> Checker<'a> {
                         let Some(variant) = self.program.enums[*id]
                             .variants
                             .iter()
-                            .position(|v| v.name == name.name)
+                            .position(|v| v.name == super::bare(&name.name))
                         else {
                             let expected = self.program.enums[*id].name.clone();
                             let known = self.program.enums[*id]
@@ -417,8 +420,10 @@ impl<'a> Checker<'a> {
                         };
                         let defs = self.program.enums[*id].variants[variant].fields.clone();
                         // A bare `Name` matches the variant whatever its fields.
+                        let kept = self.kept_field(ty);
+                        let hidden: Vec<bool> = defs.iter().map(|def| kept && def.name.starts_with('_')).collect();
                         let fields = match fields {
-                            Some(fields) => self.field_patterns(fields, *rest, &defs, name, &[]),
+                            Some(fields) => self.field_patterns(fields, *rest, &defs, name, &hidden),
                             None => Vec::new(),
                         };
                         Pattern::Variant { variant, fields }
@@ -443,7 +448,7 @@ impl<'a> Checker<'a> {
                         // What a type of the library keeps hidden, and what a handle of
                         // an actor is made of, a pattern reaches no more than `x.field`.
                         let handle = self.handles.contains(id);
-                        let library = *id < self.prelude_types.0;
+                        let library = *id < self.prelude_types.0 || self.kept_field(&Ty::Struct(*id));
                         let hidden: Vec<bool> = defs
                             .iter()
                             .map(|def| !self.body_in_prelude && (handle || (library && def.name.starts_with('_'))))
@@ -510,6 +515,36 @@ impl<'a> Checker<'a> {
         // Said once, though it is missing in more ways than one.
         let mut said = HashSet::new();
         let missing: Vec<String> = missing.into_iter().filter(|case| said.insert(case.clone())).collect();
+        // An enum of another package may be given a variant in a later version: a match
+        // on it has an arm for that, unless the package has promised that none will
+        // come (Section 4.7).
+        if missing.is_empty()
+            && !self.body_in_prelude
+            && let Ty::Enum(id) = ty
+            && let Some(package) = self.package_of_type(ty)
+            && package != self.package_here()
+            && !self
+                .packages
+                .closed
+                .contains(self.program.enums[*id].name.split('<').next().unwrap_or_default())
+            && !arms.iter().any(|arm| {
+                arm.guard.is_none()
+                    && arm
+                        .patterns
+                        .iter()
+                        .any(|p| matches!(p, Pattern::Wildcard | Pattern::Bind(_)))
+            })
+        {
+            let found = self.ty_name(ty);
+            self.error(
+                span,
+                format!("this `match` on `{found}` has no arm for a variant it may be given later"),
+            );
+            self.note(
+                "an enum of another package is open: a `match` on it ends with a catch-all arm, so that a new variant breaks no program (Section 4.7)",
+            );
+            self.help("add a last arm `_ => ...`; a package promises that an enum is final with `@closed`");
+        }
         if !missing.is_empty() {
             let found = self.ty_name(ty);
             self.error(span, format!("this `match` does not cover {}", missing.join(", ")));

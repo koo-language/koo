@@ -525,6 +525,51 @@ on the y axis at 7
 somewhere else
 ```
 
+The types of a package that a program imports (Section 4.4) are offered as its functions are: a structure, an enumeration, an error or an interface that is declared `pub` is written by those who import the package with the package's name before its own, `shapes.Circle`, and so is a variant, `shapes.Kind.Round`. Two things about a `pub` type remain the package's own. The first is whatever of it is not offered: a method is declared `pub` like any function, and a field whose name begins with an underscore is one that only the package reads and sets, so that the package may keep a value consistent that others are free to hold and pass around. The second is the future of an enumeration. A package may add a variant later, and a program that matched every variant there was would then stop compiling, for a change that broke nothing else; so a `match` on another package's enumeration ends with an arm `_`, unless the package has promised with `@closed` that the variants are final.
+
+```koo
+import ./shapes
+
+fn main() {
+    circle := shapes.Circle.of(2.0)
+    print("{circle.radius} {circle.area():.2} {circle}")
+    for kind in [shapes.Kind.Round, shapes.Kind.Square] {
+        match kind {
+            shapes.Kind.Round => print("round")
+            _ => print("not round")
+        }
+    }
+    match shapes.Side.Left {
+        shapes.Side.Left => print("left")
+        shapes.Side.Right => print("right")
+    }
+}
+```
+
+```file shapes/shapes.koo
+pub enum Kind { Round, Square }
+
+@closed
+pub enum Side { Left, Right }
+
+pub type Circle = { radius: float, _area: float = 0.0 }
+
+pub fn Circle.of(radius: float) -> Circle {
+    return Circle { radius, _area: 3.14159 * radius * radius }
+}
+
+pub fn (self: Circle) area() -> float {
+    return self._area
+}
+```
+
+```text
+2.0 12.57 shapes.Circle { radius: 2.0 }
+round
+not round
+left
+```
+
 **Exercise 6-3.** The calculator of Section 4.3 examines each word of its input twice: once to see whether it is an operator, and again when it operates. Define an enumeration `Token` with a variant for a number and one for an operator, write a function that turns a word into a `Token?`, and rewrite the calculator to use it.
 
 ## 6.7 Names for Types

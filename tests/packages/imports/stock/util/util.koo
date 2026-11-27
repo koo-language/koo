@@ -1,0 +1,3 @@
+pub fn name() -> string {
+    return "stock's util"
+}

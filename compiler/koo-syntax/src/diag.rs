@@ -209,6 +209,22 @@ pub struct SourceFile {
     /// the package, so that a span says which file it is in.
     pub base: u32,
     index: LineIndex,
+    /// Which package of the program the file is of: empty for the program's own, and
+    /// for a package it imports from a directory (Section 8.2) the name that sets the
+    /// package's names apart from every other's.
+    pub package: String,
+    /// The packages the file imports from directories: each path as the file writes
+    /// it, and the name of the package found there.
+    pub imports: Vec<(String, String)>,
+}
+
+/// A source file as it is given to a `SourceMap`: its path, its text, the package it is
+/// of, and the packages it imports from directories.
+pub struct Sourced {
+    pub name: String,
+    pub src: String,
+    pub package: String,
+    pub imports: Vec<(String, String)>,
 }
 
 /// The source files of a program: one file, or every file of a package (Section 8.1).
@@ -220,16 +236,39 @@ pub struct SourceMap {
 impl SourceMap {
     /// `files` are pairs of a path and the text of the file. There is at least one.
     pub fn new(files: Vec<(String, String)>) -> SourceMap {
+        SourceMap::of(
+            files
+                .into_iter()
+                .map(|(name, src)| Sourced {
+                    name,
+                    src,
+                    package: String::new(),
+                    imports: Vec::new(),
+                })
+                .collect(),
+        )
+    }
+
+    /// The files of a program that may be of several packages.
+    pub fn of(files: Vec<Sourced>) -> SourceMap {
         assert!(!files.is_empty(), "a program has a source file");
         let mut base = 0u32;
         let mut out = Vec::new();
-        for (name, src) in files {
+        for Sourced {
+            name,
+            src,
+            package,
+            imports,
+        } in files
+        {
             let len = src.len() as u32;
             out.push(SourceFile {
                 name,
                 index: LineIndex::new(&src),
                 src,
                 base,
+                package,
+                imports,
             });
             // One byte between files, so that the end of one is not the start of the next.
             base += len + 1;

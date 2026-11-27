@@ -159,7 +159,7 @@ The [specification](../../SPEC.md) describes more than the compiler builds. For 
 
 *Concurrency.* Of the concurrency that the specification describes, actors are built, as Chapter 9 describes them, with the limits listed in Section 9.11. Tasks, `spawn`, `scope`, channels and `select` are not.
 
-*Packages.* A program is one package. One package of your own cannot yet import another, and there is no package manager. The standard packages are `std/io`, `std/os`, `std/time`, `std/http`, `std/sql`, `std/sql/postgres`, `std/hash`, `std/encoding`, `std/crypto`, `std/random`, `std/log`, `std/net` and `std/test`.
+*Packages.* A program is its own package and the packages it imports from directories (Section 4.4). There is no package manager yet, and no registry: a package that another wrote is had by having its directory. The standard packages are `std/io`, `std/os`, `std/time`, `std/http`, `std/sql`, `std/sql/postgres`, `std/hash`, `std/encoding`, `std/crypto`, `std/random`, `std/log`, `std/net` and `std/test`.
 
 *The library.* A program connects to others over TCP (Section 10.9), and cannot yet listen for connections of its own, except as a server of HTTP; nor are there datagrams. There is no digest but SHA-256; no encryption except of those clients' connections; and no way to read a file except whole. Section 11.8 lists what `std/sql` leaves out.
 

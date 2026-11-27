@@ -353,6 +353,81 @@ koo build calc      # leave an executable named calc, in the directory calc
 koo test calc       # run its tests (Appendix C)
 ```
 
+A larger program is more than one package. A directory is a package wherever it is, and a file takes in another package of the program's own by importing it, with the path to its directory from the file itself:
+
+    weather/
+        main.koo            import ./temperature
+        temperature/
+            convert.koo
+
+The path begins with `./` or `../`, which is how such an import is told from one of a standard package. As with those, the import gives the file a name for the package, the last part of the path, and what the package has is written after that name and a dot.
+
+```koo
+import ./temperature
+
+fn main() {
+    for celsius in [-40, 0, 100] {
+        print("{celsius} C is {temperature.fahrenheit(celsius)} F")
+    }
+    print("water freezes at {temperature.freezing} F")
+}
+```
+
+```file temperature/convert.koo
+pub freezing := 32
+
+pub fn fahrenheit(celsius: int) -> int {
+    return scaled(celsius) + freezing
+}
+
+fn scaled(celsius: int) -> int {
+    return celsius * 9 / 5
+}
+```
+
+```text
+-40 C is -40 F
+0 C is 32 F
+100 C is 212 F
+water freezes at 32 F
+```
+
+A package decides what it offers. A declaration that begins with `pub` can be used by those who import the package; one that does not is the package's own, to be changed or removed without a thought for anyone outside. `scaled` is such a function, and a program that reaches for it is told so.
+
+```koo
+import ./temperature
+
+fn main() {
+    print(temperature.scaled(100))
+}
+```
+
+```file temperature/convert.koo
+pub fn fahrenheit(celsius: int) -> int {
+    return scaled(celsius) + 32
+}
+
+fn scaled(celsius: int) -> int {
+    return celsius * 9 / 5
+}
+```
+
+```error
+error: `temperature.scaled` is not offered by its package
+ --> main.koo:4:23
+  |
+4 |     print(temperature.scaled(100))
+  |                       ^^^^^^
+  |
+  = help: what a package offers to those who import it is declared `pub` (Section 4.6)
+
+1 error
+```
+
+Inside the package nothing changes: its files share their names as before, `pub` or not, and write them without the package's name. The traffic is one way. A package does not see the names of the program that imports it, so that two packages may each have a function `scaled`, and so may the program, and each means its own. Nor may two packages import each other, directly or by way of a third: what a package depends on does not depend on it.
+
+A few points complete the account. Where the last part of the path is not a name, as in `./my-tools`, or is the name of another import of the same file, the import says what name it gives: `import ./my-tools as tools`. A package that several files import, by whatever paths, is one package, read once. And `koo test` runs the tests of the package it is given, not those of the packages that package imports.
+
 ## 4.5 Scope Rules
 
 The scope of a name is the part of the program within which the name can be used.

@@ -982,8 +982,10 @@ impl<'a> Deriver<'a> {
         {
             String::new()
         } else {
+            // (By the name a program writes: an actor of a package is `orders.Counter`.)
+            let shown = crate::check::printed_name(name);
             format!(
-                "fn (self: {name}) to_string() -> string {{\n    return \"{name}#{{self.id.bit_and(4294967295)}}\"\n}}\n\n"
+                "fn (self: {name}) to_string() -> string {{\n    return \"{shown}#{{self.id.bit_and(4294967295)}}\"\n}}\n\n"
             )
         };
         let elsewhere = match unsendable {
@@ -1298,6 +1300,11 @@ pub fn derive(package: &File, json: bool, rows: bool, envs: bool) -> Derived {
                 };
                 match policy {
                     Some(policy) => rename = policy,
+                    // `@closed` on an enum: those who import it match it in full
+                    // (Section 4.7), which the checker sees to.
+                    None if attribute.name.name == "closed"
+                        && attribute.args.is_empty()
+                        && matches!(item.kind, ItemKind::Enum(_)) => {}
                     None if attribute.name.name == "json" => deriver.problems.push((
                         attribute.span,
                         "`@json` on a type says how its fields are named in JSON".to_string(),

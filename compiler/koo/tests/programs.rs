@@ -680,6 +680,119 @@ fn test_files_report_as_expected() {
     }
 }
 
+/// A package is found by its path from the file that imports it (Section 8.2), which
+/// is the same package by whatever path it is reached; a program of one file has
+/// packages as one of a directory has; and packages that import one another are
+/// refused, with the import that closes the circle.
+#[test]
+fn packages_are_found_by_their_paths() {
+    let dir = std::env::temp_dir().join(format!("koo-paths-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    for inside in ["app/tools", "shared/count", "app/my-lib", "ring/a", "ring/b"] {
+        std::fs::create_dir_all(dir.join(inside)).unwrap();
+    }
+    let write = |name: &str, text: &str| std::fs::write(dir.join(name), text).unwrap();
+    // One actor of `count`, started by the package itself: were the package read once
+    // for each path to it, there would be two kinds of handle, and `tools.bump` would
+    // not take the one that `main` made.
+    write(
+        "shared/count/count.koo",
+        "pub actor Counter {\n    var n: int = 0\n\n    pub fn add(by: int) -> int {\n        n += by\n        return n\n    }\n}\n\npub fn begin() -> Counter {\n    return Counter.start()\n}\n",
+    );
+    write(
+        "app/tools/tools.koo",
+        "import ../../shared/count\n\npub fn bump(counter: count.Counter) -> int {\n    return counter.add(10)\n}\n",
+    );
+    write(
+        "app/my-lib/lib.koo",
+        "pub fn name() -> string {\n    return \"my-lib\"\n}\n",
+    );
+    write(
+        "app/main.koo",
+        "import ./tools\nimport ../shared/count as c\nimport ./my-lib as lib\n\nfn main() {\n    counter := c.begin()\n    print(counter.add(1))\n    print(tools.bump(counter))\n    print(lib.name())\n}\n",
+    );
+    let koo = |args: &[&str], at: &Path| {
+        let output = Command::new(env!("CARGO_BIN_EXE_koo"))
+            .args(args)
+            .current_dir(at)
+            .output()
+            .expect("koo runs");
+        (
+            output.status.code(),
+            String::from_utf8_lossy(&output.stdout).to_string(),
+            String::from_utf8_lossy(&output.stderr).to_string(),
+        )
+    };
+    // As a directory, as one file, and from another directory than the program's.
+    for (args, at) in [
+        (vec!["run", "app"], dir.clone()),
+        (vec!["run", "app/main.koo"], dir.clone()),
+        (vec!["run", "main.koo"], dir.join("app")),
+        (vec!["run", "../main.koo"], dir.join("app/tools")),
+    ] {
+        let (status, said, errors) = koo(&args, &at);
+        assert!(
+            status == Some(0) && said == "1\n11\nmy-lib\n",
+            "{args:?} in {}: status {status:?}\n{said}{errors}",
+            at.display()
+        );
+    }
+    // Without `as`, a directory whose name is no name is refused where it is imported.
+    write("app/main.koo", "import ./my-lib\n\nfn main() {\n    print(1)\n}\n");
+    let (status, _, errors) = koo(&["check", "app"], &dir);
+    assert!(
+        status != Some(0) && errors.contains("`my-lib` cannot be used as a name") && errors.contains("main.koo:1:8"),
+        "{errors}"
+    );
+    // A directory whose name has what a name in the compiler may not begin with, or
+    // have twice running, is a package like any other: what it keeps is kept.
+    for inside in ["odd/_vault", "odd/my--lib"] {
+        std::fs::create_dir_all(dir.join(inside)).unwrap();
+    }
+    write(
+        "odd/_vault/v.koo",
+        "pub type Safe = { name: string, _pin: string = \"0000\" }\n",
+    );
+    write(
+        "odd/my--lib/v.koo",
+        "pub type Safe = { name: string, _pin: string = \"1111\" }\n",
+    );
+    write(
+        "odd/main.koo",
+        "import ./_vault as vault\nimport ./my--lib as lib\n\nfn main() {\n    print(vault.Safe { name: \"a\" })\n    print(lib.Safe { name: \"b\" }._pin)\n}\n",
+    );
+    let (status, _, errors) = koo(&["check", "odd"], &dir);
+    assert!(
+        status != Some(0) && errors.contains("`lib.Safe` has no field `_pin`") && errors.contains("1 error"),
+        "{errors}"
+    );
+    // A circle of two, and a package that imports the program it is part of.
+    write("ring/main.koo", "import ./a\n\nfn main() {\n    print(a.one())\n}\n");
+    write(
+        "ring/a/a.koo",
+        "import ../b\n\npub fn one() -> int {\n    return b.two()\n}\n",
+    );
+    write(
+        "ring/b/b.koo",
+        "import ../a\n\npub fn two() -> int {\n    return a.one()\n}\n",
+    );
+    let (status, _, errors) = koo(&["check", "ring"], &dir);
+    assert!(
+        status != Some(0) && errors.contains("ring/b/b.koo: `import ../a` imports a package that imports this one"),
+        "{errors}"
+    );
+    write(
+        "ring/b/b.koo",
+        "import ../../ring\n\npub fn two() -> int {\n    return 2\n}\n",
+    );
+    let (status, _, errors) = koo(&["check", "ring"], &dir);
+    assert!(
+        status != Some(0) && errors.contains("`import ../../ring` imports a package that imports this one"),
+        "{errors}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 /// A directory in `tests/packages` is a package (Section 8.1): its files are one program.
 /// What is expected of it is written in its `main.koo`, as for the other tests: either
 /// its output, or the errors it is rejected with.
@@ -1979,10 +2092,8 @@ fn a_server_talks_over_tcp() {
 fn a_redis_is_greeted() {
     use std::io::{BufRead, Write};
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
-    let dir = std::env::temp_dir().join(format!("koo-greeting-{}", std::process::id()));
-    std::fs::create_dir_all(&dir).unwrap();
-    std::fs::copy(root.join("packages/redis/redis.koo"), dir.join("redis.koo")).unwrap();
-    std::fs::copy(root.join("tests/redis/greeting/main.koo"), dir.join("main.koo")).unwrap();
+    // The program imports the client, which is a package (`import ../../../packages/redis`).
+    let dir = root.join("tests/redis/greeting");
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let port = listener.local_addr().unwrap().port();
     let told = std::sync::Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
@@ -2036,7 +2147,6 @@ fn a_redis_is_greeted() {
         *told.lock().unwrap(),
         ["1: AUTH koo p@ss:w/+x", "1: SELECT 2", "1: PING", "1: GET k"]
     );
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 /// The Redis client of `packages/redis`, which is written in Koo on `std/net`, against a
@@ -2052,18 +2162,9 @@ fn a_redis_is_spoken_to() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
     let dir = std::env::temp_dir().join(format!("koo-redis-{}", std::process::id()));
     let run = format!("{}", std::process::id());
-    // A program that uses the client has it in its own directory, which is its package.
-    let package = |name: &str| {
-        let at = dir.join(name);
-        std::fs::create_dir_all(&at).unwrap();
-        std::fs::copy(root.join("packages/redis/redis.koo"), at.join("redis.koo")).unwrap();
-        std::fs::copy(
-            root.join("tests/redis").join(name).join("main.koo"),
-            at.join("main.koo"),
-        )
-        .unwrap();
-        at
-    };
+    std::fs::create_dir_all(&dir).unwrap();
+    // A program that uses the client imports it: the client is a package.
+    let package = |name: &str| root.join("tests/redis").join(name);
     let output = Command::new(env!("CARGO_BIN_EXE_koo"))
         .arg("run")
         .arg(package("plain"))

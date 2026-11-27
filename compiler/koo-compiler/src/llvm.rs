@@ -1096,9 +1096,10 @@ pub(super) fn library_name(name: &str) -> Option<String> {
         None => Some(name.to_string()),
         // A type of a standard package has the package in its name: `Http__Reply.json`
         // is `http.Reply.json`.
-        Some((package, function)) if package.len() > 1 && !function.contains("__") => {
-            Some(format!("{}.{function}", package.to_ascii_lowercase()))
-        }
+        Some((package, function)) if package.len() > 1 && !function.contains("__") => Some(format!(
+            "{}.{function}",
+            crate::check::package_shown(&package.to_ascii_lowercase())
+        )),
         Some(_) => None,
     }
 }

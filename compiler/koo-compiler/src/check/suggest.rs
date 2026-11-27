@@ -69,7 +69,19 @@ impl<'a> Checker<'a> {
     }
 
     pub(super) fn function_names(&self) -> Vec<String> {
-        let mut names: Vec<String> = self.free_fns.keys().chain(self.generic_fns.keys()).cloned().collect();
+        // In a package, its own functions by the names it writes them with, and none
+        // of the program that imports it.
+        let own = format!("{}__", self.package_here());
+        let mut names: Vec<String> = self
+            .free_fns
+            .keys()
+            .chain(self.generic_fns.keys())
+            .filter(|name| !self.not_this_packages(name))
+            .map(|name| match name.strip_prefix(&own) {
+                Some(plain) if own.len() > 2 => plain.to_string(),
+                _ => name.clone(),
+            })
+            .collect();
         names.push("print".to_string());
         names.push("panic".to_string());
         names
@@ -81,6 +93,7 @@ impl<'a> Checker<'a> {
         self.free_fns
             .keys()
             .chain(self.generic_fns.keys())
+            .filter(|name| !self.kept_to_its_package(name, package))
             .filter_map(|name| name.strip_prefix(&prefix))
             .map(str::to_string)
             .collect()

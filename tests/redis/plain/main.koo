@@ -1,9 +1,11 @@
-// The Redis client of `packages/redis`, against a real server whose address is in
-// `REDIS_URL` (`a_redis_is_spoken_to` in the tests copies the client beside this file).
+// The Redis client of `packages/redis`, which is a package this program imports,
+// against a real server whose address is in `REDIS_URL` (`a_redis_is_spoken_to` in the
+// tests).
 import std/os
+import ../../../packages/redis
 
-fn main() ! RedisError {
-    cache := redis_connect(os.env("REDIS_URL") else "redis://localhost:6379")?
+fn main() ! redis.Error {
+    cache := redis.connect(os.env("REDIS_URL") else "redis://localhost:6379")?
     key := "koo-test-{os.env("KOO_TEST_RUN") else "0"}"
     cache.del([key, "{key}-n", "{key}-list"])?
     print("{cache.get(key)?}")
@@ -21,7 +23,7 @@ fn main() ! RedisError {
     }
     print("{cache.command(["ECHO", "still in step"])?}")
     // Another database of the same server, which is said on each new connection.
-    other := redis_connect("{os.env("REDIS_URL") else "redis://localhost:6379"}/1", pool: 2)?
+    other := redis.connect("{os.env("REDIS_URL") else "redis://localhost:6379"}/1", pool: 2)?
     other.set("{key}-db", "in the other")?
     print("{cache.get("{key}-db")?} | {other.get("{key}-db")?} | {other.get("{key}-db")?} | {other.del(["{key}-db"])?}")
     // A command that changes what a connection means is not sent on whichever is free.
@@ -44,7 +46,7 @@ fn main() ! RedisError {
     print("{cache.get("{key}-a")?} {cache.get("{key}-b")?} {cache.del(["{key}-a", "{key}-b"])?}")
     // A time to keep a value for that is under a millisecond is a millisecond, not for ever.
     cache.set("{key}-brief", "x", ttl: 500us)?
-    print("{cache.command(["PTTL", "{key}-brief"])? != RedisReply.Number { value: -1 }}")
+    print("{cache.command(["PTTL", "{key}-brief"])? != redis.Reply.Number { value: -1 }}")
     // What the client is shown as has no password in it.
     print("{cache}".replace(os.env("REDIS_URL") else "", "").contains("Redis "))
     print("{cache.del([key, "{key}-n", "{key}-list"])?}")

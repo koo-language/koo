@@ -28,6 +28,131 @@ mod time;
 ///
 /// `extra` is somewhere to keep the functions the checker writes for itself (see `fuse`),
 /// which must live as long as the two files do.
+/// The packages of a program: which each file is of, what each file imports from
+/// directories (the path as it is written, and the package found there), and the
+/// names that the packages do not offer to those who import them. A package has a name
+/// that no other has, and the name the program's own files are of is the empty one.
+#[derive(Debug, Default)]
+pub struct Packages {
+    pub of: Vec<String>,
+    pub imports: Vec<Vec<(String, String)>>,
+    pub private: std::collections::HashSet<String>,
+    /// The enums of packages that are `@closed`: matched in full by those who import
+    /// them, where any other must be matched with an arm for what it may yet be given.
+    pub closed: std::collections::HashSet<String>,
+    /// For each file, the names of the imports it names a type through: such an
+    /// import is used, though the type's name was read before the checker saw it.
+    pub used: Vec<Vec<String>>,
+}
+
+/// The name a type of a package has in the program: `Order` of `orders` is
+/// `Orders__Order`, as `Request` of `http` is `Http__Request`.
+pub fn type_in_package(package: &str, name: &str) -> String {
+    let mut letters = package.chars();
+    match letters.next() {
+        Some(first) => format!("{}{}__{name}", first.to_ascii_uppercase(), letters.as_str()),
+        None => name.to_string(),
+    }
+}
+
+/// The name of a package as a program writes it, from the name it has in the compiler,
+/// which begins with what no package of the library has: `pkg_orders`, and `pkg2_orders`
+/// for a second directory of that name, are both `orders`.
+/// The package that a type of a program's package is of, by the type's name in the
+/// program: `pkg_orders` for `Pkg_orders__Order`, and for `Pkg_orders__Box<int>`. The
+/// name of a package has no `__` in it, so the first is where the type's name begins.
+pub fn package_of_name(name: &str) -> Option<String> {
+    let name = name.split('<').next().unwrap_or(name);
+    let (package, _) = name.strip_prefix("Pkg")?.split_once("__")?;
+    Some(format!("pkg{package}"))
+}
+
+/// Text in which the names that the things of a program's packages have inside the
+/// compiler are written as a program writes them: `Pkg_orders__Order` is `orders.Order`
+/// and `pkg_orders__place` is `orders.place`, where `written` says what stands for the
+/// package, with its dot, or nothing for a package's own names in its own files.
+pub fn rewrite_names(text: &str, written: &dyn Fn(&str) -> String) -> String {
+    if !text.contains("kg") {
+        return text.to_string();
+    }
+    let word = |c: char| c.is_ascii_alphanumeric() || c == '_';
+    let mut out = String::with_capacity(text.len());
+    let mut rest = text;
+    while !rest.is_empty() {
+        let end = rest.find(|c: char| !word(c)).unwrap_or(rest.len());
+        if end == 0 {
+            let next = rest.chars().next().unwrap().len_utf8();
+            out.push_str(&rest[..next]);
+            rest = &rest[next..];
+            continue;
+        }
+        let name = &rest[..end];
+        let inside = name
+            .strip_prefix("Pkg")
+            .or_else(|| name.strip_prefix("pkg"))
+            .filter(|after| after.trim_start_matches(|c: char| c.is_ascii_digit()).starts_with('_'))
+            .and_then(|after| after.split_once("__"));
+        match inside {
+            Some((package, member)) if !member.is_empty() => {
+                out.push_str(&written(&format!("pkg{package}")));
+                out.push_str(member);
+            }
+            _ => out.push_str(name),
+        }
+        rest = &rest[end..];
+    }
+    out
+}
+
+/// The name of a type as a running program prints it: each name in it that has a
+/// package in it, the library's `Http__Response` or a program's `Pkg_orders__Order`,
+/// alone or as an argument of another (`Box<Pkg_orders__Order>`), as it is written.
+pub fn printed_name(name: &str) -> String {
+    let word = |c: char| c.is_ascii_alphanumeric() || c == '_';
+    let mut out = String::with_capacity(name.len());
+    let mut rest = name;
+    while !rest.is_empty() {
+        let end = rest.find(|c: char| !word(c)).unwrap_or(rest.len());
+        if end == 0 {
+            let next = rest.chars().next().unwrap().len_utf8();
+            out.push_str(&rest[..next]);
+            rest = &rest[next..];
+            continue;
+        }
+        let part = &rest[..end];
+        match part.split_once("__") {
+            Some((package, member)) if member.starts_with(char::is_uppercase) => {
+                out.push_str(package_shown(&package.to_ascii_lowercase()));
+                out.push('.');
+                out.push_str(member);
+            }
+            _ => out.push_str(part),
+        }
+        rest = &rest[end..];
+    }
+    out
+}
+
+/// The same, where there is no file to say what its imports are called: a package is
+/// called what its directory is.
+pub fn shown_names(text: &str) -> String {
+    rewrite_names(text, &|package| format!("{}.", package_shown(package)))
+}
+
+/// The name of a variant as it was declared: a name written alone that is also the
+/// name of a type of its package is read as the type's, and is the variant's here.
+pub(crate) fn bare(name: &str) -> &str {
+    name.rsplit_once("__").map_or(name, |(_, last)| last)
+}
+
+pub fn package_shown(package: &str) -> &str {
+    let numbered = package
+        .strip_prefix("pkg")
+        .map(|rest| rest.trim_start_matches(|c: char| c.is_ascii_digit()));
+    numbered.and_then(|rest| rest.strip_prefix('_')).unwrap_or(package)
+}
+
+#[allow(clippy::too_many_arguments)]
 pub fn check<'a>(
     prelude: &'a ast::File,
     file: &'a ast::File,
@@ -35,6 +160,7 @@ pub fn check<'a>(
     problems: Vec<Diagnostic>,
     extra: &'a OnceCell<ast::File>,
     bases: &[u32],
+    packages: Packages,
     test_mode: bool,
 ) -> (Program, Vec<Diagnostic>) {
     let mut checker = Checker::new(extra);
@@ -42,6 +168,20 @@ pub fn check<'a>(
     // What could not be written for the program, such as a message that cannot be sent.
     checker.diags = problems;
     checker.file_bases = bases.to_vec();
+    // The functions and constants of the program's own files: a package the program
+    // imports does not see them, as it would if every plain name were anybody's.
+    for item in &file.items {
+        let name = match &item.kind {
+            ast::ItemKind::Fn(decl) if matches!(decl.sig.target, ast::FnTarget::Free) => &decl.sig.name,
+            ast::ItemKind::Const(decl) => &decl.name,
+            _ => continue,
+        };
+        let of = bases.iter().rposition(|base| *base <= name.span.start).unwrap_or(0);
+        if packages.of.get(of).is_none_or(|package| package.is_empty()) {
+            checker.programs_own.insert(name.name.clone());
+        }
+    }
+    checker.packages = packages;
     checker.in_prelude = true;
     let prelude_bodies = checker.declare_file(prelude);
     checker.prelude_types = (checker.program.structs.len(), checker.program.errors.len());
@@ -269,6 +409,10 @@ pub(crate) struct Checker<'a> {
     modules: HashMap<(usize, String), (Span, bool, String)>,
     /// Where each file of the package begins: a span says which file it is in.
     file_bases: Vec<u32>,
+    /// The packages of the program, and the plain names of the functions and constants
+    /// of its own files.
+    packages: Packages,
+    programs_own: std::collections::HashSet<String>,
     /// The file of the function being checked.
     file: usize,
 }
@@ -336,6 +480,8 @@ impl<'a> Checker<'a> {
             cond_stmts: Vec::new(),
             modules: HashMap::new(),
             file_bases: vec![0],
+            packages: Packages::default(),
+            programs_own: std::collections::HashSet::new(),
             file: 0,
         };
         // The prelude error types this compiler knows (Section 4.1).
@@ -359,6 +505,95 @@ impl<'a> Checker<'a> {
     }
 
     /// The number of the file a span is in.
+    /// The package of the file whose code is being checked, which is the empty name for
+    /// the program's own files, and for the library's.
+    pub(crate) fn package_here(&self) -> &str {
+        if self.body_in_prelude || self.in_prelude {
+            return "";
+        }
+        self.packages.of.get(self.file).map_or("", String::as_str)
+    }
+
+    /// The name by which a function or a constant of the package being checked is known
+    /// in the program, if the package has one of the plain name: inside a package its
+    /// own names are written plain (Section 8.1).
+    pub(crate) fn own_name(&self, name: &str) -> Option<String> {
+        let package = self.package_here();
+        if package.is_empty() {
+            return None;
+        }
+        let full = format!("{package}__{name}");
+        (self.free_fns.contains_key(&full) || self.generic_fns.contains_key(&full) || self.consts.contains_key(&full))
+            .then_some(full)
+    }
+
+    /// Whether a plain name is the program's own, read in a package that the program
+    /// imports: a package sees its own names and those of what it imports, and not
+    /// those of whoever imports it.
+    pub(crate) fn not_this_packages(&self, name: &str) -> bool {
+        !self.package_here().is_empty() && self.programs_own.contains(name)
+    }
+
+    /// The name under which a function or a constant written plainly is looked for:
+    /// in a package, its own of that name before the library's, and never one of the
+    /// program that imports it. A name with `__` in it is not one a program writes,
+    /// and names nothing.
+    pub(crate) fn plain(&self, name: &str) -> String {
+        if self.body_in_prelude || self.in_prelude {
+            return name.to_string();
+        }
+        match self.own_name(name) {
+            Some(full) => full,
+            None if name.contains("__") || self.not_this_packages(name) => format!("\0{name}"),
+            None => name.to_string(),
+        }
+    }
+
+    /// The package a type is of, by its name: none for a type of the program's own
+    /// files, and none for the library's.
+    pub(crate) fn package_of_type(&self, ty: &Ty) -> Option<String> {
+        let name = match ty {
+            Ty::Struct(id) => &self.program.structs[*id].name,
+            Ty::Enum(id) => &self.program.enums[*id].name,
+            Ty::Error(id) => &self.program.errors[*id].name,
+            _ => return None,
+        };
+        package_of_name(name).filter(|package| self.packages.of.contains(package))
+    }
+
+    /// Whether the fields of a type whose names begin with `_` are kept from the code
+    /// being checked: they are those of a package's type, outside the package.
+    pub(crate) fn kept_field(&self, ty: &Ty) -> bool {
+        !self.body_in_prelude
+            && self
+                .package_of_type(ty)
+                .is_some_and(|package| package != self.package_here())
+    }
+
+    /// Says that a method or a type-level function is kept to its package, if it is and
+    /// is asked for from outside it: `owner` is the type's name in the program, with
+    /// whatever type arguments. What the library and the compiler's own writing call
+    /// (`hash` for a map, `to_json` inside another type's) is called for the language,
+    /// and is nobody's reaching in.
+    pub(crate) fn offered(&mut self, owner: &str, name: &ast::Ident) {
+        let owner = owner.split('<').next().unwrap_or(owner);
+        if self.body_in_prelude || !self.packages.private.contains(&format!("{owner}.{}", name.name)) {
+            return;
+        }
+        if package_of_name(owner).is_some_and(|package| package != self.package_here()) {
+            self.error_help(
+                name.span,
+                format!("`{owner}.{}` is not offered by its package", name.name),
+                "what a package offers to those who import it is declared `pub` (Section 4.6)",
+            );
+        }
+    }
+
+    /// Whether a name is one that a package keeps to itself, asked for from outside it.
+    pub(crate) fn kept_to_its_package(&self, full: &str, package: &str) -> bool {
+        self.packages.private.contains(full) && self.package_here() != package
+    }
+
     fn file_of(&self, span: Span) -> usize {
         self.file_bases
             .iter()
@@ -565,7 +800,7 @@ impl<'a> Checker<'a> {
         // no name of a program's may contain: `Http__Request` is `http.Request`.
         match name.split_once("__") {
             Some((package, rest)) if prelude && rest.starts_with(char::is_uppercase) => {
-                format!("{}.{rest}", package.to_ascii_lowercase())
+                format!("{}.{rest}", package_shown(&package.to_ascii_lowercase()))
             }
             _ => name.to_string(),
         }
@@ -580,10 +815,17 @@ impl<'a> Checker<'a> {
         let mut letters = own.chars();
         let first = letters.next()?.to_ascii_uppercase();
         let full = format!("{first}{}__{}", letters.as_str(), name.name);
-        if !self.type_names.contains_key(&full) {
+        if !self.type_names.contains_key(&full) && !self.generic_types.contains_key(&full) {
             return None;
         }
         self.modules.get_mut(&(file, package.name.clone()))?.1 = true;
+        if self.packages.private.contains(&full) && self.packages.of.get(file).is_some_and(|here| *here != own) {
+            self.error_help(
+                name.span,
+                format!("`{}.{}` is not offered by its package", package.name, name.name),
+                "what a package offers to those who import it is declared `pub` (Section 4.6)",
+            );
+        }
         Some(full)
     }
 
@@ -680,6 +922,32 @@ impl<'a> Checker<'a> {
                         self.fix("remove the second import", import.span, "");
                     }
                 }
+                // A package of the program's own, in a directory beside it (Section 8.2):
+                // the command that compiles the program has found it and said what it
+                // is called in the program.
+                ast::ImportKind::Package { path, .. } if path.starts_with("./") || path.starts_with("../") => {
+                    let file = self.file_of(import.span);
+                    let found = self
+                        .packages
+                        .imports
+                        .get(file)
+                        .and_then(|imports| imports.iter().find(|(written, _)| written == path));
+                    match found {
+                        Some((_, package)) => {
+                            let key = (file, import.binding.clone());
+                            let used = self.packages.used.get(file).is_some_and(|used| used.contains(&import.binding));
+                            if self.modules.insert(key, (import.span, used, package.clone())).is_some() {
+                                self.error(import.span, format!("`{}` is imported twice", import.binding));
+                                self.fix("remove the second import", import.span, "");
+                            }
+                        }
+                        None => self.error_help(
+                            import.span,
+                            format!("the package `{path}` was not found"),
+                            "a package of the program's own is a directory of `.koo` files, named by its path from the file that imports it: `import ./orders`",
+                        ),
+                    }
+                }
                 ast::ImportKind::Package { path, .. } if path.starts_with("std/") => {
                     self.error_help(
                         import.span,
@@ -693,6 +961,7 @@ impl<'a> Checker<'a> {
 
         // 1. Every type name, so that declarations may refer to one another in any order.
         for item in &file.items {
+            self.file = self.file_of(item.span);
             let (name, kind) = match &item.kind {
                 ast::ItemKind::Actor(decl) => {
                     self.declare_actor(decl);
@@ -781,6 +1050,7 @@ impl<'a> Checker<'a> {
         loop {
             let waiting = later.len();
             for item in &file.items {
+                self.file = self.file_of(item.span);
                 if let ast::ItemKind::Type(decl) = &item.kind
                     && let ast::TypeBody::Alias(aliased) = &decl.body
                     && decl.type_params.is_empty()
@@ -799,6 +1069,7 @@ impl<'a> Checker<'a> {
             }
         }
         for item in &file.items {
+            self.file = self.file_of(item.span);
             match &item.kind {
                 ast::ItemKind::Type(decl)
                     if !decl.type_params.is_empty()
@@ -833,6 +1104,7 @@ impl<'a> Checker<'a> {
 
         // 3. Fields.
         for item in &file.items {
+            self.file = self.file_of(item.span);
             match &item.kind {
                 ast::ItemKind::Type(decl) if decl.type_params.is_empty() => {
                     let (ast::TypeBody::Struct(fields), Some(TypeName::Struct(id))) =
@@ -873,12 +1145,14 @@ impl<'a> Checker<'a> {
 
         // 4. Constants and function signatures.
         for item in &file.items {
+            self.file = self.file_of(item.span);
             if let ast::ItemKind::Const(decl) = &item.kind {
                 self.constant(decl);
             }
         }
         let mut bodies: Vec<(FnId, &ast::FnDecl)> = Vec::new();
         for item in &file.items {
+            self.file = self.file_of(item.span);
             if let ast::ItemKind::Fn(decl) = &item.kind {
                 if !item.attrs.is_empty() {
                     self.unsupported(item.attrs[0].span, "attributes on functions are");
@@ -1190,7 +1464,14 @@ impl<'a> Checker<'a> {
                             in_package.as_str()
                         }
                         None => {
-                            self.unsupported(ty.span, "types from other packages are");
+                            let file = self.file_of(ty.span);
+                            match path.as_slice() {
+                                [package, name] if self.modules.contains_key(&(file, package.name.clone())) => {
+                                    let message = format!("the package `{}` has no type `{}`", package.name, name.name);
+                                    self.error(name.span, message);
+                                }
+                                _ => self.unsupported(ty.span, "types from other packages are"),
+                            }
                             return Ty::Unknown;
                         }
                     }
@@ -1668,7 +1949,16 @@ impl<'a> Checker<'a> {
                 self.error(sig.name.span, format!("`{name}` is built in and cannot be declared"));
                 return None;
             }
-            if name.contains("__") && !self.in_prelude {
+            let own = format!("{}__", self.package_here());
+            let plain = match name.strip_prefix(&own) {
+                Some(plain) if own.len() > 2 => plain,
+                _ => name.as_str(),
+            };
+            if plain != name.as_str() && matches!(plain, "print" | "panic" | "all" | "race") {
+                self.error(sig.name.span, format!("`{plain}` is built in and cannot be declared"));
+                return None;
+            }
+            if plain.contains("__") && !self.in_prelude {
                 self.error(
                     sig.name.span,
                     "a name with `__` in it is reserved for the standard library",
@@ -2111,8 +2401,8 @@ impl<'a> Checker<'a> {
                 value,
             } if self.lambda.is_none()
                 && self.lookup(&name.name).is_none()
-                && !self.consts.contains_key(&name.name)
-                && !self.free_fns.contains_key(&name.name)
+                && !self.consts.contains_key(&self.plain(&name.name))
+                && !self.free_fns.contains_key(&self.plain(&name.name))
                 && suggest::name_habit(&name.name).is_none()
                 && !suggest::has_near(&name.name, &self.names_in_scope()) =>
             {

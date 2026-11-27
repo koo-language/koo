@@ -1,0 +1,11 @@
+import ./util
+
+pub fn price(name: string) -> int {
+    return name.len * base
+}
+
+pub fn which() -> string {
+    return util.name()
+}
+
+base := 10

@@ -1,6 +1,7 @@
 import std/os
 import std/io
 import ./orders
+import pkg.koo.io/acme/stripe v2
 
 fn fine__name() {}
 
@@ -12,6 +13,7 @@ fn main() {
     k: [float: int] = [:]
     x := __str_trim(" a ")
 }
+//! error the package `./orders` was not found
 //! error imports of other packages are not supported by this compiler yet
 //! error a name with `__` in it is reserved for the standard library
 //! error the package `os` has no function `nothing`

@@ -1,0 +1,64 @@
+limit := 5
+
+pub type Item = { name: string, _tag: string = "" }
+
+pub enum Mode { On, Off }
+
+fn bounded(n: int) -> int {
+    return n
+}
+
+pub fn label(n: int) -> string {
+    return "{n}"
+}
+
+fn (self: Item) secret() -> string {
+    return self._tag
+}
+
+fn Item.make() -> Item {
+    return Item { name: "made" }
+}
+
+pub fn wrong() -> int {
+    return mine()
+}
+
+pub type Box<T> = { inside: T }
+
+fn Box<T>.sealed(inside: T) -> Box<T> {
+    return Box<T> { inside }
+}
+
+fn (self: Box<T>) open() -> T {
+    return self.inside
+}
+
+pub actor Count {
+    var sum: int = 0
+
+    fn reset() {
+        sum = 0
+    }
+
+    pub fn total() -> int {
+        return sum
+    }
+}
+
+pub enum Event {
+    Moved { to: string, _by: string }
+    Gone
+}
+
+pub fn moved() -> Event {
+    return Event.Moved { to: "here", _by: "them" }
+}
+
+pub fn theirs() -> int {
+    return Mine { n: 1 }.n
+}
+
+fn other() -> int {
+    return Item.make()
+}

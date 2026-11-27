@@ -1,0 +1,80 @@
+// What a package does not offer is not to be had from outside it (Section 4.6), and
+// a package does not see the names of the program that imports it.
+
+import ./stock
+import ./unused
+import ./nowhere
+
+fn mine() -> int {
+    return 1
+}
+
+type Mine = { n: int }
+
+fn main() {
+    print(stock.bounded(1))
+    print(stock.limit)
+    item := stock.Item { name: "a", _tag: "t" }
+    print(item._tag)
+    print(item.secret())
+    print(stock.Item.make())
+    print(pkg_stock__label(1))
+    print(stock.nothing(1))
+    match item {
+        stock.Item { name, _tag } => print(name)
+    }
+    match stock.Mode.On {
+        stock.Mode.On => print("on")
+        stock.Mode.Off => print("off")
+    }
+    print(stock.wrong())
+    print(stock.Box<int>.sealed(3).open())
+    count := stock.Count.start()
+    count.reset()
+    print(count.total())
+    match stock.moved() {
+        stock.Event.Moved { to, _by } => print(to)
+        _ => print("gone")
+    }
+    print(stock.theirs())
+}
+//! error the import `unused` is not used
+//! stderr main.koo:5:1
+//! error the package `./nowhere` was not found
+//! stderr main.koo:6:1
+//! error `stock.bounded` is not offered by its package
+//! stderr main.koo:15:17
+//! stderr what a package offers to those who import it is declared `pub`
+//! error `stock.limit` is not offered by its package
+//! stderr main.koo:16:17
+//! error `stock.Item` has no field `_tag`
+//! stderr main.koo:17:37
+//! error `stock.Item` has no field `_tag`
+//! stderr main.koo:18:16
+//! error `stock.Item.secret` is not offered by its package
+//! stderr main.koo:19:16
+//! error `stock.Item.make` is not offered by its package
+//! stderr main.koo:20:22
+//! error unknown function `pkg_stock__label`
+//! stderr main.koo:21:11
+//! error the package `stock` has no function `nothing`
+//! stderr it has `label`, `moved`, `theirs`, `wrong`
+//! error `stock.Item` has no field `_tag`
+//! stderr main.koo:24:28
+//! error this `match` on `stock.Mode` has no arm for a variant it may be given later
+//! stderr main.koo:26:11
+//! stderr add a last arm `_ => ...`; a package promises that an enum is final with `@closed`
+//! error `stock.Box.sealed` is not offered by its package
+//! stderr main.koo:31:26
+//! error `stock.Box.open` is not offered by its package
+//! stderr main.koo:31:36
+//! error `stock.Count.reset` is not offered by its package
+//! stderr main.koo:33:11
+//! error `Moved` has no field `_by`
+//! stderr main.koo:36:33
+//! error unknown function `mine`
+//! stderr stock.koo:24:12
+//! error unknown type `Mine`
+//! stderr stock.koo:59:12
+//! error expected `int`, found `Item`
+//! stderr stock.koo:63:12
