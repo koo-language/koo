@@ -9,3 +9,15 @@ pub fn which() -> string {
 }
 
 base := 10
+
+// A type of the package's own named as the language names a constraint: where a type
+// parameter is constrained, the name is still the language's.
+type Hashable = { n: int }
+
+pub fn distinct<K: Hashable>(keys: [K]) -> int {
+    var seen: Set<K> = Set.new()
+    for key in keys {
+        seen.insert(key)
+    }
+    return seen.len + Hashable { n: 0 }.n
+}

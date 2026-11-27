@@ -58,6 +58,7 @@ fn main() {
     count := stock.Count.start()
     count.add(2)
     count.add(3)
+    stock.poke(count.send)
     print(count.total())
     print(stock.which())
     print(p.which())
@@ -69,6 +70,7 @@ fn main() {
     print(Pair<stock.Item> { both: [shelf.items[0]] })
     print(count)
     print("{stock.tally(["a", "a", "b"])} {Hashable { n: 1 }.n}")
+    print(p.distinct(["a", "b", "a"]))
     match stock.level(9) {
         High => print("high, which is {stock.Lv.High}")
         _ => print("low")
@@ -99,7 +101,7 @@ type Hashable = { n: int }
 //= 4
 //= item nail [small]
 //= yes
-//= 5 after 2 steps of 1
+//= 9 after 3 steps of 1
 //= stock's util
 //= prices' util
 //= two kept
@@ -107,4 +109,5 @@ type Hashable = { n: int }
 //= Pair<stock.Item> { both: [stock.Item { name: "saw", count: 1, state: Fresh }] }
 //= stock.Count#0
 //= 2 1
+//= 2
 //= high, which is High

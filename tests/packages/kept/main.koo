@@ -71,6 +71,16 @@ enum Phase { High }
 fn phase() {
     print(High)
 }
+
+// A name of the program's with `__` in it is said as written, and the rest of the
+// message as the program writes it; and so is one that only looks like a package's.
+fn spelled(it__em: stock.Item) {
+    n: int = it__em
+    odd := Odd { other: 2 }
+    print(odd.other)
+}
+
+type Odd = { pkg_nothing__here: int, other: int }
 //! error the import `unused` is not used
 //! stderr main.koo:5:1
 //! error the package `./nowhere` was not found
@@ -132,3 +142,7 @@ fn phase() {
 //! error `High` is not known here
 //! stderr main.koo:72:11
 //! stderr write `Phase.High`
+//! error expected `int`, found `stock.Item`
+//! stderr main.koo:78:14
+//! error `Odd` is missing the field `pkg_nothing__here`
+//! stderr main.koo:79:12

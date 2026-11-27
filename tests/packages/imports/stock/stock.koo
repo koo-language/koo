@@ -143,3 +143,8 @@ pub fn level(n: int) -> Lv {
 pub fn just(n: int) -> Maybe<int> {
     return Maybe<int>.Just { value: n }
 }
+
+// The type of a handle's `send`, named by the package that has the actor.
+pub fn poke(counter: ActorCountSend) {
+    counter.add(4)
+}
