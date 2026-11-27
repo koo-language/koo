@@ -9,6 +9,8 @@ fn next(n: var int) -> int {
     return n - 1
 }
 
+fn twice(f: fn(Decimal) -> Decimal, x: Decimal) -> Decimal { return f(f(x)) }
+
 fn main() {
     // Equal values are one key, however many digits they have.
     third := 1d.divide(3d, scale: 18)
@@ -46,6 +48,16 @@ fn main() {
     var to := 0
     waits[next(var to)] += 1s
     print("{prices} {at} {waits} {to}")
+    // And so it is when what is added has statements of its own.
+    prices[next(var at)] += Decimal.parse("5") else {
+        print("not a number")
+        return
+    }
+    prices[next(var at)] += twice(d -> {
+        more := d + 1d
+        return more
+    }, 1d)
+    print("{prices} {at}")
 
     // So many digits after the point, whatever the decimal has; and placed as a number.
     print("{0d:.8} {0.00000001d:.8} {0.0000004d:.8} {-0.001d:.2} {2.5d:.0} {3.5d:.0}")
@@ -67,6 +79,7 @@ fn main() {
 //= 1 2
 //= 1 1
 //= [11, 2, 3] 1 [2s, 2s] 1
+//= [11, 7, 6] 3
 //= 0.00000000 0.00000001 0.00000040 0.00 2 4
 //= 1.0000000000000000000000000000000000000000
 //= 1234567890123456789012345678901234.00

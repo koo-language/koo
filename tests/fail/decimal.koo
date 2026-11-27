@@ -22,6 +22,11 @@ fn main() {
 
 type Decimal = { digits: string }
 enum Rounding { Nearest }
+enum Direction { Up, Left }
+
+fn direction() {
+    print(Up)
+}
 //! error `/` is not defined for `Decimal`
 //! stderr a.divide(b, scale: 2)
 //! error `*` is not defined for `Decimal` and `float`
@@ -42,3 +47,5 @@ enum Rounding { Nearest }
 //! stderr write a decimal as `19.99d`
 //! error `Rounding` is already declared
 //! stderr `Rounding` is a type of the language
+//! error `Up` is not known here
+//! stderr write `Direction.Up`

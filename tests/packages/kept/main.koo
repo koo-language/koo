@@ -63,6 +63,14 @@ type Other = stock.Item
 fn (self: Other) shout() -> string {
     return "mine now"
 }
+
+// A variant written bare is suggested from the program's own enum, and never from one
+// that a package keeps to itself (`stock` has a `Level` with a `High`).
+enum Phase { High }
+
+fn phase() {
+    print(High)
+}
 //! error the import `unused` is not used
 //! stderr main.koo:5:1
 //! error the package `./nowhere` was not found
@@ -121,3 +129,6 @@ fn (self: Other) shout() -> string {
 //! stderr stock.koo:63:12
 //! error unknown type `Hashable`
 //! stderr stock.koo:107:12
+//! error `High` is not known here
+//! stderr main.koo:72:11
+//! stderr write `Phase.High`

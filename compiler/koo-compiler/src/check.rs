@@ -2383,11 +2383,14 @@ impl<'a> Checker<'a> {
             });
             return;
         }
+        // (What a statement inside this one hoists is its own: what this one hoisted
+        // is set aside while the other is checked, and comes before this one.)
+        let outer = std::mem::take(&mut self.hoisted);
         if let Some(checked) = self.stmt_one(stmt) {
             out.append(&mut self.hoisted);
             out.push(checked);
         }
-        self.hoisted.clear();
+        self.hoisted = outer;
     }
 
     /// The same place, with every index in it that is more than a variable or a literal

@@ -555,15 +555,45 @@ impl<'a> Checker<'a> {
             }
             None => {
                 // Perhaps a variant of some enum, written where its type is not expected.
-                let owners: Vec<String> = self
-                    .program
-                    .enums
-                    .iter()
-                    .filter(|e| e.variants.iter().any(|v| v.name == super::bare(&name.name)))
-                    .map(|e| e.name.clone())
+                // Perhaps a variant of some enum, written where its type is not expected:
+                // of an enum of this file's own package first, then of one it may name,
+                // and never of one a package keeps to itself.
+                let here = self.package_here().to_string();
+                let mut owners: Vec<(u8, String)> = (0..self.program.enums.len())
+                    .filter(|&id| {
+                        self.program.enums[id]
+                            .variants
+                            .iter()
+                            .any(|v| v.name == super::bare(&name.name))
+                    })
+                    .filter_map(|id| {
+                        let full = &self.program.enums[id].name;
+                        let base = full.split('<').next().unwrap_or(full);
+                        let package = self.package_of_type(&Ty::Enum(id));
+                        if package
+                            .as_ref()
+                            .is_some_and(|package| self.kept_to_its_package(base, package))
+                        {
+                            return None;
+                        }
+                        let library = id < self.prelude_enums;
+                        let own = match &package {
+                            Some(package) => *package == here,
+                            None => here.is_empty() && !library,
+                        };
+                        let rank = if own {
+                            0
+                        } else if library {
+                            2
+                        } else {
+                            1
+                        };
+                        Some((rank, self.ty_name(&Ty::Enum(id))))
+                    })
                     .collect();
-                // (The program's own enums come after the library's, and are the likelier.)
-                match owners.last() {
+                owners.sort_by_key(|(rank, _)| *rank);
+                let owners: Vec<String> = owners.into_iter().map(|(_, owner)| owner).collect();
+                match owners.first() {
                     Some(owner) => self.error_help(
                         span,
                         format!("`{}` is not known here", name.name),
