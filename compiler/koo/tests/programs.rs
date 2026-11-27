@@ -2725,16 +2725,19 @@ fn requests_have_names() {
         .output()
         .expect("koo runs");
     assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
-    for workers in ["1", "3"] {
+    // (With one worker, with three, and with one whose handlers are not left for one
+    // another while they wait, as in a program built for a sanitizer.)
+    for (workers, side_by_side) in [("1", "on"), ("3", "on"), ("1", "off")] {
         let port = std::net::TcpListener::bind("127.0.0.1:0")
             .unwrap()
             .local_addr()
             .unwrap()
             .port();
-        let log = dir.join(format!("log-{workers}.txt"));
+        let log = dir.join(format!("log-{workers}-{side_by_side}.txt"));
         let child = Command::new(&executable)
             .env("PORT", port.to_string())
             .env("WORKERS", workers)
+            .env("KOO_SIDE_BY_SIDE", side_by_side)
             .env("KOO_LOG", "json")
             .stdout(std::process::Stdio::null())
             .stderr(std::fs::File::create(&log).unwrap())
@@ -2783,9 +2786,30 @@ fn requests_have_names() {
         assert_eq!(ask("/nowhere", Some("abc-125")).0, ["abc-125"]);
         ask("/fails", Some("f-1"));
         ask("/panics", Some("p-1"));
+        // What is no request at all is answered without a name, and above all without
+        // the name of the request before it, which was another client's.
+        let refused = http(port, "GARBAGE\r\n\r\n");
+        assert!(
+            refused.starts_with("HTTP/1.1 400 ") && !refused.to_lowercase().contains("x-request-id"),
+            "{refused}"
+        );
+        // A client that leaves a handler which never ends: the server ends the
+        // handler, which is counted as a request abandoned and not as a panic.
+        // (Where handlers are left for one another, that is: where they are not, the
+        // server cannot see its client leave while the handler has the thread.)
+        let left = if side_by_side == "on" { 1.0 } else { 0.0 };
+        if side_by_side == "on" {
+            use std::io::Write;
+            let mut leaver = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
+            leaver.write_all(b"GET /loop HTTP/1.1\r\nHost: test\r\n\r\n").unwrap();
+            std::thread::sleep(std::time::Duration::from_millis(100));
+        }
+        std::thread::sleep(std::time::Duration::from_millis(700));
         // What the server has counted, whichever worker is asked: so far six
         // requests answered 200 (the one that asks is not counted until it is
-        // answered), one 404, two 500, of which one was a panic; and each was timed.
+        // answered), one 404, one that was no request (400) and one whose client
+        // left (counted with the 4xx, as the 499 it is logged as), two 500, of which
+        // one was a panic; and each that was a request was timed.
         let (_, counted) = ask("/metrics", None);
         let count_of = |name: &str| -> Option<f64> {
             counted
@@ -2795,14 +2819,14 @@ fn requests_have_names() {
         let started = if workers == "1" { 0.0 } else { 3.0 };
         for (name, expected) in [
             ("koo_http_requests_total{status=\"2xx\"}", 6.0),
-            ("koo_http_requests_total{status=\"4xx\"}", 1.0),
+            ("koo_http_requests_total{status=\"4xx\"}", 2.0 + left),
             ("koo_http_requests_total{status=\"5xx\"}", 2.0),
-            ("koo_http_requests_abandoned_total", 0.0),
+            ("koo_http_requests_abandoned_total", left),
             ("koo_http_handler_panics_total", 1.0),
             ("koo_http_workers_started_total", started),
-            ("koo_http_request_duration_seconds_count", 9.0),
-            ("koo_http_request_duration_seconds_bucket{le=\"+Inf\"}", 9.0),
-            ("koo_http_request_duration_seconds_bucket{le=\"10.000\"}", 9.0),
+            ("koo_http_request_duration_seconds_count", 9.0 + left),
+            ("koo_http_request_duration_seconds_bucket{le=\"+Inf\"}", 9.0 + left),
+            ("koo_http_request_duration_seconds_bucket{le=\"10.000\"}", 9.0 + left),
         ] {
             assert_eq!(
                 count_of(name),

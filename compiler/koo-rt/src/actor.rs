@@ -666,7 +666,9 @@ unsafe fn run_mail(slot: *mut Slot, me: *mut Thread, most: usize) {
             if wanted {
                 // The program's function owns the letter from here, and lets go of it.
                 let run: extern "C" fn(*mut Job) = core::mem::transmute(runner);
+                let before = core::mem::replace(&mut (*me).telling, true);
                 run(job);
+                (*me).telling = before;
             } else {
                 drop_job(job);
             }

@@ -924,7 +924,15 @@ fn overflowed() -> bool {
         unsafe { log::stamp(&mut line) };
         line.push(b"\",");
     }
-    line.push(b"\"level\":\"error\",\"message\":\"panic: the call stack is exhausted: a function calls itself too deeply or without end, or a value is nested too deeply\"}\n");
+    line.push(b"\"level\":\"error\",\"message\":\"panic: the call stack is exhausted: a function calls itself too deeply or without end, or a value is nested too deeply\"");
+    // (With the name of the request it happened in, as any line written for one has.)
+    let (name, len) = unsafe { http::name_now() };
+    if len > 0 {
+        line.push(b",\"request\":\"");
+        line.push(&name[..len]);
+        line.push(b"\"");
+    }
+    line.push(b"}\n");
     write_all(2, &line.data[..line.len]);
     free
 }

@@ -5,6 +5,7 @@
 import std/http
 import std/log
 import std/os
+import std/time
 
 actor Clerk {
     fn note(what: string) -> string {
@@ -26,6 +27,15 @@ fn main() ! http.Error {
         return http.text("{value}\n")
     })
     app.get("/panics", req -> http.text("{[1][int.parse(req.id()) else 5]}\n"))
+    // A handler that never ends of itself: its client leaves, and the server ends it.
+    app.get("/loop", req -> {
+        var turns := 0
+        while true {
+            time.sleep(5ms)
+            turns += 1
+        }
+        return http.text("{turns}\n")
+    })
     // What the server has counted, all its workers together.
     app.get("/metrics", req -> http.text(http.metrics()))
     app.get("/clerk", req -> http.text("{clerk.note(req.id())}\n"))

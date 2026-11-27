@@ -198,7 +198,15 @@ def start(workers, files=None):
         if server.poll() is None and ask("/ping", timeout=1)[0] == 200:
             return server
         time.sleep(0.1)
-    print("FAIL  the server did not start")
+    # (With what it wrote, and whether it is there still: a server that did not start
+    # says why, and one that is there and does not answer is another matter.)
+    state = "is running and does not answer" if server.poll() is None else f"ended with status {server.returncode}"
+    try:
+        with open(errors, errors="replace") as written:
+            said = written.read()[-800:]
+    except OSError:
+        said = ""
+    print(f"FAIL  the server did not start on port {PORT}: it {state}, and wrote:\n{said}")
     sys.exit(1)
 
 

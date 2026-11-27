@@ -744,6 +744,8 @@ mod imp {
         /// `X-Request-Id` said, or one made here. See `named`.
         name: [u8; MOST_NAME],
         name_len: usize,
+        /// Whether its answer has said the name.
+        name_said: bool,
     }
 
     /// The longest name of a request that is taken from the one who sends it.
@@ -951,6 +953,7 @@ mod imp {
         at: 0,
         name: [0; MOST_NAME],
         name_len: 0,
+        name_said: false,
     };
     static mut DATE: [u8; 29] = [0; 29];
     static mut DATE_AT: i64 = -1;
@@ -1415,10 +1418,16 @@ mod imp {
             let said = extra
                 .split(|byte| *byte == b'\n')
                 .any(|line| line.len() > 13 && line[..13].eq_ignore_ascii_case(b"x-request-id:"));
-            if CURRENT.name_len > 0 && CURRENT.conn == index && !said {
-                out.extend(b"X-Request-Id: ");
-                out.extend(&CURRENT.name[..CURRENT.name_len]);
-                out.extend(b"\r\n");
+            // (Once, to the connection the request came on: what is answered to
+            // another, or again, is not this request's answer.)
+            let its = CURRENT.conn == index && CURRENT.generation == c.generation && !CURRENT.name_said;
+            if CURRENT.name_len > 0 && its {
+                CURRENT.name_said = true;
+                if !said {
+                    out.extend(b"X-Request-Id: ");
+                    out.extend(&CURRENT.name[..CURRENT.name_len]);
+                    out.extend(b"\r\n");
+                }
             }
             if !keep {
                 out.extend(b"Connection: close\r\n");
@@ -1524,6 +1533,7 @@ mod imp {
                 current.name_len = 16;
             }
         }
+        current.name_said = false;
     }
 
     /// One line of the log: the request, the status of its answer, and how long the
@@ -1691,6 +1701,10 @@ mod imp {
     /// Reads the request at the start of a connection's input, if it is all there.
     #[allow(static_mut_refs)]
     unsafe fn parse(index: usize) -> Parsed {
+        // Nameless until it is read whole: what is answered to half a request, or to
+        // what is no request at all, has not the name of the request before it,
+        // which may have been another client's.
+        unsafe { CURRENT.name_len = 0 };
         let c = unsafe { conn(index) };
         let all = unsafe { core::slice::from_raw_parts(c.input.ptr, c.input.len) };
         // Line ends between requests are let pass.
@@ -1745,9 +1759,7 @@ mod imp {
         };
         let current = unsafe { &mut CURRENT };
         current.header_count = 0;
-        // (Nameless until it is read whole: what is answered to half a request, or to
-        // one that is no request, has not the name of the one before it.)
-        current.name_len = 0;
+
         let mut length: Option<usize> = None;
         let mut chunked = false;
         let mut keep = !old;
@@ -2428,7 +2440,10 @@ mod imp {
     pub unsafe fn leave_if_given_up() {
         unsafe {
             if given_up() && !thread::me().guard.is_null() {
-                crate::actor::leave();
+                {
+                    ENDED_QUIETLY = true;
+                    crate::actor::leave()
+                };
             }
         }
     }
@@ -2520,7 +2535,10 @@ mod imp {
         unsafe {
             if out_of_grace() && !thread::me().guard.is_null() {
                 PLACES[HERE].asking = false;
-                crate::actor::leave();
+                {
+                    ENDED_QUIETLY = true;
+                    crate::actor::leave()
+                };
             }
         }
     }
@@ -2626,6 +2644,7 @@ mod imp {
             if asked {
                 WATCHING.store(true, core::sync::atomic::Ordering::Release);
             }
+            ANSWERS.store(0, core::sync::atomic::Ordering::Release);
             let hears = WATCHING.load(core::sync::atomic::Ordering::Acquire);
             let heard = if hears { stop as extern "C" fn(i32) as usize } else { 0 };
             signal(SIGINT, heard);
@@ -3184,6 +3203,9 @@ mod imp {
     /// answers it has begun.
     const DRAIN: i64 = 30_000_000_000;
 
+    /// Whether the handler that is coming back as a panic does was ended on purpose.
+    static mut ENDED_QUIETLY: bool = false;
+
     /// How many handlers have panicked in this process.
     static mut PANICS: usize = 0;
     /// After so many, a worker is done: what a panic leaves behind it is not given
@@ -3195,7 +3217,11 @@ mod imp {
     #[unsafe(no_mangle)]
     pub unsafe extern "C" fn koo_http_panicked() {
         unsafe {
-            if let Some(counts) = counts() {
+            // (A handler that was ended without a word, its request given up, comes
+            // back the way a panic does, and is none.)
+            let quietly = ENDED_QUIETLY;
+            ENDED_QUIETLY = false;
+            if !quietly && let Some(counts) = counts() {
                 counts.panics.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
             }
             crate::thread::me().json_wire = false;
@@ -3287,6 +3313,7 @@ mod imp {
     #[allow(static_mut_refs)]
     pub unsafe extern "C" fn koo_http_next() -> i64 {
         unsafe {
+            ANSWERS.store(thread::this_thread(), core::sync::atomic::Ordering::Release);
             if LISTEN < 0 {
                 return -2;
             }
@@ -3519,12 +3546,19 @@ mod imp {
         }
     }
 
+    /// The thread that answers requests in this process, or 0 while none does.
+    static ANSWERS: core::sync::atomic::AtomicUsize = core::sync::atomic::AtomicUsize::new(0);
+
     /// The same, for the lines the library writes itself: the name, and how long it is.
     #[allow(static_mut_refs)]
     pub unsafe fn name_now() -> ([u8; MOST_NAME], usize) {
         unsafe {
-            let here = SERVER.load(core::sync::atomic::Ordering::Acquire) == thread::this_thread();
-            if !here || CURRENT.answered || CURRENT.id == 0 {
+            // (The thread that answers requests, whether or not it leaves a handler
+            // for another while one waits. And not in a message that an actor was
+            // told: that runs on this thread when the actor is next asked, and is the
+            // work of whoever told it, not of the request that asks now.)
+            let here = ANSWERS.load(core::sync::atomic::Ordering::Acquire) == thread::this_thread();
+            if !here || CURRENT.answered || CURRENT.id == 0 || thread::me().telling {
                 return ([0; MOST_NAME], 0);
             }
             (CURRENT.name, CURRENT.name_len)

@@ -264,6 +264,9 @@ pub struct Thread {
     pub answer_kind_len: usize,
     /// Whether the thread is in the middle of talking to another process (`actor.rs`).
     pub talking: bool,
+    /// Whether the thread is running a message that an actor was told, which is the
+    /// work of whoever told it and not of the request the thread may be answering.
+    pub telling: bool,
     /// The top of a stack the thread comes back by when its own is exhausted in a
     /// message to an actor, or 0 if it has none.
     pub landing: usize,
