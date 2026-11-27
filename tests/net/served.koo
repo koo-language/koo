@@ -43,6 +43,17 @@ fn main() ! net.Error | http.Error {
     var app := http.App.new()
     app.get("/first", req -> http.text("{first}\n"))
     app.get("/narrow/:text", req -> http.text("{say(narrow, "nap {req.param("text")}")}\n"))
+    // The same, of a peer that says more than it was asked: the connection is not
+    // kept, and the pool's only connection is closed each time it is given back.
+    app.get("/twice/:text", req -> http.text("{say(narrow, "naptwice {req.param("text")}")}\n"))
+    // A handler that has the pool's one connection, gives it back, and at once asks
+    // an actor that wants it: in a server of one process the actor's method runs on
+    // the handlers' own thread, and cannot be made to wait for a handler's turn.
+    keeper := Speaker.start(pool: narrow)
+    app.get("/both/:text", req -> {
+        first := say(narrow, "nap first")
+        return http.text("{first} | {keeper.say(req.param("text"))}\n")
+    })
     app.get("/main/:text", req -> http.text("{say(pool, "echo {req.param("text")}")}\n"))
     app.get("/own/:text", req -> {
         mine := net.pool(address, size: 4) else e => return http.text("{e.kind}\n")

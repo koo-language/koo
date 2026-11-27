@@ -862,21 +862,27 @@ fn allowed() -> usize {
     usize::MAX
 }
 
-/// Those who wait for one of a few things that are given back one at a time, a
-/// connection of a pool, in the order they came: without it, whoever asks at the moment
-/// one is given back has it, and under steady load that is whoever has just finished
-/// with one, again and again, while one that waits by looking every so often never
-/// looks at the right moment and waits out its whole time. It is used under the lock
-/// of what is waited for.
+/// The handlers of a server that wait for one of a few things that are given back one
+/// at a time, a connection of a pool, in the order they came. A handler that waits
+/// has been left for others (`http::await_turn`), and without turns whoever asks at
+/// the moment a connection is given back has it: under steady load that is whoever
+/// has just finished with one, again and again, while the one that waits is woken
+/// only to find it taken, until its whole wait is over.
+///
+/// Only such handlers take turns. Anything else that asks, a thread of its own, or a
+/// method of an actor on the server's thread, which cannot be left, takes what is
+/// free when it asks and waits as threads do: it could not be made to wait for a
+/// handler's turn without holding up the very thread the handler needs.
+///
+/// It is used under the lock of what is waited for.
 pub struct Turns {
-    /// The number of each that waits (0 for a place nobody has), and the time by
-    /// which it will have stopped waiting.
-    waiting: [(u64, i64); MOST_WAITING],
+    /// The number of each that waits (0 for a place nobody has), the time by which
+    /// it will have stopped waiting, and where the handler is, to wake it.
+    waiting: [(u64, i64, usize); MOST_WAITING],
 }
 
-/// As many as can wait at all: a worker of a server has 127 handlers at the most, and
-/// the process that keeps the actors 128 threads that answer for them.
-const MOST_WAITING: usize = 160;
+/// As many as can wait at all: a worker of a server has 127 handlers at the most.
+const MOST_WAITING: usize = 128;
 
 /// The numbers are of one sequence for everything that is waited for, so that a number
 /// keeps its place if what it waits for is set up again.
@@ -885,7 +891,7 @@ static NEXT_TURN: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64:
 impl Turns {
     pub const fn new() -> Turns {
         Turns {
-            waiting: [(0, 0); MOST_WAITING],
+            waiting: [(0, 0, 0); MOST_WAITING],
         }
     }
 
@@ -893,7 +899,7 @@ impl Turns {
     /// waited longest. `number` is its own, 0 if it has not had to wait yet.
     pub fn mine(&mut self, number: u64, now: i64) -> bool {
         let mut first = 0;
-        for (waiting, until) in self.waiting.iter_mut() {
+        for (waiting, until, _) in self.waiting.iter_mut() {
             // One whose time was over a second ago has gone, however it went: what
             // ended it may not have come back here to say so.
             if *waiting != 0 && until.saturating_add(1_000_000_000) < now {
@@ -906,29 +912,44 @@ impl Turns {
         first == 0 || (number != 0 && number <= first)
     }
 
-    /// The caller waits, until `until` at the longest. Its number is given it the
-    /// first time, and is put back if what is waited for has been set up again since.
-    pub fn wait(&mut self, number: &mut u64, until: i64) {
+    /// The caller, a handler at `place`, waits, until `until` at the longest. Its
+    /// number is given it the first time.
+    pub fn wait(&mut self, number: &mut u64, until: i64, place: usize) {
         if *number == 0 {
             *number = NEXT_TURN.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
         }
-        if self.waiting.iter().any(|(waiting, _)| waiting == number) {
+        if self.waiting.iter().any(|(waiting, _, _)| waiting == number) {
             return;
         }
         // (With no room, it waits unnumbered, and has what is free when nobody
         // numbered waits.)
-        if let Some(free) = self.waiting.iter_mut().find(|(waiting, _)| *waiting == 0) {
-            *free = (*number, until);
+        if let Some(free) = self.waiting.iter_mut().find(|(waiting, _, _)| *waiting == 0) {
+            *free = (*number, until, place);
         }
     }
 
     /// The caller waits no longer: it has what it waited for, or has given up.
     pub fn done(&mut self, number: u64) {
         if number != 0 {
-            for (waiting, _) in self.waiting.iter_mut().filter(|(waiting, _)| *waiting == number) {
+            for (waiting, _, _) in self.waiting.iter_mut().filter(|(waiting, _, _)| *waiting == number) {
                 *waiting = 0;
             }
         }
+    }
+
+    /// Where the handler is that has waited longest, to wake it and no other when
+    /// something is given back.
+    pub fn first(&self) -> Option<usize> {
+        self.waiting
+            .iter()
+            .filter(|(waiting, _, _)| *waiting != 0)
+            .min_by_key(|(waiting, _, _)| *waiting)
+            .map(|(_, _, place)| *place)
+    }
+
+    /// Whether any handler waits.
+    pub fn any(&self) -> bool {
+        self.waiting.iter().any(|(waiting, _, _)| *waiting != 0)
     }
 }
 

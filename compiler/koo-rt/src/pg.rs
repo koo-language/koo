@@ -1640,6 +1640,8 @@ unsafe fn adopt() {
                     conn.busy = false;
                     conn.transaction = 0;
                 }
+                // (And whoever waited for one waited in the other process.)
+                db.turns = thread::Turns::new();
             }
             OWNER.store(pid, Release);
             OPENED.store(1, Release);
@@ -1666,11 +1668,14 @@ unsafe fn check_out(db: &mut Db) -> Option<&mut Conn> {
         adopt();
         POOL.lock();
         let until = koo_now_nanos().saturating_add(db.patience.saturating_mul(1_000_000));
-        // The number of this one among those that wait, once it has had to.
+        // The number of this one among those that wait, once it has had to: if it is a
+        // handler that can be left while it waits, and where it is. Such handlers
+        // take turns; anything else takes what is free (see `thread::Turns`).
         let mut number = 0u64;
+        let handler = crate::http::leaves();
         let slot = loop {
-            // A connection that is free is for whoever has waited longest for one.
-            let turn = db.turns.mine(number, koo_now_nanos());
+            // A connection that is free is for the handler that has waited longest.
+            let turn = handler.is_none() || db.turns.mine(number, koo_now_nanos());
             if turn && let Some(index) = db.conns.iter().position(|conn| conn.fd >= 0 && !conn.busy) {
                 db.conns[index].busy = true;
                 db.turns.done(number);
@@ -1725,16 +1730,25 @@ unsafe fn check_out(db: &mut Db) -> Option<&mut Conn> {
                 failed(TIMEOUT, &[GIVEN_UP]);
                 return None;
             }
-            db.turns.wait(&mut number, until);
-            // A handler of a server that waits for a connection lets the others go on,
-            // one of which has it, and is woken when one is given back (and looks
-            // again before long whether or not, since a connection is also freed by
-            // being closed); anything else sleeps until one is given back.
-            POOL.unlock();
-            let paused = crate::http::await_turn(2_000_000) || fiber::pause(1_000_000);
-            POOL.lock();
-            if !paused {
-                POOL.wait_for(left);
+            match handler {
+                // A handler of a server that waits for a connection lets the others
+                // go on, one of which has it, and is woken when one is given back and
+                // its turn has come (and looks again before long whether or not,
+                // since a connection is also freed by being closed).
+                Some(place) => {
+                    db.turns.wait(&mut number, until, place);
+                    POOL.unlock();
+                    if !crate::http::await_turn(2_000_000) {
+                        fiber::pause(1_000_000);
+                    }
+                    POOL.lock();
+                }
+                // Anything else sleeps until one is given back: with the lock held
+                // from the look to the sleep, so that one given back between the two
+                // is not missed.
+                None => {
+                    POOL.wait_for(left);
+                }
             }
         };
         POOL.unlock();
@@ -1751,6 +1765,7 @@ unsafe fn check_out(db: &mut Db) -> Option<&mut Conn> {
 }
 
 /// Gives a connection back to the pool, or closes it if it is no longer good.
+#[allow(static_mut_refs)]
 unsafe fn give_back(conn: &mut Conn, broken: bool) {
     unsafe {
         POOL.lock();
@@ -1758,11 +1773,22 @@ unsafe fn give_back(conn: &mut Conn, broken: bool) {
             hang_up(conn, false);
         }
         conn.busy = false;
-        // Every pool's waiters sleep at the one gate: all are woken, and those whose
-        // pool this is not sleep again.
+        // The handler whose turn it is at this connection's pool, if one waits.
+        let at = conn as *const Conn as usize;
+        let next = DBS
+            .iter()
+            .find(|db| {
+                let first = db.conns.as_ptr() as usize;
+                at >= first && at < first + core::mem::size_of_val(&db.conns)
+            })
+            .and_then(|db| db.turns.first());
+        // Every pool's waiting threads sleep at the one gate: all are woken, and
+        // those whose pool this is not sleep again.
         POOL.wake_all();
         POOL.unlock();
-        crate::http::give_turns();
+        if let Some(place) = next {
+            crate::http::give_turn(place);
+        }
     }
 }
 

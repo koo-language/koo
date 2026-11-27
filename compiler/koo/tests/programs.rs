@@ -1771,6 +1771,10 @@ fn tcp_server() -> (
                             pause(5);
                             stream.write_all(answer.as_bytes())
                         }
+                        "naptwice" => {
+                            pause(5);
+                            stream.write_all(format!("{answer}{answer}").as_bytes())
+                        }
                         "twice" => stream.write_all(format!("{answer}{answer}").as_bytes()),
                         "again" => {
                             let _ = stream.write_all(answer.as_bytes());
@@ -1980,14 +1984,19 @@ fn a_server_talks_over_tcp() {
         // that has just been answered has the connection again before a waiter looks,
         // and a waiter is answered once in the time the others are a hundred times, or
         // not at all in the time it is given.
-        if workers == 1 {
-            let until = std::time::Instant::now() + std::time::Duration::from_millis(1500);
+        // (And so they do when the peer says more than it was asked, so that the
+        // connection is closed each time it is given back and the pool has none.)
+        for route in ["narrow", "twice"] {
+            if workers != 1 {
+                break;
+            }
+            let until = std::time::Instant::now() + std::time::Duration::from_millis(1200);
             let clients: Vec<_> = (0..3)
                 .map(|client| {
                     std::thread::spawn(move || {
                         let (mut answered, mut failed) = (0, Vec::new());
                         while std::time::Instant::now() < until {
-                            let answer = get(port, &format!("/narrow/c{client}"));
+                            let answer = get(port, &format!("/{route}/c{client}"));
                             let said = answer.rsplit("\r\n\r\n").next().unwrap_or("").trim().to_string();
                             if said.ends_with(&format!(" c{client}")) {
                                 answered += 1;
@@ -2004,11 +2013,31 @@ fn a_server_talks_over_tcp() {
             let (least, most) = (*answered.iter().min().unwrap(), *answered.iter().max().unwrap());
             assert!(
                 counts.iter().all(|(_, failed)| failed.is_empty()) && least * 2 >= most && least >= 10,
-                "three clients of a pool of one were answered {answered:?} times, and failed with {:?}",
+                "/{route}: three clients of a pool of one were answered {answered:?} times, and failed with {:?}",
                 counts
                     .iter()
                     .flat_map(|(_, failed)| failed.iter().take(2))
                     .collect::<Vec<_>>()
+            );
+        }
+        // Turns are the handlers' own. A method of an actor in a server of one
+        // process runs on the handlers' thread and cannot be left: it takes the
+        // connection that is free, though a handler waits for it, since to make it
+        // wait would be to stop the thread that the handler needs, for the whole of
+        // the pool's wait (two seconds here), with nothing answered meanwhile.
+        if workers == 1 {
+            let began = std::time::Instant::now();
+            let both = std::thread::spawn(move || get(port, "/both/kept"));
+            std::thread::sleep(std::time::Duration::from_millis(2));
+            let waiting = get(port, "/narrow/waited");
+            let both = both.join().unwrap();
+            assert!(
+                both.contains(" first | ")
+                    && both.trim_end().ends_with(" kept")
+                    && waiting.trim_end().ends_with(" waited")
+                    && began.elapsed() < std::time::Duration::from_millis(1000),
+                "after {:?}:\n{both}\n{waiting}",
+                began.elapsed()
             );
         }
         // Each answer is its asker's own: what was asked comes back, after the number
@@ -2627,7 +2656,9 @@ fn a_program_is_told_to_stop() {
         .output()
         .expect("koo runs");
     assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
-    for workers in ["1", "3"] {
+    // (Asked by `main` before it serves, or by a handler only, which with three
+    // workers is in another process than the one whose `main` goes on.)
+    for (ask, workers) in [("main", "1"), ("main", "3"), ("handler", "1"), ("handler", "3")] {
         let port = std::net::TcpListener::bind("127.0.0.1:0")
             .unwrap()
             .local_addr()
@@ -2636,6 +2667,7 @@ fn a_program_is_told_to_stop() {
         let mut child = Command::new(&executable)
             .env("PORT", port.to_string())
             .env("WORKERS", workers)
+            .env("ASK", ask)
             .stdout(std::process::Stdio::piped())
             .spawn()
             .expect("the server starts");
@@ -2644,6 +2676,9 @@ fn a_program_is_told_to_stop() {
                 break;
             }
             std::thread::sleep(std::time::Duration::from_millis(25));
+        }
+        if ask == "handler" {
+            assert!(get(port, "/stopping").ends_with("\r\n\r\nfalse\n"));
         }
         let tell = |child: &std::process::Child| {
             Command::new("kill")
@@ -2659,9 +2694,14 @@ fn a_program_is_told_to_stop() {
         let mut said = String::new();
         child.stdout.take().unwrap().read_to_string(&mut said).unwrap();
         let status = child.wait().unwrap();
+        let expected = if ask == "main" {
+            "asked: false\nthe server ended; told to stop: true\nwhat was left was done\n"
+        } else {
+            "the server ended\nwhat was left was done\n"
+        };
         assert!(
-            status.success() && said == "asked: false\nthe server ended; told to stop: true\nwhat was left was done\n",
-            "with {workers} workers: {status}, and it said: {said}"
+            status.success() && said == expected,
+            "asked by {ask}, with {workers} workers: {status}, and it said: {said}"
         );
     }
     let _ = std::fs::remove_dir_all(&dir);

@@ -7,11 +7,22 @@ import std/os
 import std/time
 
 fn main() ! http.Error {
-    print("asked: {os.stopping()}")
+    // It asks before it serves; or, told to by the test, only from a handler, which
+    // with several workers is in another process than this one.
+    if (os.env("ASK") else "main") == "main" {
+        print("asked: {os.stopping()}")
+    }
     var app := http.App.new()
     app.get("/ping", req -> http.text("pong\n"))
+    app.get("/stopping", req -> http.text("{os.stopping()}\n"))
     app.serve(workers: int.parse(os.env("WORKERS") else "") else 1)?
-    print("the server ended; told to stop: {os.stopping()}")
+    // (One that asked only from a handler does not ask again here: to ask now would
+    // be a first asking of this process's own, and it is the handler's that counts.)
+    if (os.env("ASK") else "main") == "main" {
+        print("the server ended; told to stop: {os.stopping()}")
+    } else {
+        print("the server ended")
+    }
     // What is left to do takes a while, and a second signal comes meanwhile.
     for step in 0..6 {
         time.sleep(100ms)

@@ -1,7 +1,7 @@
 """A check of a Koo server under the kinds of load that have broken it before.
 
-    python3 tests/stress/check.py <path to koo> [--target linux-x86-64] [--port 39800]
-    python3 tests/stress/check.py --binary <check.koo, built already> [--port 39800]
+    python3 tests/stress/check.py <path to koo> [--target linux-x86-64] [--port a-free-one]
+    python3 tests/stress/check.py --binary <check.koo, built already> [--port a-free-one]
                                   [--stderr <a file for what the server writes>]
 
 Builds `check.koo`, starts it, and makes a series of checks against it, each of which
@@ -15,7 +15,18 @@ here = os.path.dirname(os.path.abspath(__file__))
 given = sys.argv[sys.argv.index("--binary") + 1] if "--binary" in sys.argv else None
 koo = None if given else os.path.abspath(sys.argv[1])
 target = sys.argv[sys.argv.index("--target") + 1] if "--target" in sys.argv else None
-PORT = int(sys.argv[sys.argv.index("--port") + 1]) if "--port" in sys.argv else 39800
+
+
+def free_port():
+    """A port that nothing has: asked of the system, since one that is written down is
+    among those a system gives out to connections, and after a long run of tests one
+    of those may still have it."""
+    with socket.socket() as probe:
+        probe.bind(("127.0.0.1", 0))
+        return probe.getsockname()[1]
+
+
+PORT = int(sys.argv[sys.argv.index("--port") + 1]) if "--port" in sys.argv else free_port()
 LINUX = sys.platform.startswith("linux")
 soft, hard = resource.getrlimit(resource.RLIMIT_NOFILE)
 want = 8192 if hard == resource.RLIM_INFINITY else min(8192, hard)

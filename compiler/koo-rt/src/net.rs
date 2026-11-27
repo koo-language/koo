@@ -215,6 +215,20 @@ unsafe fn conn_of<'a>(number: i64) -> Result<&'a mut Conn, i64> {
     }
 }
 
+/// Lets go of the place an address has, once it has no connection and no handler
+/// waits for one: while one waits, the place is where its turn is kept, and an address
+/// whose last connection has just been closed is not one that nobody is waiting for.
+#[allow(static_mut_refs)]
+unsafe fn settle(pool: usize) {
+    unsafe {
+        let pool = &mut POOLS[pool];
+        if pool.open == 0 && !pool.turns.any() {
+            pool.used = false;
+            pool.address.len = 0;
+        }
+    }
+}
+
 /// Closes a connection and frees its place; and the place of its address among those
 /// that connections are kept to, when this was the last of them. Called with the lock.
 #[allow(static_mut_refs)]
@@ -228,10 +242,7 @@ unsafe fn drop_conn(conn: &mut Conn) {
         if conn.pool != ALONE {
             let pool = &mut POOLS[conn.pool];
             pool.open = pool.open.saturating_sub(1);
-            if pool.open == 0 {
-                pool.used = false;
-                pool.address.len = 0;
-            }
+            settle(conn.pool);
         }
         *conn = NO_CONN;
     }
@@ -351,8 +362,11 @@ pub unsafe extern "C" fn koo_net_take(address: *const Header, name: *const Heade
             -failed(CONNECTION, &[b"a program has at most 1,024 connections at once"])
         };
         // The number of this one among those that wait for a connection of the pool,
-        // once it has had to.
+        // once it has had to: if it is a handler that can be left while it waits, and
+        // where it is. Such handlers take turns; anything else takes what is free
+        // (see `thread::Turns`).
         let mut number = 0u64;
+        let handler = crate::http::leaves();
         let place = if once {
             match reserve(ALONE, false) {
                 Some(index) => Err(index),
@@ -370,8 +384,9 @@ pub unsafe extern "C" fn koo_net_take(address: *const Header, name: *const Heade
                 // One that is kept, if it is still good: the other end may have closed
                 // it, or said something that nobody asked for, and then it is not.
                 let now = koo_now_nanos();
-                // (And a connection that is free is for whoever has waited longest.)
-                let turn = POOLS[pool].turns.mine(number, now);
+                // (And a connection that is free is for the handler that has waited
+                // longest.)
+                let turn = handler.is_none() || POOLS[pool].turns.mine(number, now);
                 let mut kept = None;
                 for (index, conn) in CONNS.iter_mut().enumerate() {
                     if !turn || conn.fd < 0 || conn.out || conn.pool != pool {
@@ -408,15 +423,14 @@ pub unsafe extern "C" fn koo_net_take(address: *const Header, name: *const Heade
                     match reserve(pool, stuck) {
                         Some(index) => break Err(index),
                         None => {
-                            if POOLS[pool].open == 0 {
-                                POOLS[pool].used = false;
-                            }
+                            settle(pool);
                             return too_many();
                         }
                     }
                 }
                 if koo_now_nanos() >= until || crate::http::given_up() {
                     POOLS[pool].turns.done(number);
+                    settle(pool);
                     NET.unlock();
                     return -failed(
                         TIMEOUT,
@@ -427,13 +441,25 @@ pub unsafe extern "C" fn koo_net_take(address: *const Header, name: *const Heade
                         ],
                     );
                 }
-                POOLS[pool].turns.wait(&mut number, until);
-                NET.unlock();
-                // A handler of a server lets the others go on, one of which has one,
-                // and is woken when it is given back; and looks again before long
-                // whether or not, since a connection is also freed by being closed.
-                if !crate::http::await_turn(2_000_000) && !fiber::pause(1_000_000) {
-                    koo_sleep(1_000_000);
+                match handler {
+                    // A handler of a server lets the others go on, one of which has
+                    // one, and is woken when it is given back and its turn has come;
+                    // and looks again before long whether or not, since a connection
+                    // is also freed by being closed.
+                    Some(place) => {
+                        POOLS[pool].turns.wait(&mut number, until, place);
+                        NET.unlock();
+                        if !crate::http::await_turn(2_000_000) {
+                            fiber::pause(1_000_000);
+                        }
+                    }
+                    // Anything else looks again in a moment.
+                    None => {
+                        NET.unlock();
+                        if !fiber::pause(1_000_000) {
+                            koo_sleep(1_000_000);
+                        }
+                    }
                 }
                 NET.lock();
             }
@@ -491,6 +517,7 @@ pub unsafe extern "C" fn koo_net_give(number: i64, keep: bool) {
             return;
         }
         NET.lock();
+        let mut next = None;
         let conn = &mut CONNS[index];
         if conn.out && conn.serial == serial {
             let pool = conn.pool;
@@ -521,9 +548,15 @@ pub unsafe extern "C" fn koo_net_give(number: i64, keep: bool) {
                     drop_conn(other);
                 }
             }
+            // The handler whose turn it is at this address, if one waits.
+            if pool != ALONE && POOLS[pool].used {
+                next = POOLS[pool].turns.first();
+            }
         }
         NET.unlock();
-        crate::http::give_turns();
+        if let Some(place) = next {
+            crate::http::give_turn(place);
+        }
     }
 }
 

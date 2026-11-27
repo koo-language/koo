@@ -3223,7 +3223,7 @@ mod remote {
             // there does when it has no room for all who ask: three such tries were
             // over in a moment, and their asker took for gone a process that was only
             // short of files.
-            let (mut attempt, mut refusals, mut fresh) = (0, 0, false);
+            let (mut attempt, mut refusals, mut fresh, mut busy) = (0, 0, false, 0);
             // (A handler that asks says so: one whose request was given up is let
             // wait a second for the answer, and is ended only when that is over.)
             crate::http::asking(true);
@@ -3241,6 +3241,14 @@ mod remote {
                 // A process that is there is waited for, however long it has no room:
                 // those whose connections it has taken are waiting no less.
                 if fd == BUSY_THERE {
+                    // (For half a minute: a process that is there and takes no
+                    // connection in all that time is not one that an answer will
+                    // come from, and a handler with no time limit of its own would
+                    // otherwise wait for ever.)
+                    busy += 1;
+                    if busy > 1500 {
+                        break;
+                    }
                     nap(20_000_000);
                     continue;
                 }

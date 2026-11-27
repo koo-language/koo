@@ -57,7 +57,10 @@ mod stub {
     pub unsafe fn name_now() -> ([u8; 64], usize) {
         ([0; 64], 0)
     }
-    pub unsafe fn give_turns() {}
+    pub unsafe fn give_turn(_: usize) {}
+    pub unsafe fn leaves() -> Option<usize> {
+        None
+    }
     pub unsafe fn asking(_: bool) {}
     pub unsafe fn leave_if_out_of_grace() {}
     #[unsafe(no_mangle)]
@@ -764,6 +767,10 @@ mod imp {
         /// Handlers that panicked, and workers started (the first ones among them).
         panics: AtomicU64,
         workers: AtomicU64,
+        /// Whether any process of the server has asked whether it is to stop
+        /// (`koo_os_stopping`): a handler asks in a worker, and it is the process that
+        /// watches whose `main` goes on after the server.
+        asked: AtomicU64,
     }
 
     /// The limits of the histogram of how long answers take, in microseconds.
@@ -969,6 +976,12 @@ mod imp {
             if LISTEN < 0 && !WATCHING.swap(true, AcqRel) {
                 signal(SIGINT, stop as extern "C" fn(i32) as usize);
                 signal(SIGTERM, stop as extern "C" fn(i32) as usize);
+            }
+            // (Asked while the server runs, by a handler, which may be in a worker:
+            // the program has asked all the same, and is not ended by the signal
+            // after the server either.)
+            if let Some(counts) = counts() {
+                counts.asked.store(1, Relaxed);
             }
             STOP.load(Relaxed)
         }
@@ -2609,6 +2622,10 @@ mod imp {
             // nothing for it (`koo_os_stopping`). For any other, the signal is again
             // what ends the program. And what the server was told is not forgotten:
             // the program was told to stop, and `main`, which goes on, can ask.
+            let asked = counts().is_some_and(|counts| counts.asked.load(core::sync::atomic::Ordering::Relaxed) != 0);
+            if asked {
+                WATCHING.store(true, core::sync::atomic::Ordering::Release);
+            }
             let hears = WATCHING.load(core::sync::atomic::Ordering::Acquire);
             let heard = if hears { stop as extern "C" fn(i32) as usize } else { 0 };
             signal(SIGINT, heard);
@@ -3117,22 +3134,28 @@ mod imp {
         }
     }
 
-    /// Something that handlers wait their turn at has been given back: those that
-    /// wait are woken, to see whose turn it is. From any other thread than the
-    /// server's it does nothing, since the handlers are that thread's alone.
+    /// Something that handlers wait their turn at has been given back: the one whose
+    /// turn it is, at `place`, is woken to take it. From any other thread than the
+    /// server's it does nothing, since the handlers are that thread's alone; the one
+    /// that waits looks again before long in any case.
     #[allow(static_mut_refs)]
-    pub unsafe fn give_turns() {
+    pub unsafe fn give_turn(place: usize) {
         unsafe {
             if SERVER.load(core::sync::atomic::Ordering::Acquire) != thread::this_thread() || !SIDE_BY_SIDE {
                 return;
             }
-            for place in PLACES[..PLACE_COUNT].iter_mut() {
-                if place.turn && place.doing == Doing::Waiting {
-                    place.late = false;
-                    place.doing = Doing::Ready;
-                }
+            if place < PLACE_COUNT && PLACES[place].turn && PLACES[place].doing == Doing::Waiting {
+                PLACES[place].late = false;
+                PLACES[place].doing = Doing::Ready;
             }
         }
+    }
+
+    /// Whether the caller is a handler that can be left for others while it waits,
+    /// and if so where it is: such handlers, and no other callers, take turns.
+    #[allow(static_mut_refs)]
+    pub unsafe fn leaves() -> Option<usize> {
+        unsafe { may_leave().then_some(HERE) }
     }
 
     /// The thread does other work for so long. See `fiber::pause`.
