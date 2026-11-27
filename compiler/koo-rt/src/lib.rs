@@ -1287,7 +1287,12 @@ unsafe fn threads_after_fork() {
     unsafe { (*core::ptr::addr_of_mut!(STDOUT)).len = 0 };
     PRINTER.store(0, core::sync::atomic::Ordering::Release);
     PRINTING.unlock();
-    unsafe { thread::after_fork() };
+    unsafe {
+        thread::after_fork();
+        // What the process that forked this one had open to other programs is its own.
+        net::after_fork();
+        pg::after_fork();
+    }
 }
 
 /// Held while the output buffer is used, so that what two threads print does not mix

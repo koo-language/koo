@@ -248,7 +248,9 @@ fn parts(address: &[u8]) -> Option<(&[u8], u16)> {
         .parse::<u16>()
         .ok()
         .filter(|port| *port > 0)?;
-    (!host.is_empty() && !host.contains(&0)).then_some((host, port))
+    // (Nothing in a host that is not seen: an address has a name set after it, on a
+    // line of its own, where connections are kept by both.)
+    (!host.is_empty() && host.iter().all(|byte| *byte > b' ' && *byte != 0x7f)).then_some((host, port))
 }
 
 /// The place among `POOLS` of an address that connections are kept to: the one it
@@ -297,8 +299,11 @@ pub unsafe extern "C" fn koo_net_take(address: *const Header, name: *const Heade
                 &[b"the request this was for was given up: its client has left, or its time is over"],
             );
         }
-        if address.len() > 300 {
-            return -failed(ADDRESS, &[b"an address to connect to is no longer than 300 bytes"]);
+        if address.len() > 300 || name.len() > 200 {
+            return -failed(
+                ADDRESS,
+                &[b"an address to connect to is no longer than 300 bytes, and the name of a pool no longer than 200"],
+            );
         }
         let Some((host, port)) = parts(address) else {
             return -failed(
@@ -317,7 +322,7 @@ pub unsafe extern "C" fn koo_net_take(address: *const Header, name: *const Heade
         let mut kept_as = Buffer::new();
         kept_as.push(address);
         kept_as.push(b"\n");
-        kept_as.push(&name[..name.len().min(200)]);
+        kept_as.push(name);
         let kept_as = &kept_as.data[..kept_as.len];
         let until = koo_now_nanos().saturating_add(nanos.max(0));
         let once = limit <= 0;
@@ -421,9 +426,9 @@ pub unsafe extern "C" fn koo_net_take(address: *const Header, name: *const Heade
             Err(index) => {
                 NET.unlock();
                 let mut why = Buffer::new();
-                // What is left of the time, and no less than a second: a pool that is
-                // told not to wait for a connection to be free may still make one.
-                let left = ((until - koo_now_nanos()) / 1_000_000).max(1000);
+                // What is left of the time; for a pool no less than a second, since one
+                // that is told not to wait for a connection to be free may still make one.
+                let left = ((until - koo_now_nanos()) / 1_000_000).max(if once { 1 } else { 1000 });
                 let fd = dial(host, port, left, &mut why);
                 NET.lock();
                 if fd < 0 {
@@ -508,6 +513,18 @@ pub unsafe extern "C" fn koo_net_give(number: i64, keep: bool) {
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn koo_net_fresh(number: i64) -> bool {
     unsafe { conn_of(number).is_ok_and(|conn| conn.fresh) }
+}
+
+/// In a process just forked: the connections it has are the other process's, and are
+/// closed here at once, whether or not this process ever has a conversation of its own.
+/// A worker that kept them open would keep the other end from seeing that the process
+/// which made them had closed them.
+pub unsafe fn after_fork() {
+    unsafe {
+        if OWNER.load(Acquire) != 0 {
+            adopt();
+        }
+    }
 }
 
 /// When a thread recovers from a panic: the connections its functions had are closed.

@@ -1945,19 +1945,19 @@ fn a_redis_is_greeted() {
     let output = Command::new(env!("CARGO_BIN_EXE_koo"))
         .arg("run")
         .arg(&dir)
-        .env("REDIS_URL", format!("redis://koo:p%40ss%3Aw%2F@127.0.0.1:{port}/2"))
+        .env("REDIS_URL", format!("redis://koo:p%40ss%3Aw%2F+x@127.0.0.1:{port}/2"))
         .env("KOO_LEAKS", "1")
         .output()
         .expect("koo runs");
     assert!(
-        output.status.success() && String::from_utf8_lossy(&output.stdout) == "OK\n",
+        output.status.success() && String::from_utf8_lossy(&output.stdout) == "OK\nfalse true\n",
         "{}{}",
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
     );
     assert_eq!(
         *told.lock().unwrap(),
-        ["1: AUTH koo p@ss:w/", "1: SELECT 2", "1: PING", "1: GET k"]
+        ["1: AUTH koo p@ss:w/+x", "1: SELECT 2", "1: PING", "1: GET k"]
     );
     let _ = std::fs::remove_dir_all(&dir);
 }
@@ -2012,6 +2012,10 @@ Refused: `MULTI` changes what a connection means for whoever has it next, and is
 [Number { value: 43 }, Number { value: 44 }]
 Refused
 45 true
+Refused: of 3 commands done as one, number 2 failed, and the others were done
+text 7 2
+true
+true
 2
 ";
     assert!(

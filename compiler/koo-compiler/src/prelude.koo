@@ -2887,9 +2887,8 @@ fn n__error(kind: int) -> Net__Error {
 /// A connection to another program, for as long as the function it was given to runs.
 type Net__Conn = { _id: int }
 
-/// Whether the connection was made for this conversation, and not kept from an earlier
-/// one: where a protocol begins with a greeting, or with who is asking, that is said
-/// on a connection that is new, and once.
+/// Whether nothing had been said on the connection when this conversation began: where
+/// a protocol begins with a greeting, or with who is asking, that is said then, once.
 fn (self: Net__Conn) fresh() -> bool {
     return __net_fresh(self._id)
 }

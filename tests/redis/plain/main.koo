@@ -36,5 +36,16 @@ fn main() ! RedisError {
         ! e => print("{e.kind}")
     }
     print("{cache.incr("{key}-n")?} {cache.get(key)? != none}")
+    // One that fails when it is done does not undo the others, and is said.
+    match cache.atomically([["SET", "{key}-a", "text"], ["INCR", "{key}-a"], ["SET", "{key}-b", "7"]]) {
+        replies => print("{replies}")
+        ! e => print("{e.kind}: {e.message.slice(0, 68)}")
+    }
+    print("{cache.get("{key}-a")?} {cache.get("{key}-b")?} {cache.del(["{key}-a", "{key}-b"])?}")
+    // A time to keep a value for that is under a millisecond is a millisecond, not for ever.
+    cache.set("{key}-brief", "x", ttl: 500us)?
+    print("{cache.command(["PTTL", "{key}-brief"])? != RedisReply.Number { value: -1 }}")
+    // What the client is shown as has no password in it.
+    print("{cache}".replace(os.env("REDIS_URL") else "", "").contains("Redis "))
     print("{cache.del([key, "{key}-n", "{key}-list"])?}")
 }

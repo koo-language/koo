@@ -1644,6 +1644,17 @@ unsafe fn adopt() {
     }
 }
 
+/// In a process just forked: the connections to databases are the other process's, and
+/// are closed here at once and not when this process first sends a statement, which it
+/// may never do.
+pub unsafe fn after_fork() {
+    unsafe {
+        if OPENED.load(Acquire) != 0 {
+            adopt();
+        }
+    }
+}
+
 /// A connection for the calling thread: one that is idle, or a new one if there may be
 /// more, or the first to be given back. Nothing if one could not be made.
 #[allow(static_mut_refs)]

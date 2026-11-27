@@ -13,14 +13,14 @@ job := queue.pop("jobs", wait: 5s)?   // string?, none if none came in five seco
 
 | | |
 | --- | --- |
-| `redis_connect(url, pool: 10, timeout: 5s, most: 67108864) -> Redis ! RedisError` | `redis://[user:password@]host[:port][/database]`, a password alone as `:password@`, and an `@`, `:` or `/` inside either written as `%40`, `%3A`, `%2F`; one command is sent at once, so that a wrong address or password is known when the program starts. Each connection is told who is asking and which database when it is new, and two clients of one server with different users or databases do not share connections |
+| `redis_connect(url, pool: 10, timeout: 5s, most: 67108864) -> Redis ! RedisError` | `redis://[user:password@]host[:port][/database]`, a password alone as `:password@`, and an `@`, `:`, `/` or `%` inside either written as `%40`, `%3A`, `%2F`, `%25` (a `+` is itself); one command is sent at once, so that a wrong address or password is known when the program starts. Each connection is told who is asking and which database when it is new, and two clients of one server with different users or databases do not share connections |
 | `cache.get(key) -> string? ! RedisError` | the value of a key, if it has one |
 | `cache.set(key, value, ttl: 0s)` | gives a key a value, for ever or for so long |
 | `cache.del(keys) -> int` | removes keys, and says how many there were |
 | `cache.incr(key, by: 1) -> int` | adds to the number a key holds |
 | `cache.expire(key, ttl) -> bool` | says how much longer a key is kept |
 | `cache.push(key, values) -> int`, `cache.pop(key, wait: 0s) -> string?` | a list as a queue: values in at the end, and out at the beginning, waiting for one if asked to |
-| `cache.atomically(commands) -> [RedisReply]` | several commands done as one, with no other client's between them, or none if the server refuses one as it is given (`MULTI` and `EXEC`) |
+| `cache.atomically(commands) -> [RedisReply]` | several commands done as one, with no other client's between them (`MULTI` and `EXEC`). None is done if the server refuses one as it is given; one that fails when it is done does not undo the others, as a Redis is, and is a failure here that says which |
 | `cache.command(words) -> RedisReply ! RedisError` | any command, by its words; the answer is `Nothing`, `Text`, `Number` or `Items`. A command that changes what a connection means for what is sent on it next (`MULTI`, `SELECT`, `SUBSCRIBE` and their like) is refused: a command goes out on whichever connection is free |
 
 A program that takes jobs from a list, and finishes the one it is at when it is told
@@ -34,7 +34,8 @@ while not os.stopping() {
 ```
 
 A `RedisError` has a `kind`: `Address`, `Connection`, `Timeout`, `Refused` (the server
-would not do it, and `message` is what it said) or `Protocol`.
+would not do it, and `message` is what it said) or `Protocol`. The client as text
+(`"{cache}"`) says where it is and who asks, and not the password.
 
 Until one package of a program can import another, the file is used by copying it into
 the directory of the program that needs it. A value is text; one that is not is a

@@ -10,7 +10,6 @@
 // into the directory of the program that needs it: a directory is a package, and its
 // files share their names. Every name here begins with `Redis` or `redis_`.
 import std/encoding
-import std/hash
 import std/net
 
 /// Why a command failed: the address is none; the server could not be reached, or
@@ -34,12 +33,18 @@ enum RedisReply {
 type Redis = {
     pool: net.Pool,
     user: string,
-    password: string,
     database: int,
     timeout: Duration,
     /// The longest value that is read, in bytes: a server is not taken at its word
     /// for how much it is about to send.
     most: int,
+    /// The password. It is no part of what the value is shown as.
+    _password: string = "",
+}
+
+/// A server as text: where it is and who asks, without the password.
+fn (self: Redis) to_string() -> string {
+    return "Redis {self.pool.address} database {self.database}{if self.user == "" { "" } else { " as {self.user}" }}"
 }
 
 /// `redis://[user:password@]host[:port][/database]`, where a password alone is written
@@ -64,13 +69,20 @@ fn redis_connect(url: string, pool: int = 10, timeout: Duration = 5s, most: int 
         user = name
         password = secret
     }
-    user = encoding.from_url(user) else fail RedisError {
+    // (A `+` is itself here, and not the space it stands for in a query.)
+    user = encoding.from_url(user.replace("+", "%2B")) else fail RedisError {
         kind: RedisErrorKind.Address,
         message: "the user in the address of a Redis has a `%` that is not followed by two hexadecimal digits",
     }
-    password = encoding.from_url(password) else fail RedisError {
+    password = encoding.from_url(password.replace("+", "%2B")) else fail RedisError {
         kind: RedisErrorKind.Address,
         message: "the password in the address of a Redis has a `%` that is not followed by two hexadecimal digits",
+    }
+    if user != "" and password == "" {
+        fail RedisError {
+            kind: RedisErrorKind.Address,
+            message: "the address of a Redis names the user `{user}` and no password: `redis://user:password@host`, or `redis://:password@host` for a password alone",
+        }
     }
     var database := 0
     var host := place
@@ -88,10 +100,11 @@ fn redis_connect(url: string, pool: int = 10, timeout: Duration = 5s, most: int 
     if not host.contains(":") or host.ends_with("]") { host = "{host}:6379" }
     // The connections of this user and this database are kept apart from those of
     // any other: each is told who is asking and of which database when it is new, and
-    // is what it was told from then on.
-    apart := "redis {database} {user} {encoding.hex(hash.sha256(password.bytes()))}"
+    // is what it was told from then on. (The password is no part of the name, which
+    // anyone may print.)
+    apart := "redis {database} {user}"
     connections := net.pool(host, size: pool, wait: timeout, name: apart) else e => fail redis_from(e)
-    server := Redis { pool: connections, user, password, database, timeout, most }
+    server := Redis { pool: connections, user, database, timeout, most, _password: password }
     server.command(["PING"])?
     return server
 }
@@ -126,9 +139,12 @@ fn (self: Redis) command(words: [string]) -> RedisReply ! RedisError {
     }
 }
 
-/// Does several commands as one: all of them, with no other client's command between
-/// two of them, or, if the server refuses one as it is given, none. Returns what each
-/// answered. (This is `MULTI` and `EXEC`, on one connection.)
+/// Does several commands as one, with no other client's command between two of them,
+/// and returns what each answered. If the server refuses one as it is given, a name it
+/// does not know, none is done. One that fails when it is done, a number added to what
+/// is no number, does not undo the others, which is how a Redis is: it is a failure
+/// here, of the kind `Refused`, that says which, so that it is not missed. (This is
+/// `MULTI` and `EXEC`, on one connection.)
 fn (self: Redis) atomically(commands: [[string]]) -> [RedisReply] ! RedisError {
     for words in commands {
         if words.len == 0 or redis_changes_connection(words[0].to_upper()) {
@@ -159,7 +175,18 @@ fn (self: Redis) atomically(commands: [[string]]) -> [RedisReply] ! RedisError {
     match answer {
         reply => {
             match redis_refused(reply)? {
-                Items { items } => return items
+                Items { items } => {
+                    for i in 0..items.len {
+                        match items[i] {
+                            Refusal { message } => fail RedisError {
+                                kind: RedisErrorKind.Refused,
+                                message: "of {items.len} commands done as one, number {i + 1} failed, and the others were done: {message}",
+                            }
+                            other => {}
+                        }
+                    }
+                    return items
+                }
                 other => fail redis_odd("EXEC", other)
             }
         }
@@ -179,8 +206,10 @@ fn (self: Redis) get(key: string) -> string? ! RedisError {
 
 /// Gives a key a value, for ever or for so long.
 fn (self: Redis) set(key: string, value: string, ttl: Duration = 0s) ! RedisError {
-    millis := ttl.millis()
-    if millis > 0 {
+    if ttl > 0s {
+        // (What is less than the least a Redis keeps time by is that least, and not
+        // for ever.)
+        millis := if ttl.millis() < 1 { 1 } else { ttl.millis() }
         self.command(["SET", key, value, "PX", "{millis}"])?
     } else {
         self.command(["SET", key, value])?
@@ -201,7 +230,7 @@ fn (self: Redis) incr(key: string, by: int = 1) -> int ! RedisError {
 
 /// Says how much longer a key is to be kept. Returns whether there is such a key.
 fn (self: Redis) expire(key: string, ttl: Duration) -> bool ! RedisError {
-    return redis_number("PEXPIRE", self.command(["PEXPIRE", key, "{ttl.millis()}"])?)? == 1
+    return redis_number("PEXPIRE", self.command(["PEXPIRE", key, "{if ttl > 0s and ttl.millis() < 1 { 1 } else { ttl.millis() }}"])?)? == 1
 }
 
 /// Puts values at the end of a list, and returns how long the list then is.
@@ -225,10 +254,10 @@ fn (self: Redis) pop(key: string, wait: Duration = 0s) -> string? ! RedisError {
     patient := Redis {
         pool: self.pool,
         user: self.user,
-        password: self.password,
         database: self.database,
         timeout: self.timeout + wait,
         most: self.most,
+        _password: self._password,
     }
     seconds := wait.seconds()
     match patient.command(["BLPOP", key, "{seconds}"])? {
@@ -252,8 +281,8 @@ fn (self: Redis) pop(key: string, wait: Duration = 0s) -> string? ! RedisError {
 /// and of which database.
 fn redis_greet(server: Redis, conn: net.Conn) ! RedisError {
     if not conn.fresh() { return }
-    if server.password != "" {
-        greeting := if server.user == "" { ["AUTH", server.password] } else { ["AUTH", server.user, server.password] }
+    if server._password != "" {
+        greeting := if server.user == "" { ["AUTH", server._password] } else { ["AUTH", server.user, server._password] }
         redis_refused(redis_ask(server, conn, greeting)?)?
     }
     if server.database != 0 {

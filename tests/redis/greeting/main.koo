@@ -5,4 +5,6 @@ import std/os
 fn main() ! RedisError {
     cache := redis_connect(os.env("REDIS_URL") else "", pool: 2)?
     print("{cache.get("k")?}")
+    shown := "{cache} {[cache]}"
+    print("{shown.contains("p@ss")} {shown.contains("as koo")}")
 }

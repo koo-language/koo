@@ -438,8 +438,8 @@ A request of another server returns a `http.Reply`:
 
 | | |
 | --- | --- |
-| `net.connect(address: string, body: fn(net.Conn) -> T ! E, timeout: Duration = 10s) -> T ! E \| net.Error` | one conversation with the program at `host:port`, on a connection that is closed when the function returns; `timeout` is for connecting |
-| `net.pool(address: string, size: int = 10, wait: Duration = 30s, name: string = "") -> net.Pool ! net.Error` | the connections kept to one address, at most `size` at once in each process; one is made at once. Pools of different names keep their connections apart |
+| `net.connect(address: string, body: fn(net.Conn) -> T ! E, timeout: Duration = 10s) -> T ! E \| net.Error` | one conversation with the program at `host:port`, on a connection that is closed when the function returns; `timeout` is how long connecting may take |
+| `net.pool(address: string, size: int = 10, wait: Duration = 30s, name: string = "") -> net.Pool ! net.Error` | the connections kept to one address, at most `size` at once in each process (and one more at need for an actor's method in a server of one process, Section 10.9); one is made at once. Pools of different names keep their connections apart |
 | `pool.with(body: fn(net.Conn) -> T ! E) -> T ! E \| net.Error` | a conversation on one of the pool's connections, which is kept afterwards if nothing went wrong on it and the other end has no more to say |
 | `conn.write(text: string, timeout: Duration = 30s) ! net.Error`, `conn.write_bytes(data: [byte], timeout)` | sends text, or bytes |
 | `conn.read_line(most: int = 65536, timeout: Duration = 30s) -> string ! net.Error` | a line, without the line feed that ends it or a carriage return before that |
