@@ -144,6 +144,11 @@ pub const INTRINSICS: &[Intrinsic] = &[
         ret: I::Str,
     },
     Intrinsic {
+        name: "os_stopping",
+        params: &[],
+        ret: I::Bool,
+    },
+    Intrinsic {
         name: "env_has",
         params: &[I::Str],
         ret: I::Bool,

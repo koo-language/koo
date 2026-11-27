@@ -2393,6 +2393,50 @@ fn a_client_that_leaves_gives_back_its_connection() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// A program that is no server, one that takes work from a queue, learns that it was
+/// told to stop by asking, and ends by itself with its work whole: the signal that
+/// would have ended it in the middle ends nothing once the program has asked.
+#[test]
+fn a_program_is_told_to_stop() {
+    use std::io::{BufRead, Read};
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let dir = std::env::temp_dir().join(format!("koo-worker-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let executable = dir.join("worker");
+    let built = Command::new(env!("CARGO_BIN_EXE_koo"))
+        .arg("build")
+        .arg(root.join("tests/os/worker.koo"))
+        .arg("-o")
+        .arg(&executable)
+        .output()
+        .expect("koo runs");
+    assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
+    for signal in ["-TERM", "-INT"] {
+        let mut child = Command::new(&executable)
+            .env("KOO_LEAKS", "1")
+            .stdout(std::process::Stdio::piped())
+            .spawn()
+            .expect("the program starts");
+        let mut said = std::io::BufReader::new(child.stdout.take().unwrap());
+        let mut line = String::new();
+        said.read_line(&mut line).unwrap();
+        assert_eq!(line, "working\n");
+        std::thread::sleep(std::time::Duration::from_millis(150));
+        Command::new("kill")
+            .args([signal, &child.id().to_string()])
+            .status()
+            .unwrap();
+        let mut rest = String::new();
+        said.read_to_string(&mut rest).unwrap();
+        let status = child.wait().unwrap();
+        assert!(
+            status.success() && rest == "told to stop after some work; the last piece was finished\n",
+            "after {signal}: {status}, and it said: {rest}"
+        );
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 /// What the environment says of a server is how many workers it has, and nothing else
 /// about it: one worker has a process watching over it as two have, and is started
 /// again when it is killed.

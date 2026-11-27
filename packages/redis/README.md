@@ -23,6 +23,16 @@ job := queue.pop("jobs", wait: 5s)?   // string?, none if none came in five seco
 | `cache.atomically(commands) -> [RedisReply]` | several commands done as one, with no other client's between them, or none if the server refuses one as it is given (`MULTI` and `EXEC`) |
 | `cache.command(words) -> RedisReply ! RedisError` | any command, by its words; the answer is `Nothing`, `Text`, `Number` or `Items`. A command that changes what a connection means for what is sent on it next (`MULTI`, `SELECT`, `SUBSCRIBE` and their like) is refused: a command goes out on whichever connection is free |
 
+A program that takes jobs from a list, and finishes the one it is at when it is told
+to stop:
+
+```koo
+while not os.stopping() {
+    job := queue.pop("jobs", wait: 2s)? else { continue }
+    work(job)
+}
+```
+
 A `RedisError` has a `kind`: `Address`, `Connection`, `Timeout`, `Refused` (the server
 would not do it, and `message` is what it said) or `Protocol`.
 

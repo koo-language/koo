@@ -1,0 +1,15 @@
+// A program that works until it is told to stop, and then finishes what it is at
+// (`a_program_is_told_to_stop` in the tests).
+import std/os
+import std/time
+
+fn main() {
+    var done := 0
+    print("working")
+    while not os.stopping() {
+        // A piece of work that is not to be cut in two.
+        time.sleep(20ms)
+        done += 1
+    }
+    print("told to stop after {if done > 0 { "some" } else { "no" }} work; the last piece was finished")
+}

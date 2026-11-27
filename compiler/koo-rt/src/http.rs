@@ -54,6 +54,10 @@ mod stub {
     pub unsafe fn asking(_: bool) {}
     pub unsafe fn leave_if_out_of_grace() {}
     #[unsafe(no_mangle)]
+    pub unsafe extern "C" fn koo_os_stopping() -> bool {
+        false
+    }
+    #[unsafe(no_mangle)]
     pub unsafe extern "C" fn koo_http_given_up() -> bool {
         false
     }
@@ -788,6 +792,28 @@ mod imp {
 
     extern "C" fn stop(_: i32) {
         STOP.store(true, core::sync::atomic::Ordering::Relaxed);
+    }
+
+    /// Whether a program that is no server has asked to be told when it is to stop.
+    static WATCHING: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
+
+    /// `os.stopping()`: whether the program has been told to stop, by the signal that
+    /// systems send for the purpose or by Ctrl-C. A program that is a server is told so
+    /// by `serve` returning. One that is not, a program that takes work from a queue,
+    /// is ended by the signal in the middle of whatever it is doing, unless it asks:
+    /// from the first time it asks, the signal ends nothing, and is what this says.
+    #[unsafe(no_mangle)]
+    pub unsafe extern "C" fn koo_os_stopping() -> bool {
+        unsafe {
+            use core::sync::atomic::Ordering::{AcqRel, Relaxed};
+            // (Not where a server has its own way with the signal already: there this
+            // says what the server was told.)
+            if LISTEN < 0 && !WATCHING.swap(true, AcqRel) {
+                signal(SIGINT, stop as extern "C" fn(i32) as usize);
+                signal(SIGTERM, stop as extern "C" fn(i32) as usize);
+            }
+            STOP.load(Relaxed)
+        }
     }
 
     fn now() -> i64 {

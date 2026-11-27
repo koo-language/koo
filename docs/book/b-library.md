@@ -375,6 +375,7 @@ fn main() {
 | `os.args() -> [string]` | the arguments of the program |
 | `os.env(name: string) -> string?` | the value of an environment variable |
 | `os.exit(status: int)` | ends the program with a status |
+| `os.stopping() -> bool` | whether the program has been told to stop; from the first time it is asked, the signal that says so ends nothing (Section 8.5) |
 | `T.from_env() -> T ! EnvError` | with no import, for a structure `T` whose fields are `int`, `float`, `bool`, `string`, `Duration` or optionals of them: each field from the environment variable of its name in capitals (Section 8.5) |
 
 ## B.13 `std/http`

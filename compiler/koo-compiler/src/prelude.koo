@@ -755,6 +755,10 @@ fn os__env(name: string) -> string? {
 /// Ends the program with an exit status.
 fn os__exit(status: int) { __exit_now(status) }
 
+/// Whether the program has been told to stop. From the first time a program asks, the
+/// signal that would have ended it ends nothing: the program is to end by itself.
+fn os__stopping() -> bool { return __os_stopping() }
+
 // ---- std/io -----------------------------------------------------------------------------
 
 /// The next line of standard input, without its line ending; `none` at the end.
