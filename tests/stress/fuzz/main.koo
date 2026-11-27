@@ -1,0 +1,41 @@
+// The server that `fuzz.py` aims at: every reader the support library has of what
+// arrives from outside is behind one of its routes. Requests and their bodies are read
+// by the server itself; `/fetch` reads the answer of another server of HTTP, `/pg` that
+// of a database and `/redis` that of a Redis, each of which is a peer of `fuzz.py`'s
+// own that answers with what is nearly right. `fuzz.sh` copies the Redis client of
+// `packages/redis` beside this file.
+import std/http
+import std/os
+import std/sql
+import std/sql/postgres
+
+type Inner = { id: int, tags: [string], score: float?, flags: [string: bool] }
+type Doc = { name: string, items: [Inner], note: string?, n: int = 0 }
+
+fn main() ! http.Error | sql.Error | RedisError {
+    db := postgres.connect(os.env("UP_PG") else "postgres://127.0.0.1:1/x", pool: 4)?
+    cache := redis_connect(os.env("UP_REDIS") else "redis://127.0.0.1:1", pool: 4, timeout: 2s, most: 100000)?
+    other := os.env("UP_HTTP") else "http://127.0.0.1:1/"
+    var app := http.App.new()
+    app.get("/ping", req -> http.text("pong\n"))
+    app.post("/json", req -> {
+        doc: Doc = req.json()?
+        return http.json(doc)
+    })
+    app.post("/echo", req -> http.text("{req.body().len} {req.bytes().len}\n"))
+    app.post("/form", req -> http.text("{req.form("a") else "-"} {req.form("b") else "-"}\n"))
+    app.get("/q/:a/*", req -> http.text("{req.param("a")} {req.rest() else "-"} {req.query("x") else "-"} {req.header("x-h") else "-"} {req.cookie("c") else "-"}\n"))
+    app.get("/fetch", req -> {
+        reply := http.get(other, timeout: 2s, redirects: 2)?
+        return http.text("{reply.status} {reply.body.len} {reply.header("x-up") else "-"}\n")
+    })
+    app.get("/pg", req -> {
+        var seen := 0
+        for row in db.query("select a, b from t where c = {req.query("c") else "x"}")? {
+            seen += (row.string("a") else "").len + (row.int("b") else 0) % 7
+        }
+        return http.text("{seen}\n")
+    })
+    app.get("/redis", req -> http.text("{cache.command(["GET", "k"])?}\n"))
+    app.serve(workers: int.parse(os.env("WORKERS") else "") else 2, timeout: 5s)?
+}

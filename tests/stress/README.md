@@ -26,6 +26,18 @@ Docker forbids unless it is told `--security-opt seccomp=unconfined`: without th
 every program ends at once with `CHECK failed: tsan_platform_linux.cpp`, and the
 script says that all of them have races.
 
+`fuzz.py` throws what is nearly right at everything the support library reads from
+outside: requests of HTTP, bodies of JSON, and the answers of another server of HTTP,
+of a PostgreSQL and of a Redis, which three are peers of its own that spoil a right
+answer in one way or another. The server it aims at (`fuzz/main.koo`) must go on
+whatever it is sent, keep its workers, write no panic of its own, and stop with status
+0. A run prints its seed, and the same seed throws the same again. `fuzz.sh` does it
+with the library built so that AddressSanitizer sees inside it, on Linux with a nightly
+Rust compiler, as `races.sh` does for races.
+
+    python3 tests/stress/fuzz.py target/release/koo --seconds 15
+    sh tests/stress/fuzz.sh target/release/koo
+
 `limits.sh` runs the same server in a container that is allowed forty processes, where
 a thread counts as one, and checks that the process which watches the workers leaves
 room under the limit to start a worker again, and does when one is killed: both where
