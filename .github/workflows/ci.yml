@@ -99,3 +99,15 @@ jobs:
         run: |
           rustup toolchain install nightly --profile minimal
           sh tests/stress/races.sh target/debug/koo
+      # What is nearly right, thrown at every reader the support library has of what
+      # comes from outside: requests, bodies of JSON, and the answers of another
+      # server, of a database and of a Redis. The server must go on, with the workers
+      # it had. A run says its seed, and the same seed throws the same again.
+      - name: readers of what comes from outside
+        run: python3 tests/stress/fuzz.py target/debug/koo --seconds 8
+      # And with the library built so that AddressSanitizer sees inside it: a read or
+      # a write beyond what was allocated is then a failure, where otherwise it may be
+      # nothing that anyone sees.
+      - name: readers of what comes from outside, under the address sanitizer (Linux)
+        if: runner.os == 'Linux'
+        run: sh tests/stress/fuzz.sh target/debug/koo 10

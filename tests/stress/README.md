@@ -33,7 +33,12 @@ answer in one way or another. The server it aims at (`fuzz/main.koo`) must go on
 whatever it is sent, keep its workers, write no panic of its own, and stop with status
 0. A run prints its seed, and the same seed throws the same again. `fuzz.sh` does it
 with the library built so that AddressSanitizer sees inside it, on Linux with a nightly
-Rust compiler, as `races.sh` does for races.
+Rust compiler, as `races.sh` does for races. A server built so has no stacks to switch
+between, and each of its workers answers one request at a time: so there the clients
+of the three peers' readers wait for each answer before they ask again (`--in-turn`),
+a handler has three tenths of a second and not five seconds, and fewer things are thrown in the same time. A
+read beyond what was allocated, planted in the reader of JSON, is reported by it at
+once, which is the check that it sees what it is there to see.
 
     python3 tests/stress/fuzz.py target/release/koo --seconds 15
     sh tests/stress/fuzz.sh target/release/koo

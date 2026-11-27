@@ -14,14 +14,16 @@ rustc +nightly --edition 2024 --crate-type staticlib --crate-name koo_rt \
     -C opt-level=1 -C panic=abort -C codegen-units=1 \
     -Zsanitizer=address -Cunsafe-allow-abi-mismatch=sanitizer \
     --target "$host" -o "$out/libkoo_rt.a" compiler/koo-rt/src/lib.rs || exit 1
-mkdir "$out/package"
-cp tests/stress/fuzz/main.koo packages/redis/redis.koo "$out/package/"
-if ! KOO_RUNTIME="$out/libkoo_rt.a" "$koo" build --sanitize "$out/package" -o "$out/server" > "$out/built.txt" 2>&1; then
+if ! KOO_RUNTIME="$out/libkoo_rt.a" "$koo" build --sanitize tests/stress/fuzz -o "$out/server" > "$out/built.txt" 2>&1; then
     echo "FAIL  the server was not built"
     head -20 "$out/built.txt"
     exit 1
 fi
-python3 tests/stress/fuzz.py "$koo" --binary "$out/server" --seconds "${2:-15}" ${3:+--seed "$3"}
+# A server built so answers one request at a time in each of its workers, where one
+# built as usual answers many: its handlers are given three tenths of a second each, and its clients
+# wait their turn, so that what is thrown is read and not left waiting.
+DEADLINE_MS=300 \
+python3 -u tests/stress/fuzz.py "$koo" --binary "$out/server" --patience 120 --in-turn --seconds "${2:-15}" ${3:+--seed "$3"}
 status=$?
 rm -rf "$out"
 exit $status

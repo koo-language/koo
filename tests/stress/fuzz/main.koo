@@ -2,19 +2,20 @@
 // arrives from outside is behind one of its routes. Requests and their bodies are read
 // by the server itself; `/fetch` reads the answer of another server of HTTP, `/pg` that
 // of a database and `/redis` that of a Redis, each of which is a peer of `fuzz.py`'s
-// own that answers with what is nearly right. `fuzz.sh` copies the Redis client of
-// `packages/redis` beside this file.
+// own that answers with what is nearly right. The Redis client is the package of
+// `packages/redis`.
 import std/http
 import std/os
 import std/sql
 import std/sql/postgres
+import ../../../packages/redis
 
 type Inner = { id: int, tags: [string], score: float?, flags: [string: bool] }
 type Doc = { name: string, items: [Inner], note: string?, n: int = 0 }
 
-fn main() ! http.Error | sql.Error | RedisError {
+fn main() ! http.Error | sql.Error | redis.Error {
     db := postgres.connect(os.env("UP_PG") else "postgres://127.0.0.1:1/x", pool: 4)?
-    cache := redis_connect(os.env("UP_REDIS") else "redis://127.0.0.1:1", pool: 4, timeout: 2s, most: 100000)?
+    cache := redis.connect(os.env("UP_REDIS") else "redis://127.0.0.1:1", pool: 4, timeout: 2s, most: 100000)?
     other := os.env("UP_HTTP") else "http://127.0.0.1:1/"
     var app := http.App.new()
     app.get("/ping", req -> http.text("pong\n"))
@@ -37,5 +38,7 @@ fn main() ! http.Error | sql.Error | RedisError {
         return http.text("{seen}\n")
     })
     app.get("/redis", req -> http.text("{cache.command(["GET", "k"])?}\n"))
-    app.serve(workers: int.parse(os.env("WORKERS") else "") else 2, timeout: 5s)?
+    // How long a handler has: five seconds, or what a check that is in a hurry says.
+    deadline := 1ms * (int.parse(os.env("DEADLINE_MS") else "") else 5000)
+    app.serve(workers: int.parse(os.env("WORKERS") else "") else 2, timeout: deadline)?
 }

@@ -26,6 +26,15 @@ def option(name, default):
 SECONDS = float(option("--seconds", os.environ.get("FUZZ_SECONDS", "15")))
 SEED = int(option("--seed", str(int(time.time()))))
 PORT = int(option("--port", "39780"))
+# How long the plain request after each reader may take. A server built for a sanitizer
+# does without the stacks it switches between, so each of its workers answers one
+# request at a time, and those still waiting for a peer that will not answer are each
+# waited out before the plain one is reached: `fuzz.sh` allows for that.
+PATIENCE = float(option("--patience", "10"))
+# And with `--in-turn` the clients of the three peers' readers wait for each answer
+# before they ask again, so that such a server is not left with more to answer than it
+# can in that time. (Its handlers are given less time each than five seconds: `DEADLINE_MS`.)
+IN_TURN = "--in-turn" in args
 rng = random.Random(SEED)
 root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -196,10 +205,7 @@ build = tempfile.mkdtemp(prefix="koo-fuzz-")
 errors = os.path.join(build, "stderr.txt")
 binary = option("--binary", os.path.join(build, "server"))
 if "--binary" not in args:
-    package = os.path.join(build, "package")
-    os.makedirs(package)
-    shutil.copy(os.path.join(root, "tests/stress/fuzz/main.koo"), package)
-    shutil.copy(os.path.join(root, "packages/redis/redis.koo"), package)
+    package = os.path.join(root, "tests/stress/fuzz")
     built = subprocess.run([args[0], "build", package, "-o", binary], capture_output=True, text=True)
     if built.returncode != 0:
         print("FAIL  the server was not built\n" + built.stderr)
@@ -210,7 +216,8 @@ for name, answer in [("UP_HTTP", other_server), ("UP_PG", database), ("UP_REDIS"
     server, port = listen()
     serve(server, answer)
     peers[name] = port
-environment = dict(os.environ, PORT=str(PORT), WORKERS="2", KOO_CHECK="1",
+# (More workers where each answers one request at a time, so that as many are read.)
+environment = dict(os.environ, PORT=str(PORT), WORKERS="8" if IN_TURN else "2", KOO_CHECK="1",
                    UP_HTTP=f"http://127.0.0.1:{peers['UP_HTTP']}/", UP_PG=f"postgres://fuzz@127.0.0.1:{peers['UP_PG']}/fuzz?sslmode=disable",
                    UP_REDIS=f"redis://127.0.0.1:{peers['UP_REDIS']}",
                    ASAN_OPTIONS="detect_leaks=0:abort_on_error=0", TSAN_OPTIONS="die_after_fork=0")
@@ -252,10 +259,14 @@ workers = children(target.pid)
 failures = []
 # Before anything is spoiled, each of the peers is read rightly: a reader that is never
 # reached is not looked at, however much is thrown.
+# (A peer also answers with a failure of its own now and then, which is a right answer
+# and is passed on as one: so each is asked several times, and must once be read.)
 for path in ["/fetch", "/pg", "/redis"]:
-    status = ask(path)
-    if status != 200:
-        print(f"FAIL  {path} is answered {status} when its peer answers rightly:\n" + open(errors).read()[-1500:])
+    statuses = []
+    while 200 not in statuses and len(statuses) < 12:
+        statuses.append(ask(path))
+    if 200 not in statuses:
+        print(f"FAIL  {path} is answered {statuses} when its peer answers rightly:\n" + open(errors).read()[-1500:])
         target.kill()
         sys.exit(1)
 print(f"seed {SEED}, {SECONDS:.0f} seconds for each reader")
@@ -276,7 +287,7 @@ requests = [
 ]
 
 
-def throw(make, name):
+def throw(make, name, path=None):
     """Clients that each send what `make` gives them, for the time there is."""
     until = time.time() + SECONDS
     sent = [0]
@@ -284,6 +295,10 @@ def throw(make, name):
     def client(seed):
         mine = random.Random(seed)
         while time.time() < until:
+            if IN_TURN and path:
+                ask(path, timeout=30)
+                sent[0] += 1
+                continue
             try:
                 connection = socket.create_connection(("127.0.0.1", PORT), timeout=3)
                 for _ in range(mine.choice([1, 1, 2, 5])):
@@ -307,7 +322,7 @@ def throw(make, name):
         c.join()
     # Whatever was thrown, the server goes on, with the workers it had.
     problems = []
-    status = ask("/ping")
+    status = ask("/ping", timeout=PATIENCE)
     if status != 200:
         problems.append(f"a plain request afterwards was answered {status}")
     if target.poll() is not None:
@@ -337,7 +352,7 @@ spoiling.set()
 for path, name in [("/fetch", "answers of another server that are nearly HTTP"),
                    ("/pg", "answers of a database that are nearly PostgreSQL's"),
                    ("/redis", "answers of a cache that are nearly a Redis's")]:
-    throw(lambda mine, path=path: b"GET %s HTTP/1.1\r\nHost: fuzz\r\n\r\n" % path.encode(), name)
+    throw(lambda mine, path=path: b"GET %s HTTP/1.1\r\nHost: fuzz\r\n\r\n" % path.encode(), name, path)
 spoiling.clear()
 
 target.send_signal(signal.SIGTERM)
