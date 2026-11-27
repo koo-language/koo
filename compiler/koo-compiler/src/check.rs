@@ -1879,6 +1879,16 @@ impl<'a> Checker<'a> {
                     }
                     return None;
                 };
+                // A type of another package has the methods its package gave it, by
+                // whatever name it is written here: another name for it is still it.
+                if !self.in_prelude && self.package_of_type(&ty).unwrap_or_default() != self.package_here() {
+                    self.error_help(
+                        sig.name.span,
+                        format!("a function cannot be declared on `{}`, a type of another package", self.ty_name(&ty)),
+                        "methods and type-level functions are declared on the types of this package (Sections 4.6 and 6.1)",
+                    );
+                    return None;
+                }
                 // The prelude's `Http__App.get` is `http.App.get` to the program.
                 let on = self.ty_name(&ty);
                 let on = if self.in_prelude {

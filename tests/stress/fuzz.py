@@ -25,7 +25,17 @@ def option(name, default):
 
 SECONDS = float(option("--seconds", os.environ.get("FUZZ_SECONDS", "15")))
 SEED = int(option("--seed", str(int(time.time()))))
-PORT = int(option("--port", "39780"))
+
+
+def free_port():
+    """A port that nothing has: asked of the system, since one that is written down may
+    be in use the day the check is run, by a connection that was given it by chance."""
+    with socket.socket() as probe:
+        probe.bind(("127.0.0.1", 0))
+        return probe.getsockname()[1]
+
+
+PORT = int(option("--port", "0")) or free_port()
 # How long the plain request after each reader may take. A server built for a sanitizer
 # does without the stacks it switches between, so each of its workers answers one
 # request at a time, and those still waiting for a peer that will not answer are each

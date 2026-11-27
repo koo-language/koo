@@ -446,7 +446,15 @@ impl<'a> Checker<'a> {
         span: Span,
         expected: Option<&Ty>,
     ) -> Expr {
-        self.offered(&type_name.name, name);
+        // (By the type's own name, where it is written by another: what is kept of a
+        // type is kept from every name for it.)
+        let own = match self.type_names.get(&type_name.name) {
+            Some(TypeName::Alias(Ty::Struct(id))) => Some(self.program.structs[*id].name.clone()),
+            Some(TypeName::Alias(Ty::Enum(id))) => Some(self.program.enums[*id].name.clone()),
+            Some(TypeName::Alias(Ty::Error(id))) => Some(self.program.errors[*id].name.clone()),
+            _ => None,
+        };
+        self.offered(own.as_deref().unwrap_or(&type_name.name), name);
         // Another name for a type has the functions of the type it names (Section 6.7).
         if let Some(TypeName::Alias(named)) = self.type_names.get(&type_name.name).cloned() {
             let primitive = match named {

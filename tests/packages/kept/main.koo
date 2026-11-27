@@ -37,6 +37,15 @@ fn main() {
         _ => print("gone")
     }
     print(stock.theirs())
+    print(Other.make())
+}
+
+// Another name for a type of the package is the type still: it is given no methods
+// here, and what the package keeps of it is kept from this name too.
+type Other = stock.Item
+
+fn (self: Other) shout() -> string {
+    return "mine now"
 }
 //! error the import `unused` is not used
 //! stderr main.koo:5:1
@@ -72,6 +81,10 @@ fn main() {
 //! stderr main.koo:33:11
 //! error `Moved` has no field `_by`
 //! stderr main.koo:36:33
+//! error `stock.Item.make` is not offered by its package
+//! stderr main.koo:40:17
+//! error a function cannot be declared on `stock.Item`, a type of another package
+//! stderr main.koo:47:18
 //! error unknown function `mine`
 //! stderr stock.koo:24:12
 //! error unknown type `Mine`
