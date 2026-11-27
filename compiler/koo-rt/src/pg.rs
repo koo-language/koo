@@ -928,6 +928,24 @@ pub(crate) unsafe fn ready(fd: i32, write: bool, until: i64) -> bool {
 /// Writes to a connection as `send_all` does, but without keeping the thread while the
 /// other end has no room: a handler of a server is left where it is until there is
 /// room, and the wait ends at `until` (0 for no limit). Returns whether all went out.
+/// The error of a write when the system, not the socket, is short of room for what is
+/// written: for a moment, while others' data goes out (macOS says it under load, of
+/// sockets of every kind). It is no word about the connection, which is still there.
+pub(crate) const NO_BUFFERS: i32 = if cfg!(target_os = "macos") { 55 } else { 105 };
+
+/// Waits a moment for the system to have room again: a handler of a server lets the
+/// others go on meanwhile, and anything else sleeps.
+pub(crate) unsafe fn short_of_room() {
+    unsafe extern "C" {
+        fn nanosleep(wanted: *const [i64; 2], left: *mut [i64; 2]) -> i32;
+    }
+    unsafe {
+        if !fiber::pause(1_000_000) {
+            nanosleep(&[0, 1_000_000], core::ptr::null_mut());
+        }
+    }
+}
+
 pub(crate) unsafe fn send_within(fd: i32, mut data: &[u8], until: i64) -> bool {
     unsafe {
         const F_GETFL: i32 = 3;
@@ -940,6 +958,7 @@ pub(crate) unsafe fn send_within(fd: i32, mut data: &[u8], until: i64) -> bool {
         let flags = fcntl(fd, F_GETFL);
         fcntl(fd, F_SETFL, flags | non_blocking);
         let mut whole = true;
+        let mut short = 0u32;
         while !data.is_empty() {
             let n = sendto(fd, data.as_ptr(), data.len(), quietly, core::ptr::null(), 0);
             if n > 0 {
@@ -948,6 +967,17 @@ pub(crate) unsafe fn send_within(fd: i32, mut data: &[u8], until: i64) -> bool {
             }
             let error = *errno_location();
             if error == EINTR {
+                continue;
+            }
+            // (The system short of room is waited for, as long as there is time: and
+            // with no time of its own, for as long as half a minute of such moments.)
+            if error == NO_BUFFERS {
+                short += 1;
+                if (until != 0 && koo_now_nanos() >= until) || (until == 0 && short > 30_000) {
+                    whole = false;
+                    break;
+                }
+                short_of_room();
                 continue;
             }
             // The time is for the whole of it, however much has gone out meanwhile.

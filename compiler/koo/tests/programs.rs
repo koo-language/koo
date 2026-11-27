@@ -1473,13 +1473,31 @@ fn mistakes_are_explained_as_expected() {
 
 /// One request on a connection of its own. The request asks for the connection to be
 /// closed, so the answer is everything the server sends.
+/// Writes all of a request, waiting a moment when the system is short of room for it,
+/// as macOS is for a while when many write at once ("No buffer space available").
+fn send_all(stream: &mut std::net::TcpStream, mut data: &[u8]) {
+    use std::io::Write;
+    let short = if cfg!(target_os = "macos") { 55 } else { 105 };
+    let began = std::time::Instant::now();
+    while !data.is_empty() {
+        match stream.write(data) {
+            Ok(n) => data = &data[n..],
+            Err(e) if e.raw_os_error() == Some(short) && began.elapsed() < std::time::Duration::from_secs(10) => {
+                std::thread::sleep(std::time::Duration::from_millis(1))
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
+            Err(e) => panic!("the request could not be written: {e}"),
+        }
+    }
+}
+
 fn http(port: u16, request: &str) -> String {
-    use std::io::{Read, Write};
+    use std::io::Read;
     let mut stream = std::net::TcpStream::connect(("127.0.0.1", port)).expect("the server accepts");
     stream
         .set_read_timeout(Some(std::time::Duration::from_secs(5)))
         .unwrap();
-    stream.write_all(request.as_bytes()).unwrap();
+    send_all(&mut stream, request.as_bytes());
     let mut answer = Vec::new();
     let _ = stream.read_to_end(&mut answer);
     String::from_utf8_lossy(&answer).to_string()
@@ -1487,12 +1505,12 @@ fn http(port: u16, request: &str) -> String {
 
 /// A request and its answer as bytes, for bodies that are not text.
 fn http_bytes(port: u16, request: &[u8]) -> Vec<u8> {
-    use std::io::{Read, Write};
+    use std::io::Read;
     let mut stream = std::net::TcpStream::connect(("127.0.0.1", port)).expect("the server accepts");
     stream
         .set_read_timeout(Some(std::time::Duration::from_secs(5)))
         .unwrap();
-    stream.write_all(request).unwrap();
+    send_all(&mut stream, request);
     let mut answer = Vec::new();
     let _ = stream.read_to_end(&mut answer);
     answer
@@ -1549,9 +1567,9 @@ fn serve(executable: &Path, workers: usize, files: &Path) -> (Server, u16) {
         .env("PORT", port.to_string())
         .env("WORKERS", workers.to_string())
         .env("STATIC", files)
-        .stdout(std::process::Stdio::null())
+        .stdout(std::fs::File::create(std::env::temp_dir().join(format!("koo-served-out-{port}.log"))).unwrap())
         .env("KOO_LEAKS", "1")
-        .stderr(std::process::Stdio::null())
+        .stderr(std::fs::File::create(std::env::temp_dir().join(format!("koo-served-err-{port}.log"))).unwrap())
         .spawn()
         .expect("the server starts");
     for _ in 0..200 {
@@ -1563,6 +1581,22 @@ fn serve(executable: &Path, workers: usize, files: &Path) -> (Server, u16) {
     let _ = child.kill();
     let _ = child.wait();
     panic!("the server did not start listening on port {port}");
+}
+
+/// What a server started by `serve` has written, for a test that fails to show: the
+/// lines that are not a request's, and the last of those that are.
+fn told(port: u16) -> String {
+    let read = |name: &str| {
+        std::fs::read_to_string(std::env::temp_dir().join(format!("koo-served-{name}-{port}.log"))).unwrap_or_default()
+    };
+    let out = read("out");
+    let lines: Vec<&str> = out.lines().filter(|line| !line.contains("\"status\":2")).collect();
+    let tail = &lines[lines.len().saturating_sub(30)..];
+    format!(
+        "--- its standard error:\n{}\n--- its other lines, the last 30:\n{}",
+        read("err"),
+        tail.join("\n")
+    )
 }
 
 /// Asks the server to stop, as Ctrl-C or a process manager would, and checks that it
@@ -3438,15 +3472,20 @@ fn a_stopping_server_answers_what_it_has_in_hand() {
             let sent: Vec<_> = (0..100)
                 .map(|_| {
                     let long = long.clone();
-                    std::thread::spawn(move || post(port, "/through", &long))
+                    std::thread::spawn(move || {
+                        let began = std::time::Instant::now();
+                        (post(port, "/through", &long), began.elapsed())
+                    })
                 })
                 .collect();
             for answer in sent {
-                let answer = answer.join().unwrap();
+                let (answer, took) = answer.join().unwrap();
                 assert!(
                     answer.ends_with(long.as_str()),
-                    "with {workers} workers: {} bytes",
-                    answer.len()
+                    "with {workers} workers: {} bytes after {took:?}: {}\n{}",
+                    answer.len(),
+                    &answer[..answer.len().min(400)],
+                    told(port)
                 );
             }
             // The first actor a server starts is held up for like any other: while
@@ -3455,7 +3494,12 @@ fn a_stopping_server_answers_what_it_has_in_hand() {
             // is quick: each is given five to be answered in, and a machine that
             // makes a wait of 100 ms last 125 would have none to spare with four.)
             let lingering: Vec<_> = (0..40)
-                .map(|_| std::thread::spawn(move || get(port, "/linger/50")))
+                .map(|_| {
+                    std::thread::spawn(move || {
+                        let began = std::time::Instant::now();
+                        (get(port, "/linger/50"), began.elapsed())
+                    })
+                })
                 .collect();
             std::thread::sleep(std::time::Duration::from_millis(50));
             let started = std::time::Instant::now();
@@ -3469,8 +3513,12 @@ fn a_stopping_server_answers_what_it_has_in_hand() {
                 "with {workers} workers, twenty asks beside the first actor took {took:?}"
             );
             for answer in lingering {
-                let answer = answer.join().unwrap();
-                assert!(answer.starts_with("HTTP/1.1 200 "), "with {workers} workers: {answer}");
+                let (answer, took) = answer.join().unwrap();
+                assert!(
+                    answer.starts_with("HTTP/1.1 200 "),
+                    "with {workers} workers, after {took:?}: {answer}\n{}",
+                    told(port)
+                );
             }
             // A method of an actor that runs out of stack costs the handler that
             // asked, and the server goes on, its actors with it.

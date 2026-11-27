@@ -2093,6 +2093,11 @@ mod remote {
                 if code == EINTR {
                     continue;
                 }
+                // (The system short of room for a moment: tried again in one.)
+                if code == crate::pg::NO_BUFFERS && until != 0 && crate::koo_now_nanos() < until {
+                    crate::pg::short_of_room();
+                    continue;
+                }
                 if code != EAGAIN {
                     there = false;
                     break;
@@ -2114,10 +2119,14 @@ mod remote {
     }
 
     unsafe fn write_full(fd: i32, mut data: &[u8]) -> bool {
+        let mut short = 0u32;
         while !data.is_empty() {
             let n = unsafe { write(fd, data.as_ptr(), data.len()) };
             if n > 0 {
                 data = &data[n as usize..];
+            } else if unsafe { error() } == crate::pg::NO_BUFFERS && short < 30_000 {
+                short += 1;
+                unsafe { crate::pg::short_of_room() };
             } else if unsafe { error() } != EINTR {
                 return false;
             }

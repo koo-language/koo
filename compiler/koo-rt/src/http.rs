@@ -1356,7 +1356,10 @@ mod imp {
             if code == EINTR {
                 continue;
             }
-            if code == sys::EAGAIN {
+            // (The system short of room for a moment is as a socket that is full: the
+            // rest goes when the socket can be written to, which is at once, and is
+            // tried until it goes or the connection's time is over.)
+            if code == sys::EAGAIN || code == crate::pg::NO_BUFFERS {
                 if !c.writing {
                     c.writing = true;
                     unsafe { sys::want_write(QUEUE, c.fd, tag(index, c.generation), c.reading) };
