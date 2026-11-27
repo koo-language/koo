@@ -1808,6 +1808,12 @@ fn (self: Http__App) serve(port: int = -1, workers: int = 0, max_body: int = 104
                     message: "the environment variable `WEB_CONCURRENCY` is `{text}`, which is not a number of workers",
                 }
             }
+            // What the environment says is how many workers, and nothing else about
+            // the program: one worker that the environment asks for has a process
+            // watching over it like any other number, where `workers: 1` written in
+            // the program is the one process that is asked for to look into
+            // something. (The number is passed with its sign changed, to say so.)
+            processes = -processes
         }
     }
     __http_reset()

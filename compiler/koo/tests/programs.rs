@@ -2379,6 +2379,90 @@ fn a_client_that_leaves_gives_back_its_connection() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// What the environment says of a server is how many workers it has, and nothing else
+/// about it: one worker has a process watching over it as two have, and is started
+/// again when it is killed.
+#[test]
+fn the_environment_says_how_many_workers() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let dir = std::env::temp_dir().join(format!("koo-plain-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let executable = dir.join("plain");
+    let built = Command::new(env!("CARGO_BIN_EXE_koo"))
+        .arg("build")
+        .arg(root.join("tests/http/plain.koo"))
+        .arg("-o")
+        .arg(&executable)
+        .output()
+        .expect("koo runs");
+    assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
+    let children = |parent: u32| -> Vec<String> {
+        let found = Command::new("pgrep")
+            .args(["-P", &parent.to_string()])
+            .output()
+            .unwrap();
+        String::from_utf8_lossy(&found.stdout)
+            .split_whitespace()
+            .map(str::to_string)
+            .collect()
+    };
+    for workers in [1, 2] {
+        let port = std::net::TcpListener::bind("127.0.0.1:0")
+            .unwrap()
+            .local_addr()
+            .unwrap()
+            .port();
+        let child = Command::new(&executable)
+            .env("PORT", port.to_string())
+            .env("WEB_CONCURRENCY", workers.to_string())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .expect("the server starts");
+        let server = Server(child);
+        for _ in 0..200 {
+            if std::net::TcpStream::connect(("127.0.0.1", port)).is_ok() {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(25));
+        }
+        let first = children(server.0.id());
+        assert_eq!(
+            first.len(),
+            workers,
+            "with WEB_CONCURRENCY={workers}, the workers are {first:?}"
+        );
+        // One that is killed is started again, and the server answers meanwhile and after.
+        Command::new("kill").args(["-KILL", &first[0]]).status().unwrap();
+        let mut now = Vec::new();
+        for _ in 0..200 {
+            now = children(server.0.id());
+            if now.len() == workers && !now.contains(&first[0]) {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(25));
+        }
+        assert!(
+            now.len() == workers && !now.contains(&first[0]),
+            "with WEB_CONCURRENCY={workers}, after one was killed the workers are {now:?}"
+        );
+        let mut answer = String::new();
+        for _ in 0..40 {
+            answer = get(port, "/");
+            if answer.ends_with("\r\n\r\nhere\n") {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(25));
+        }
+        assert!(
+            answer.ends_with("\r\n\r\nhere\n"),
+            "with WEB_CONCURRENCY={workers}: {answer}"
+        );
+        stop(server, port);
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 /// A handler is given so long for a request, thirty seconds unless `serve` is told
 /// otherwise: here half a second. One that waits longer is let wait for nothing more
 /// and its client is answered 503, the log saying which request; one that computes is
@@ -2453,14 +2537,18 @@ fn a_handler_has_its_time() {
         assert!(answer.starts_with("HTTP/1.1 500 "), "with {workers} workers: {answer}");
         // An actor's method runs to its end whatever becomes of who asked. In one
         // process it runs in the handler, which is then not cut short either; from
-        // another process the asker stops waiting when its time is over.
-        let (answer, took) = timed(port, "/nap/1500");
+        // another process the asker stops waiting a second after its time is over:
+        // that second is what a handler is given for an answer that is on its way.
+        let (answer, took) = timed(port, "/nap/3000");
         if workers == 1 {
             assert!(answer.ends_with("\r\n\r\n1\n"), "{answer}");
         } else {
             assert!(answer.starts_with("HTTP/1.1 503 "), "with {workers} workers: {answer}");
-            assert!(took < 1400, "with {workers} workers, an ask took {took} ms");
-            std::thread::sleep(std::time::Duration::from_millis(1600));
+            assert!(
+                (1400..2400).contains(&took),
+                "with {workers} workers, an ask took {took} ms"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(1800));
         }
         let (answer, _) = timed(port, "/naps");
         assert!(answer.ends_with("\r\n\r\n1\n"), "with {workers} workers: {answer}");

@@ -104,12 +104,12 @@ fn main() ! http.Error {
         time.sleep(1ms * num(req, "ms"))
         return http.text("{req.param("ms")} {req.path} {req.header("x-check") else "-"} {req.body().len}\n")
     })
-    // A thousand passes of a wait and two milliseconds of work: a handler that gives
-    // way to the others at each wait, and must go on giving way when its client has
-    // left and it is let wait for nothing.
-    app.get("/grind", req -> {
+    // So many passes of a wait and two milliseconds of work: a handler that gives way
+    // to the others at each wait, and must go on giving way when its client has left
+    // and it is let wait for nothing.
+    app.get("/grind/:passes", req -> {
         var done := 0
-        for pass in 0..1000 {
+        for pass in 0..num(req, "passes") {
             time.sleep(10ms)
             until := time.uptime() + 2ms
             while time.uptime() < until {

@@ -484,9 +484,11 @@ def left(name, server):
     problems.append((status != 200 or text.strip() != b"5 /after/5 - 3") and f"after 60 clients left handlers that read their requests, a request was answered {status} {text[:60]!r}")
     problems.append(server.poll() is not None and f"the server ended, with status {server.poll()}")
     # Handlers that work between their waits, as many as there are workers and more,
-    # left by their clients: with nothing to wait for they have two seconds of work
-    # each, and the requests of others are answered between its pieces, not after it.
-    abandon(["/grind"] * (2 * WORKERS), 0.3)
+    # left by their clients: with nothing to wait for they have most of a second of
+    # work each, and the requests of others are answered between its pieces, not after
+    # it. (Not more work than that: a server that is told to stop ends when its
+    # handlers have, and these go on to their ends, client or no client.)
+    abandon(["/grind/400"] * (2 * WORKERS), 0.3)
     worst, until = 0.0, time.time() + 2
     while time.time() < until:
         status, _, took = ask("/ping", timeout=10)
@@ -517,6 +519,18 @@ def left(name, server):
             if status != 200 or int(text) != counted + 1:
                 mixed += 1
         problems.append(mixed and f"{mixed} asks after that got an answer that was not their own")
+    if WORKERS > 1:
+        # Thousands whose handlers were asking an actor that answers in a moment: each
+        # handler has its answer and ends by returning, so no worker is worn out by
+        # them and replaced. (Ended at once instead, each left behind what it held,
+        # and four and a half thousand of them cost the server its workers, one after
+        # another.)
+        workers_before = set(children(server.pid))
+        for round in range(50):
+            abandon([f"/nap/{(round * 90 + i) % 256}/30" for i in range(90)], 0.02)
+        time.sleep(1.5)
+        replaced = len(workers_before - set(children(server.pid)))
+        problems.append(replaced and f"{replaced} workers were replaced because clients left handlers that were asking an actor")
     # Several thousand more, while others are answered.
     stop_asking, refused, asked = threading.Event(), [], [0]
 

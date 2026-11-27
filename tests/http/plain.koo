@@ -1,0 +1,10 @@
+// A server that says nothing of how it is to run: where it listens and with how many
+// workers is the environment's to say (`the_environment_says_how_many_workers` in the
+// tests).
+import std/http
+
+fn main() ! http.Error {
+    var app := http.App.new()
+    app.get("/", req -> http.text("here\n"))
+    app.serve()?
+}

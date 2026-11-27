@@ -51,6 +51,8 @@ mod stub {
     pub unsafe fn waits_elsewhere(_: usize) -> bool {
         false
     }
+    pub unsafe fn asking(_: bool) {}
+    pub unsafe fn leave_if_out_of_grace() {}
     #[unsafe(no_mangle)]
     pub unsafe extern "C" fn koo_http_given_up() -> bool {
         false
@@ -2225,6 +2227,52 @@ mod imp {
         }
     }
 
+    /// How long a handler whose request was given up is still let wait for the answer
+    /// of an actor it asks, in nanoseconds.
+    const ASK_GRACE: i64 = 1_000_000_000;
+
+    /// Said by a handler that begins to ask an actor in another process, and when it
+    /// is done. An ask has no way to fail, so a handler that was not let wait for the
+    /// answer could only be ended there, as a panic ends one, leaving behind what it
+    /// held; and most answers are a moment away. So a handler whose request was given
+    /// up is let wait a second more for the answers of what it asks, in all, and then
+    /// comes to its end by returning, as any handler does. Only one whose actor takes
+    /// longer than that is ended.
+    #[allow(static_mut_refs)]
+    pub unsafe fn asking(on: bool) {
+        unsafe {
+            if SERVER.load(core::sync::atomic::Ordering::Acquire) == thread::this_thread() && SIDE_BY_SIDE {
+                PLACES[HERE].asking = on;
+            }
+        }
+    }
+
+    /// Whether the handler's request was given up and the second it had for the
+    /// answers of actors is over. The second begins when this is first asked.
+    #[allow(static_mut_refs)]
+    unsafe fn out_of_grace() -> bool {
+        unsafe {
+            if !given_up() {
+                return false;
+            }
+            let place = &mut PLACES[HERE];
+            if place.grace == 0 {
+                place.grace = nanos() + ASK_GRACE;
+            }
+            nanos() >= place.grace
+        }
+    }
+
+    /// Ends the handler, as `leave_if_given_up` does, if that second is over.
+    pub unsafe fn leave_if_out_of_grace() {
+        unsafe {
+            if out_of_grace() && !thread::me().guard.is_null() {
+                PLACES[HERE].asking = false;
+                crate::actor::leave();
+            }
+        }
+    }
+
     /// Whether what holds something is a handler of this very thread that is waiting
     /// somewhere, while the thread itself cannot be left: asked by a thread that would
     /// wait for the thing to be given back, by an actor's method that runs in a
@@ -2498,7 +2546,14 @@ mod imp {
                 return port;
             }
             let cores = thread::processors() as i64;
-            let workers = if workers <= 0 { cores } else { workers }.min(MAX_WORKERS as i64);
+            // (A number below zero is one that the environment gave: so many workers,
+            // with a process to watch over them even where it is one.)
+            let workers = match workers {
+                0 => cores,
+                below if below < 0 => -below,
+                workers => workers,
+            }
+            .min(MAX_WORKERS as i64);
             // What is waiting to be printed is printed once, not once by every worker.
             koo_flush();
             // The actors of the program are kept here, by the process that watches.
@@ -2582,6 +2637,11 @@ mod imp {
         /// there then, and is told.
         deadline: i64,
         timed_out: bool,
+        /// Whether its handler is asking an actor in another process, and until when
+        /// one whose request was given up is still let wait for the actor's answer
+        /// (0 before it has had to be decided). See `asking`.
+        asking: bool,
+        grace: i64,
         /// How many times a handler whose request was given up has gone on to begin
         /// something that waits: one that does so without end is ended (`cut_short`).
         cut: u32,
@@ -2603,6 +2663,8 @@ mod imp {
         given_up: false,
         deadline: 0,
         timed_out: false,
+        asking: false,
+        grace: 0,
         cut: 0,
         serial: 0,
         current: NO_CURRENT,
@@ -2720,42 +2782,56 @@ mod imp {
             }
             // A handler whose request was given up waits for nothing: whatever it
             // asked for is said not to have come in time, which those who wait know
-            // what to do about, and it ends at the next place where it can.
-            if given_up() {
+            // what to do about, and it ends at the next place where it can. (Except
+            // for the answer of an actor it asks, for a second: see `asking`.)
+            if given_up() && (!PLACES[HERE].asking || out_of_grace()) {
                 return fiber::Waited::TimeUp;
             }
-            let Some(next) = another_place() else {
-                return fiber::Waited::NotHere;
-            };
             let here = HERE;
-            // No wait of a handler's is longer than the time its request has left.
-            let deadline = PLACES[here].deadline;
-            let until = if deadline != 0 && (until == 0 || deadline < until) {
-                deadline
-            } else {
-                until
-            };
-            PLACES[here].serial = (PLACES[here].serial + 1) & 0xff_ffff;
-            if fd >= 0 {
-                sys::watch_once(QUEUE, fd, write, PLACE | (PLACES[here].serial as usize) << 8 | here);
-            }
-            PLACES[here].fd = fd;
-            PLACES[here].until = until;
-            PLACES[here].late = false;
-            PLACES[here].doing = Doing::Waiting;
-            go_to(next);
-            // The loop came back here: what was waited for has come, or the time has.
-            PLACES[here].doing = Doing::Handling;
-            let late = PLACES[here].late;
-            if fd >= 0 {
-                sys::unwatch(QUEUE, fd, write, !late);
-            }
-            if late {
-                // (If it was the request's time that ran out, that is found here.)
-                given_up();
-                fiber::Waited::TimeUp
-            } else {
-                fiber::Waited::Came
+            let asked_until = until;
+            loop {
+                // (Where the loop goes on meanwhile is found each time: the place it
+                // went on in before may have a handler of its own by now.)
+                let Some(next) = another_place() else {
+                    return fiber::Waited::NotHere;
+                };
+                // No wait of a handler's is longer than the time its request has left;
+                // nor, once that is over, than what it is still given for an actor.
+                let mut until = asked_until;
+                for limit in [PLACES[here].deadline, PLACES[here].grace] {
+                    if limit != 0 && limit > nanos() && (until == 0 || limit < until) {
+                        until = limit;
+                    }
+                }
+                if PLACES[here].given_up && PLACES[here].grace != 0 && (until == 0 || PLACES[here].grace < until) {
+                    until = PLACES[here].grace;
+                }
+                PLACES[here].serial = (PLACES[here].serial + 1) & 0xff_ffff;
+                if fd >= 0 {
+                    sys::watch_once(QUEUE, fd, write, PLACE | (PLACES[here].serial as usize) << 8 | here);
+                }
+                PLACES[here].fd = fd;
+                PLACES[here].until = until;
+                PLACES[here].late = false;
+                PLACES[here].doing = Doing::Waiting;
+                go_to(next);
+                // The loop came back here: what was waited for has come, or the time has.
+                PLACES[here].doing = Doing::Handling;
+                let late = PLACES[here].late;
+                if fd >= 0 {
+                    sys::unwatch(QUEUE, fd, write, !late);
+                }
+                if !late {
+                    return fiber::Waited::Came;
+                }
+                // The time that came may be the wait's own, or that of the request,
+                // which is then given up (found here), or its client may have left.
+                // A handler that is asking an actor waits on, for what it is given.
+                let own = asked_until != 0 && nanos() >= asked_until;
+                if !own && given_up() && PLACES[here].asking && !out_of_grace() {
+                    continue;
+                }
+                return fiber::Waited::TimeUp;
             }
         }
     }
@@ -2904,6 +2980,8 @@ mod imp {
             PLACES[HERE].given_up = false;
             PLACES[HERE].deadline = 0;
             PLACES[HERE].timed_out = false;
+            PLACES[HERE].asking = false;
+            PLACES[HERE].grace = 0;
             PLACES[HERE].cut = 0;
             loop {
                 if ENDING {
