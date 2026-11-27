@@ -397,11 +397,12 @@ pub unsafe extern "C" fn koo_net_take(address: *const Header, name: *const Heade
                 // waiting is for nothing: those handlers go on only when this thread
                 // does. There is one connection more than the pool was to have, for
                 // this conversation and no longer.
+                // (Each that is in one: where none is, and a connection lies free for
+                // whoever's turn it is, nothing is stuck.)
+                let mut holders = CONNS.iter().filter(|conn| conn.out && conn.pool == pool).peekable();
                 let stuck = POOLS[pool].open >= limit
-                    && CONNS
-                        .iter()
-                        .filter(|conn| conn.out && conn.pool == pool)
-                        .all(|conn| crate::http::waits_elsewhere(conn.holder));
+                    && holders.peek().is_some()
+                    && holders.all(|conn| crate::http::waits_elsewhere(conn.holder));
                 if (turn && POOLS[pool].open < limit) || stuck {
                     POOLS[pool].turns.done(number);
                     match reserve(pool, stuck) {
