@@ -26,7 +26,7 @@ pub(super) fn block_ty(block: &Block) -> Ty {
 }
 
 /// Reads the format of an interpolation: `[<>^][0][width][.precision]`.
-fn parse_format(text: &str, ty: &Ty) -> Result<Format, &'static str> {
+fn parse_format(text: &str, ty: &Ty, decimal: bool) -> Result<Format, &'static str> {
     let mut format = Format::default();
     let mut rest = text;
     for (symbol, align) in [('<', Align::Left), ('>', Align::Right), ('^', Align::Center)] {
@@ -53,8 +53,8 @@ fn parse_format(text: &str, ty: &Ty) -> Result<Format, &'static str> {
         rest = &rest[digits..];
     }
     if let Some(precision) = rest.strip_prefix('.') {
-        if *ty != Ty::Float {
-            return Err("a precision is for a `float`");
+        if *ty != Ty::Float && !decimal {
+            return Err("a precision is for a `float` or a `Decimal`");
         }
         if precision.is_empty() || !precision.bytes().all(|b| b.is_ascii_digit()) {
             return Err("the precision is a number of decimals");
@@ -103,10 +103,7 @@ impl<'a> Checker<'a> {
                     }
                 }
             }
-            ast::ExprKind::Decimal(_) => {
-                self.unsupported(span, "`Decimal` is");
-                self.unknown(span)
-            }
+            ast::ExprKind::Decimal(text) => self.decimal_literal(text, false, span),
             ast::ExprKind::Duration(text) => self.duration_literal(text, span),
             ast::ExprKind::Char(_) => {
                 self.unsupported(span, "`char` is");
@@ -211,6 +208,10 @@ impl<'a> Checker<'a> {
                 ast::UnaryOp::Neg => {
                     if let ast::ExprKind::Int(text) = &inner.kind {
                         return self.int_literal(text, true, expected, span);
+                    }
+                    // (A constant, like the literal it negates.)
+                    if let ast::ExprKind::Decimal(text) = &inner.kind {
+                        return self.decimal_literal(text, true, span);
                     }
                     let operand = self.expr(inner, expected);
                     match operand.ty {
@@ -354,11 +355,12 @@ impl<'a> Checker<'a> {
             match part {
                 ast::StrPart::Lit(text) => out.push(InterpPart::Lit(text.clone())),
                 ast::StrPart::Interp { expr, format } => {
-                    let value = self.expr(expr, None);
+                    let mut value = self.expr(expr, None);
                     self.require_printable(&value);
-                    let format = match format.as_deref() {
+                    let decimal = self.decimal_ty().as_ref() == Some(&value.ty);
+                    let mut format = match format.as_deref() {
                         None => Format::default(),
-                        Some(text) => match parse_format(text, &value.ty) {
+                        Some(text) => match parse_format(text, &value.ty, decimal) {
                             Ok(format) => format,
                             Err(why) => {
                                 if !value.ty.is_unknown() {
@@ -372,6 +374,14 @@ impl<'a> Checker<'a> {
                             }
                         },
                     };
+                    // A decimal with a precision is the text of the decimal with so many
+                    // digits after its point, and what is left of the format is the text's.
+                    if decimal
+                        && let Some(places) = format.precision.take()
+                        && let Some(fixed) = self.decimal_fixed(value.clone(), places, expr.span)
+                    {
+                        value = fixed;
+                    }
                     out.push(InterpPart::Value(value, format));
                 }
             }
@@ -925,6 +935,26 @@ impl<'a> Checker<'a> {
             };
             match time_op.and_then(|time_op| self.time_arithmetic(time_op, &a, &b, span)) {
                 Some(result) => return result,
+                None if self
+                    .decimal_ty()
+                    .is_some_and(|decimal| a.ty == decimal || b.ty == decimal) =>
+                {
+                    let (left, right) = (self.ty_name(&a.ty), self.ty_name(&b.ty));
+                    if a.ty == b.ty && matches!(op, B::Div | B::Rem) {
+                        self.error_help(
+                            span,
+                            format!("`{}` is not defined for `Decimal`", op.as_str()),
+                            "a quotient is asked for with the digits it is to have after the point, and is rounded half to even unless told otherwise: `a.divide(b, scale: 2)` (Section 4.3)",
+                        );
+                    } else {
+                        self.error_help(
+                            span,
+                            format!("`{}` is not defined for `{left}` and `{right}`", op.as_str()),
+                            "a `Decimal` mixes with no other number: write the other as one, `1.1d` for `1.1`, or `Decimal.from(n)` for an `int` (Section 4.2)",
+                        );
+                    }
+                    return self.unknown(span);
+                }
                 None => {
                     let (left, right) = (self.ty_name(&a.ty), self.ty_name(&b.ty));
                     self.error_help(

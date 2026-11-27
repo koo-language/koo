@@ -40,7 +40,9 @@ An *integer constant* is a sequence of decimal digits; or `0x` followed by hexad
 
 A *floating constant* has digits, a decimal point and more digits; or digits and an exponent, which is `e` or `E`, an optional sign, and digits; or all of these. Its type is `float`.
 
-Underscores may appear between the digits of either kind, and are ignored.
+A *decimal constant* is digits, or digits, a decimal point and more digits, followed by `d`: `19.99d`. Its type is `Decimal`, and it is the number as written, with the digits after its point kept; one of more than 34 digits that count is an error.
+
+Underscores may appear between the digits of any of these kinds, and are ignored.
 
 A *duration constant* is one or more groups of decimal digits and a unit, with nothing between them, the units being `h`, `min`, `s`, `ms`, `us` and `ns`, each at most once and in that order: `90s`, `1h30min`. Its type is `Duration`, and it is an error if it is longer than a `Duration` can be.
 

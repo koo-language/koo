@@ -1,0 +1,134 @@
+// `Decimal` (Section 4.3): numbers of up to 34 digits that are what they are written
+// as, for money and whatever else a person counts.
+
+type Line = { item: string, price: Decimal, count: int }
+
+rate := 0.0825d
+
+fn total(lines: [Line]) -> Decimal {
+    var sum := 0d
+    for line in lines {
+        sum = sum + line.price * Decimal.from(line.count)
+    }
+    return sum
+}
+
+fn fee(amount: Decimal, percent: Decimal = 2.5d) -> Decimal {
+    return (amount * percent).divide(100d, scale: 2)
+}
+
+fn main() {
+    // What is written is what is had: a tenth is a tenth.
+    print(0.1d + 0.2d)
+    print(0.1d + 0.2d == 0.3d)
+    // The digits after the point are kept, and count for nothing in a comparison.
+    print(1.10d + 2.2d)
+    print(1.0d == 1.00d)
+    print(1.50d * 2d)
+    print(-19.99d)
+    print(3d - 5.25d)
+    lines := [Line { item: "pen", price: 1.25d, count: 4 }, Line { item: "ink", price: 8.00d, count: 1 }]
+    sum := total(lines)
+    print(sum)
+    tax := (sum * rate).round(2)
+    print("tax {tax}, in all {sum + tax}")
+    print(fee(sum))
+    print(fee(sum, percent: 10d))
+    // A division says how many decimals it is to have, and how to round.
+    print(10d.divide(3d, scale: 2))
+    print(10d.divide(3d, scale: 4, round: Up))
+    print(2.665d.round(2))
+    print(2.665d.round(2, round: HalfUp))
+    print((-2.5d).round(0, round: Floor))
+    print(7d.round(2))
+    match 1d.checked_divide(0d, scale: 2) {
+        value => print(value)
+        ! e => print("no dividing by zero")
+    }
+    // Order, and what orders: the least, the greatest, a sort.
+    print(1.5d < 1.50001d)
+    amounts := [3.5d, 1.25d, 10d, 1.250d]
+    print(amounts.sorted())
+    print("{amounts.min()} {amounts.max()}")
+    // A key of a map is the number, however it is written.
+    var seen: [Decimal: string] = [:]
+    seen[1.0d] = "one"
+    print(seen[1.00d] else "none")
+    // Text, both ways; and what is not a number is not one.
+    print(Decimal.parse("1234.5600") else 0d)
+    match Decimal.parse("12.3.4") {
+        value => print(value)
+        ! e => print("not a number: {e.input}")
+    }
+    match Decimal.parse("12345678901234567890123456789012345") {
+        value => print(value)
+        ! e => print("35 digits are one too many")
+    }
+    print("{sum:.1} {sum:.4} {sum:>10}|")
+    print(sum.scale())
+    print(sum.to_float())
+    // JSON: a string, so that nobody reads it through a float; read from either.
+    print(lines[0].to_json())
+    match Line.from_json("\{\"item\":\"cap\",\"price\":0.10,\"count\":2}") {
+        line => print("{line.price} {line.price + 0.05d}")
+        ! e => print(e.message)
+    }
+    match Line.from_json("\{\"item\":\"cap\",\"price\":\"0.1x\",\"count\":2}") {
+        line => print(line.price)
+        ! e => print(e.message)
+    }
+    // A sum that cannot be kept whole is rounded to 34 digits, half to even; one that
+    // must be whole says when it is not.
+    third := 1d.divide(3d, scale: 33)
+    print(third * 3d)
+    match 9999999999999999999999999999999999d.exact_add(0.5d) {
+        value => print(value)
+        ! e => print("rounded to {e.rounded}")
+    }
+    print(lines)
+    // A struct that holds one is equal to another by what the decimals are worth.
+    print(Line { item: "a", price: 1.0d, count: 1 } == Line { item: "a", price: 1.00d, count: 1 })
+    print(Line { item: "a", price: 1.0d, count: 1 } == Line { item: "a", price: 1.01d, count: 1 })
+    print([1.0d, 2d].contains(2.00d))
+    print(0d == -0d)
+    print(1000000d * 1000000d * 0.000001d)
+}
+//= 0.3
+//= true
+//= 3.30
+//= true
+//= 3.00
+//= -19.99
+//= -2.25
+//= 13.00
+//= tax 1.07, in all 14.07
+//= 0.32
+//= 1.30
+//= 3.33
+//= 3.3334
+//= 2.66
+//= 2.67
+//= -3
+//= 7.00
+//= no dividing by zero
+//= true
+//= [1.25, 1.250, 3.5, 10]
+//= 1.25 10
+//= one
+//= 1234.5600
+//= not a number: 12.3.4
+//= 35 digits are one too many
+//= 13.0 13.0000      13.00|
+//= 2
+//= 13.0
+//= {"item":"pen","price":"1.25","count":4}
+//= 0.10 0.15
+//= expected a decimal of at most 34 digits such as "19.99", found "0.1x"
+//= 0.999999999999999999999999999999999
+//= rounded to 1.000000000000000000000000000000000E+34
+//= [Line { item: "pen", price: 1.25, count: 4 }, Line { item: "ink", price: 8.00, count: 1 }]
+//= true
+//= false
+//= true
+//= true
+//= 1000000.000000

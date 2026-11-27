@@ -1,0 +1,42 @@
+// A `Decimal` is a message like any other value: an actor keeps a sum of what it is
+// told and asked, and a quotient by nothing is a panic that says where.
+actor Till {
+    var sum: Decimal = 0d
+    var entries: [Decimal] = []
+
+    fn add(amount: Decimal) -> Decimal {
+        sum = sum + amount
+        entries.push(amount)
+        return sum
+    }
+
+    fn note(amount: Decimal) {
+        sum = sum + amount
+        entries.push(amount)
+    }
+
+    fn share(among: int) -> Decimal {
+        return sum.divide(Decimal.from(among), scale: 2)
+    }
+
+    fn all() -> [Decimal] {
+        return entries
+    }
+}
+
+fn main() {
+    till := Till.start()
+    print(till.add(1.10d))
+    till.send.note(2.205d)
+    print(till.add(0.005d))
+    print(till.all())
+    print(till.share(3))
+    print(till.share(0))
+}
+//= 1.10
+//= 3.310
+//= [1.10, 2.205, 0.005]
+//= 1.10
+//! exit 101
+//! stderr panic: division by zero
+//! stderr decimal_actor.koo:19

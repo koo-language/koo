@@ -1,0 +1,25 @@
+// What a `Decimal` does not do (Section 4.3): it is not divided by an operator, it
+// mixes with no other number, and a literal has no more digits than it can keep.
+price := 19.99d
+
+fn main() {
+    print(price / 3d)
+    print(price * 1.1)
+    print(price + 1)
+    print(1 - price)
+    print(12345678901234567890123456789012345d)
+    print(price % 2d)
+    half: Decimal = 0.5
+}
+
+type Decimal = { digits: string }
+//! error `/` is not defined for `Decimal`
+//! stderr a.divide(b, scale: 2)
+//! error `*` is not defined for `Decimal` and `float`
+//! stderr a `Decimal` mixes with no other number
+//! error `+` is not defined for `Decimal` and `int`
+//! error `-` is not defined for `int` and `Decimal`
+//! error this number has more digits than a `Decimal` has
+//! error `%` is not defined for `Decimal`
+//! error expected `Decimal`, found `float`
+//! error `Decimal` is already declared

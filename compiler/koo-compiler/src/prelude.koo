@@ -1471,6 +1471,194 @@ fn Duration.from_json(text: string) -> Duration ! JsonError {
     return value
 }
 
+// ---- Decimal (Section 4.3) --------------------------------------------------------------
+
+/// A number of up to 34 decimal digits and a power of ten, for money and whatever else
+/// a person counts: `19.99d`. Its fields are the two halves of its digits (so many
+/// times ten to the eighteenth, and what is left), its exponent and its sign; the
+/// arithmetic is the support library's (`decimal.rs`).
+type Decimal = { _hi: int, _lo: int, _exp: int, _neg: bool }
+
+/// How a quotient, or a number given fewer decimals, is rounded: to the nearer, with a
+/// half going to the even digit or away from zero; toward zero or away from it;
+/// toward what is less or toward what is greater.
+enum Rounding { HalfEven, HalfUp, Down, Up, Floor, Ceiling }
+
+/// A sum, difference or product that could not be kept whole in 34 digits.
+error Inexact { rounded: Decimal }
+
+/// A divisor that is zero.
+error DivideByZero {}
+
+/// What the support library has just made, if it made anything: `status` is what its
+/// function returned.
+fn d__made() -> Decimal {
+    return Decimal { _hi: __dec_hi(), _lo: __dec_lo(), _exp: __dec_exp(), _neg: __dec_neg() }
+}
+
+fn d__kept(status: int, location: string) -> Decimal {
+    if status == 2 { panic("a `Decimal` cannot be this great") }
+    if status == 3 { panic("division by zero") }
+    if status == 4 { panic("the result has more than 34 digits") }
+    return d__made()
+}
+
+fn d__round(round: Rounding) -> int {
+    match round {
+        HalfEven => return 0
+        HalfUp => return 1
+        Down => return 2
+        Up => return 3
+        Floor => return 4
+        Ceiling => return 5
+    }
+}
+
+fn (self: Decimal) _add(other: Decimal, location: string) -> Decimal {
+    return d__kept(__dec_add(self._hi, self._lo, self._exp, self._neg, other._hi, other._lo, other._exp, other._neg), location)
+}
+
+fn (self: Decimal) _sub(other: Decimal, location: string) -> Decimal {
+    return d__kept(__dec_sub(self._hi, self._lo, self._exp, self._neg, other._hi, other._lo, other._exp, other._neg), location)
+}
+
+fn (self: Decimal) _mul(other: Decimal, location: string) -> Decimal {
+    return d__kept(__dec_mul(self._hi, self._lo, self._exp, self._neg, other._hi, other._lo, other._exp, other._neg), location)
+}
+
+fn (self: Decimal) _neg(location: string) -> Decimal {
+    return Decimal { _hi: self._hi, _lo: self._lo, _exp: self._exp, _neg: not self._neg and not self.is_zero() }
+}
+
+/// The sum, if it is exact; `exact_sub` and `exact_mul` likewise. What fails holds the
+/// result as it would have been rounded.
+fn (self: Decimal) exact_add(other: Decimal, location: string) -> Decimal ! Inexact {
+    status := __dec_add(self._hi, self._lo, self._exp, self._neg, other._hi, other._lo, other._exp, other._neg)
+    made := d__kept(status, location)
+    if status == 1 { fail Inexact { rounded: made } }
+    return made
+}
+
+fn (self: Decimal) exact_sub(other: Decimal, location: string) -> Decimal ! Inexact {
+    status := __dec_sub(self._hi, self._lo, self._exp, self._neg, other._hi, other._lo, other._exp, other._neg)
+    made := d__kept(status, location)
+    if status == 1 { fail Inexact { rounded: made } }
+    return made
+}
+
+fn (self: Decimal) exact_mul(other: Decimal, location: string) -> Decimal ! Inexact {
+    status := __dec_mul(self._hi, self._lo, self._exp, self._neg, other._hi, other._lo, other._exp, other._neg)
+    made := d__kept(status, location)
+    if status == 1 { fail Inexact { rounded: made } }
+    return made
+}
+
+/// The quotient with `scale` digits after the point, rounded as `round` says. A zero
+/// divisor is a panic, as it is for integers, and so is a quotient that would have
+/// more than 34 digits.
+fn (self: Decimal) divide(by: Decimal, scale: int, round: Rounding = Rounding.HalfEven, location: string) -> Decimal {
+    return d__kept(__dec_div(self._hi, self._lo, self._exp, self._neg, by._hi, by._lo, by._exp, by._neg, scale, d__round(round)), location)
+}
+
+/// The same, where a zero divisor is an error to be handled.
+fn (self: Decimal) checked_divide(by: Decimal, scale: int, round: Rounding = Rounding.HalfEven, location: string) -> Decimal ! DivideByZero {
+    status := __dec_div(self._hi, self._lo, self._exp, self._neg, by._hi, by._lo, by._exp, by._neg, scale, d__round(round))
+    if status == 3 { fail DivideByZero {} }
+    return d__kept(status, location)
+}
+
+/// The same number with `scale` digits after the point: rounded if it had more, with
+/// zeros if it had fewer.
+fn (self: Decimal) round(scale: int, round: Rounding = Rounding.HalfEven, location: string) -> Decimal {
+    return d__kept(__dec_rescale(self._hi, self._lo, self._exp, self._neg, scale, d__round(round)), location)
+}
+
+/// How many digits it has after the point.
+fn (self: Decimal) scale() -> int {
+    if self._exp < 0 { return -self._exp }
+    return 0
+}
+
+fn (self: Decimal) is_zero() -> bool { return self._hi == 0 and self._lo == 0 }
+
+fn (self: Decimal) abs() -> Decimal {
+    return Decimal { _hi: self._hi, _lo: self._lo, _exp: self._exp, _neg: false }
+}
+
+/// By what they are worth: `1.0d` and `1.00d` are equal.
+fn (self: Decimal) compare(other: Decimal) -> int {
+    return __dec_cmp(self._hi, self._lo, self._exp, self._neg, other._hi, other._lo, other._exp, other._neg)
+}
+
+fn (self: Decimal) _same(other: Decimal) -> bool { return self.compare(other) == 0 }
+
+/// The same for all that are equal, whatever zeros their digits end with.
+fn (self: Decimal) hash() -> int {
+    __dec_reduce(self._hi, self._lo, self._exp, self._neg)
+    return (__dec_hi() * 31 + __dec_lo()) * 31 + __dec_exp() * 2 + (if __dec_neg() { 1 } else { 0 })
+}
+
+/// Its digits, with a point as many from their end as it has decimals: `1.50d` is
+/// `1.50`.
+fn (self: Decimal) to_string() -> string { return __dec_text(self._hi, self._lo, self._exp, self._neg) }
+
+/// The nearest float, for what is no longer counted exactly.
+fn (self: Decimal) to_float() -> float { return float.parse(self.to_string()) else 0.0 }
+
+/// The number a text is, exactly: digits with at most one point, a sign before them
+/// if any, and `e` and a power of ten after them if any. A text of more than 34 digits
+/// that count is not rounded, and is none.
+fn Decimal.parse(text: string) -> Decimal ! ParseError {
+    if __dec_parse(text) != 0 { fail ParseError { input: text } }
+    return d__made()
+}
+
+fn Decimal.from(value: int) -> Decimal {
+    __dec_of(value)
+    return d__made()
+}
+
+fn Decimal.zero() -> Decimal { return Decimal { _hi: 0, _lo: 0, _exp: 0, _neg: false } }
+
+/// In JSON a decimal is a string, `"19.99"`, so that no reader takes it through a
+/// float; what is read may be a string or a number, and its digits are taken as they
+/// are written.
+fn (self: Decimal) _json_write(out: var string) { out += __json_quote(self.to_string()) }
+
+fn (self: Decimal) to_json() -> string { return __json_quote(self.to_string()) }
+
+fn Decimal._json_read(text: string, at: var int) -> Decimal ! JsonError {
+    at = __json_ws(text, at)
+    var written := ""
+    if __str_byte(text, at) == 34 {
+        written = j__str(text, var at)?
+    } else {
+        end := __json_number(text, at)
+        if end < 0 { fail j__expected(text, at, "a decimal, as a string or a number") }
+        written = text.slice(at, end)
+        at = end
+    }
+    return Decimal.parse(written) else fail JsonError {
+        message: "expected a decimal of at most 34 digits such as \"19.99\", found \"{written}\"",
+        path: "",
+    }
+}
+
+fn Decimal.from_json(text: string) -> Decimal ! JsonError {
+    __json_begin()
+    var at := 0
+    value := Decimal._json_read(text, var at)?
+    j__end(text, at)?
+    return value
+}
+
+/// The number with so many digits after the point, for `{price:.2}`: rounded half to
+/// even if it had more, with zeros if it had fewer.
+fn (self: Decimal) _fixed(places: int) -> string {
+    if __dec_rescale(self._hi, self._lo, self._exp, self._neg, places, 0) > 1 { return self.to_string() }
+    return d__made().to_string()
+}
+
 fn (self: Time) _json_write(out: var string) { out += __json_quote(self.to_string()) }
 
 fn (self: Time) to_json() -> string { return __json_quote(self.to_string()) }
@@ -2464,6 +2652,7 @@ fn (self: int) _sql() -> string? { return "{self}" }
 fn (self: float) _sql() -> string? { return "{self}" }
 fn (self: string) _sql() -> string? { return self }
 fn (self: Time) _sql() -> string? { return self.to_string() }
+fn (self: Decimal) _sql() -> string? { return self.to_string() }
 
 fn (self: bool) _sql() -> string? {
     if self { return "true" }
@@ -2652,6 +2841,18 @@ fn (self: Sql__Row) maybe_bool(column: string) -> bool? ! Sql__Error {
     if text == "t" or text == "true" { return true }
     if text == "f" or text == "false" { return false }
     fail s__not(column, "a bool", text)
+}
+
+/// A column of PostgreSQL's `numeric`, or of any type whose text is a number, as it is
+/// written: one that is not a number (`NaN`, `Infinity`), or has more than 34 digits,
+/// is an error and is not rounded.
+fn (self: Sql__Row) maybe_decimal(column: string) -> Decimal? ! Sql__Error {
+    text := self._text(column)? else return none
+    return Decimal.parse(text) else fail s__not(column, "a decimal of at most 34 digits", text)
+}
+
+fn (self: Sql__Row) decimal(column: string) -> Decimal ! Sql__Error {
+    return self.maybe_decimal(column)? else fail s__null(column)
 }
 
 fn (self: Sql__Row) maybe_time(column: string) -> Time? ! Sql__Error {

@@ -37,6 +37,8 @@ use core::fmt::Write;
 pub mod actor;
 pub mod client;
 pub mod codec;
+pub mod decimal;
+pub mod decimals;
 pub mod digest;
 pub mod fiber;
 pub mod http;

@@ -18,6 +18,8 @@ fn main() {
         "client.rs",
         "log.rs",
         "net.rs",
+        "decimal.rs",
+        "decimals.rs",
         "pg.rs",
         "thread.rs",
         "tls.rs",

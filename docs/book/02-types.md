@@ -269,6 +269,44 @@ fn main() {
 1.4142135623730951
 ```
 
+There is a third kind of number, for what people count in tenths and hundredths: money, above all. A `float` holds the nearest fraction in twos to what is written, and a tenth is no such fraction, which is why `0.1 + 0.2` printed as it did above. A `Decimal` holds decimal digits, up to 34 of them, and is written with a `d` at its end: `19.99d` is nineteen and ninety-nine hundredths, exactly.
+
+```koo
+fn main() {
+    print(0.1 + 0.2)
+    print(0.1d + 0.2d)
+    price := 19.99d
+    count := 3d
+    net := price * count
+    tax := (net * 8.25d).divide(100d, scale: 2)
+    print("{net} and {tax} is {net + tax}")
+    print(1.10d + 2.2d)
+    print(1.0d == 1.00d)
+    print(10d.divide(3d, scale: 2))
+    print(10d.divide(3d, scale: 2, round: Up))
+    print(2.665d.round(2))
+    print("{net:.1} {Decimal.from(7):.2}")
+}
+```
+
+```text
+0.30000000000000004
+0.3
+59.97 and 4.95 is 64.92
+3.30
+true
+3.33
+3.34
+2.66
+60.0 7.00
+```
+
+Sums, differences and products of decimals are exact, as long as the result has no more than 34 digits, which no sum of money has; one that has more is rounded to 34. A decimal keeps the digits after its point: `1.10d + 2.2d` is `3.30`, with its zero, as a column of figures would have it, though in a comparison `1.0d` and `1.00d` are the one number they both are.
+
+Division is the operation by which money is lost, a third of a cent at a time, and for that reason there is no `/` for decimals. A quotient is asked for by name, `a.divide(b, scale: 2)`, and the call says how many digits the answer is to have after its point. It may also say how to round what is beyond them, with `round:`. Left unsaid, a half goes to the nearer even digit, `HalfEven`, which is how accounts are rounded so that the halves do not all go one way; the others are `HalfUp`, `Down` and `Up` (toward zero and away from it), and `Floor` and `Ceiling`. `x.round(2)` gives a decimal the same treatment without dividing it.
+
+Nor does a decimal mix with the other numbers. `price * 1.1` does not compile, since `1.1` is a float and has already lost what a decimal exists to keep; `price * 1.1d` does. An `int` is made a decimal with `Decimal.from(n)`, and a text with `Decimal.parse(text)`, which fails for a text that is not a number, or that has more digits than a decimal can keep, rather than round it.
+
 ## 2.6 Relational and Logical Operators
 
 The relational operators are

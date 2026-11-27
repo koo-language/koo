@@ -1073,7 +1073,7 @@ impl<'a> Checker<'a> {
                 || is_builtin_type(&name.name)
             {
                 self.already_declared(name.span, &name.name, &format!("type {}", name.name));
-                if is_builtin_type(&name.name) || matches!(name.name.as_str(), "Duration" | "Time") {
+                if is_builtin_type(&name.name) || matches!(name.name.as_str(), "Duration" | "Time" | "Decimal") {
                     self.note(format!("`{}` is a type of the language", name.name));
                 }
             } else if let Some(kind) = kind {
@@ -1255,6 +1255,15 @@ impl<'a> Checker<'a> {
                     _ => continue,
                 };
                 self.program.to_string.insert(ty, id);
+            }
+            // A type of the prelude's that is equal to another by what it is worth, and
+            // not field for field, says how: `1.0d` is `1.00d`.
+            if name == "_same"
+                && sig.ret == Ty::Bool
+                && let Owner::Struct(of) = *owner
+                && of < self.prelude_types.0
+            {
+                self.program.equals.insert(Ty::Struct(of), id);
             }
         }
 
@@ -1570,7 +1579,7 @@ impl<'a> Checker<'a> {
                         }
                         Ty::Unknown
                     }
-                    "Decimal" | "Map" | "Set" | "Json" | "Channel" | "Shared" => {
+                    "Map" | "Set" | "Json" | "Channel" | "Shared" => {
                         self.unsupported(ty.span, &format!("`{name}` is"));
                         Ty::Unknown
                     }
@@ -1732,6 +1741,7 @@ impl<'a> Checker<'a> {
             | ast::ExprKind::Bool(_)
             | ast::ExprKind::RawStr(_)
             | ast::ExprKind::Duration(_)
+            | ast::ExprKind::Decimal(_)
             | ast::ExprKind::None => true,
             ast::ExprKind::Str(parts) => parts.iter().all(|p| matches!(p, ast::StrPart::Lit(_))),
             ast::ExprKind::List(items) => items.is_empty(),
@@ -1740,7 +1750,10 @@ impl<'a> Checker<'a> {
                 op: ast::UnaryOp::Neg,
                 expr: inner,
             } => {
-                matches!(inner.kind, ast::ExprKind::Int(_) | ast::ExprKind::Float(_))
+                matches!(
+                    inner.kind,
+                    ast::ExprKind::Int(_) | ast::ExprKind::Float(_) | ast::ExprKind::Decimal(_)
+                )
             }
             // A variant of an enumeration, where one is expected: `Priority.Normal`.
             // What is wrong with it, if anything, is said as for any other value.
@@ -3324,7 +3337,7 @@ impl<'a> Checker<'a> {
 fn is_builtin_type(name: &str) -> bool {
     matches!(
         name,
-        "List" | "Map" | "Set" | "Failure" | "Decimal" | "Json" | "Channel" | "Shared" | "Any" | "Self"
+        "List" | "Map" | "Set" | "Failure" | "Json" | "Channel" | "Shared" | "Any" | "Self"
     )
 }
 
@@ -3417,6 +3430,7 @@ fn is_constant(expr: &ast::Expr) -> bool {
         | ast::ExprKind::Bool(_)
         | ast::ExprKind::RawStr(_)
         | ast::ExprKind::Duration(_)
+        | ast::ExprKind::Decimal(_)
         | ast::ExprKind::None => true,
         ast::ExprKind::Str(parts) => parts.iter().all(|part| matches!(part, ast::StrPart::Lit(_))),
         ast::ExprKind::List(items) => items.iter().all(is_constant),
@@ -3426,7 +3440,10 @@ fn is_constant(expr: &ast::Expr) -> bool {
         ast::ExprKind::Unary {
             op: ast::UnaryOp::Neg,
             expr,
-        } => matches!(expr.kind, ast::ExprKind::Int(_) | ast::ExprKind::Float(_)),
+        } => matches!(
+            expr.kind,
+            ast::ExprKind::Int(_) | ast::ExprKind::Float(_) | ast::ExprKind::Decimal(_)
+        ),
         // An enum variant without fields: `Level.Info`.
         ast::ExprKind::Field { base, name } => {
             let base = match &base.kind {

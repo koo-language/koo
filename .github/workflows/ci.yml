@@ -99,6 +99,11 @@ jobs:
         run: |
           rustup toolchain install nightly --profile minimal
           sh tests/stress/races.sh target/debug/koo
+      # The arithmetic of `Decimal` against Python's `decimal` set as decimal128 is, and
+      # against exact fractions for what divides: a hundred thousand sums, each to the
+      # digit, the exponent and whether it was rounded. A run says its seed.
+      - name: the arithmetic of Decimal, against another's
+        run: python3 tests/decimal/differential.py --cases 100000
       # What is nearly right, thrown at every reader the support library has of what
       # comes from outside: requests, bodies of JSON, and the answers of another
       # server, of a database and of a Redis. The server must go on, with the workers

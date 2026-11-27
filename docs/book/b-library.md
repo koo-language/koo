@@ -70,6 +70,25 @@ true
 -1
 ```
 
+A `Decimal` is a number of up to 34 decimal digits and a power of ten, written `19.99d` (Section 2.5). `+`, `-` and `*` are exact while the result has at most 34 digits and round it to 34 otherwise, half to even; there is no `/`; and a decimal mixes with no other number. The six comparisons go by what the numbers are worth, so that `1.0d == 1.00d`, and so do a hash and the order of a sort.
+
+| | |
+| --- | --- |
+| `Decimal.from(n: int) -> Decimal` | a whole number |
+| `Decimal.parse(text: string) -> Decimal ! ParseError` | digits with at most one point, a sign before them and `e` and a power of ten after them if any; a text of more than 34 digits that count is not rounded and is an error |
+| `Decimal.zero() -> Decimal` | `0d` |
+| `d.divide(by: Decimal, scale: int, round: Rounding = HalfEven) -> Decimal` | the quotient with `scale` digits after the point; a panic if `by` is zero, or if the quotient would have more than 34 digits |
+| `d.checked_divide(by, scale, round) -> Decimal ! DivideByZero` | the same, where a zero divisor is an error to handle |
+| `d.round(scale: int, round: Rounding = HalfEven) -> Decimal` | the same number with `scale` digits after the point: rounded if it had more, with zeros if it had fewer |
+| `d.exact_add(other) -> Decimal ! Inexact`, `exact_sub`, `exact_mul` | the sum, the difference, the product, if it is exact; what fails holds the result as it was `rounded` |
+| `d.scale() -> int` | how many digits it has after the point |
+| `d.abs() -> Decimal`, `d.is_zero() -> bool`, `d.compare(other) -> int` | |
+| `d.to_string() -> string` | the digits, with a point as many from their end as there are decimals: `1.50d` is `1.50`. A number whose last digit counts tens or more, or that is less than a millionth, is written with `E` and a power of ten: `1.5E+3` |
+| `d.to_float() -> float` | the nearest float |
+| `"{d:.2}"` | with so many digits after the point, rounded half to even |
+
+`Rounding` is `HalfEven`, `HalfUp`, `Down` (toward zero), `Up` (away from it), `Floor` or `Ceiling`. In JSON a decimal is a string, `"19.99"`, and is read from a string or from a number, whose digits are taken as they are written (Section B.8). In a query it is a parameter like any other, and `row.decimal(name)` and `row.maybe_decimal(name)` read a column of PostgreSQL's `numeric`, as does a field of type `Decimal` in a struct read by `from_row` (Section B.15); a value of the database's that is not a number, or has more than 34 digits, is an error.
+
 ## B.3 Optionals
 
 | `T?` | |
@@ -459,7 +478,7 @@ A request of another server returns a `http.Reply`:
 | --- | --- |
 | `postgres.connect(url: string, pool: int = 10, wait: Duration = 30s) -> sql.Pool ! sql.Error` | connects to the database at `postgres://user:password@host:port/database`, with at most `pool` connections, for one of which a statement waits `wait` at the longest; a part the address leaves out is what the environment says of it, in `PGHOST`, `PGPORT`, `PGUSER`, `PGPASSWORD` and `PGDATABASE` (Section 11.1) |
 
-A `sql.Query` is written as a string literal where one is expected: the values in braces become parameters of the statement, each an `int`, a `float`, a `bool`, a `string` or a `Time`, an optional of one, which is NULL when it is `none`, or a list of them, which is an array.
+A `sql.Query` is written as a string literal where one is expected: the values in braces become parameters of the statement, each an `int`, a `float`, a `bool`, a `string`, a `Time` or a `Decimal`, an optional of one, which is NULL when it is `none`, or a list of them, which is an array.
 
 | `sql.Query` | |
 | --- | --- |
@@ -480,8 +499,8 @@ A `sql.Query` is written as a string literal where one is expected: the values i
 
 | `sql.Row` | |
 | --- | --- |
-| `row.int(column: string) -> int ! sql.Error`, and `float`, `bool`, `string`, `time` | the value of a column; fails if it is NULL |
-| `row.maybe_int(column: string) -> int? ! sql.Error`, and `maybe_float`, `maybe_bool`, `maybe_string`, `maybe_time` | the value of a column, or `none` if it is NULL |
+| `row.int(column: string) -> int ! sql.Error`, and `float`, `bool`, `string`, `time`, `decimal` | the value of a column; fails if it is NULL |
+| `row.maybe_int(column: string) -> int? ! sql.Error`, and `maybe_float`, `maybe_bool`, `maybe_string`, `maybe_time`, `maybe_decimal` | the value of a column, or `none` if it is NULL |
 | `row.ints(column: string) -> [int] ! sql.Error`, and `floats`, `bools`, `strings` | a column that is an array of one dimension, as a list; fails if it is NULL or has a NULL in it |
 | `row.columns() -> [string]` | the names of the columns |
 | `"{row}"` | the row as text, each column with what it holds as the database wrote it: `{id: "1", note: NULL}` |

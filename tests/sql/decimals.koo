@@ -1,0 +1,47 @@
+// A `numeric` of the database is a `Decimal` of the program, digit for digit: as a
+// parameter, as a column read by name, and as the field of a struct read from a row.
+// What a `Decimal` cannot be, the database's "not a number" or a number of more than
+// 34 digits, is an error and is neither rounded nor a panic. Run against a PostgreSQL
+// server whose address is in KOO_TEST_POSTGRES (see `a_database_answers_queries` in
+// compiler/koo/tests/programs.rs).
+
+import std/os
+import std/sql
+import std/sql/postgres
+
+type Priced = { item: string, price: Decimal, discount: Decimal? }
+
+fn main() ! sql.Error {
+    db := postgres.connect(os.env("KOO_TEST_POSTGRES") else "")?
+    price := 19.990d
+    row := db.query_row("select {price}::numeric as a, {price}::numeric * 3 as b, 1.10::numeric(10,2) + 2.2 as c, null::numeric as d")?
+    print("{row.decimal("a")?} {row.decimal("b")?} {row.decimal("c")?} {row.maybe_decimal("d")?}")
+    print(row.decimal("a")? == 19.99d)
+    priced := Priced.from_row(db.query_row("select 'pen' as item, 1.25::numeric as price, null::numeric as discount")?)?
+    print(priced)
+    cut := Priced.from_row(db.query_row("select 'ink' as item, 8.00::numeric as price, {0.5d}::numeric as discount")?)?
+    print("{cut.price - (cut.discount else 0d)}")
+    // A sum the database makes of what the program gave it.
+    total := db.query_row("select sum(x) as total from unnest(array[{0.1d}::numeric, {0.2d}::numeric, {0.3d}::numeric]) as x")?
+    print(total.decimal("total")?)
+    for query in ["select 'NaN'::numeric as n", "select 'Infinity'::numeric as n", "select (10::numeric ^ 40) / 3 as n"] {
+        match db.query_row(sql.Query.raw(query))?.decimal("n") {
+            value => print(value)
+            ! e => print("{e.kind}: {e.message}")
+        }
+    }
+    match db.query_row("select null::numeric as n")?.decimal("n") {
+        value => print(value)
+        ! e => print("{e.kind}: {e.message}")
+    }
+}
+
+//= 19.990 59.970 3.30 none
+//= true
+//= Priced { item: "pen", price: 1.25, discount: none }
+//= 7.50
+//= 0.6
+//= Other: the column `n` holds `NaN`, which is not a decimal of at most 34 digits
+//= Other: the column `n` holds `Infinity`, which is not a decimal of at most 34 digits
+//= Other: the column `n` holds `3333333333333333333333333333333333333333`, which is not a decimal of at most 34 digits
+//= Other: the column `n` is NULL

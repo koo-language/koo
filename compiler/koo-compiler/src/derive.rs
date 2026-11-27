@@ -1424,7 +1424,7 @@ pub fn derive(package: &File, json: bool, rows: bool, envs: bool) -> Derived {
     // A handle of an actor is its address, which can always be sent.
     let mut handles: Vec<&str> = deriver.actors.iter().map(|actor| actor.name.name.as_str()).collect();
     // And so can a duration and a time, which the prelude writes and reads.
-    handles.extend(["Duration", "Time"]);
+    handles.extend(["Duration", "Time", "Decimal"]);
     deriver.ok.extend(handles.iter().copied());
     // Twice: first for what has JSON, where a type that writes and reads itself has it
     // whatever its fields are; then for what may be a message to an actor, which is
@@ -1582,6 +1582,7 @@ pub fn derive(package: &File, json: bool, rows: bool, envs: bool) -> Derived {
                                 "bool" => "bool",
                                 "string" => "string",
                                 "Time" => "time",
+                                "Decimal" => "decimal",
                                 _ => return None,
                             }
                         }

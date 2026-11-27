@@ -9,6 +9,13 @@ use koo_syntax::Span;
 use super::{Checker, TypeName};
 use crate::hir::*;
 
+/// The arithmetic of `Decimal`, which is the support library's: the compiler reads a
+/// literal with it, so that `19.99d` in a program is what `Decimal.parse` makes of the
+/// same digits when the program runs.
+#[allow(dead_code)]
+#[path = "../../../koo-rt/src/decimal.rs"]
+mod decimal;
+
 /// The units of a duration literal, and the nanoseconds in each.
 const UNITS: [(&str, u128); 6] = [
     ("h", 3_600_000_000_000),
@@ -35,9 +42,49 @@ impl Checker<'_> {
         self.prelude_struct("Time")
     }
 
-    /// Whether a type is one of the two.
+    pub(super) fn decimal_ty(&self) -> Option<Ty> {
+        self.prelude_struct("Decimal")
+    }
+
+    /// Whether a type is one of those whose operators are methods of the prelude's: a
+    /// duration, a time, a decimal.
     pub(super) fn is_time_type(&self, ty: &Ty) -> bool {
-        matches!(ty, Ty::Struct(_)) && (self.duration_ty().as_ref() == Some(ty) || self.time_ty().as_ref() == Some(ty))
+        matches!(ty, Ty::Struct(_))
+            && (self.duration_ty().as_ref() == Some(ty)
+                || self.time_ty().as_ref() == Some(ty)
+                || self.decimal_ty().as_ref() == Some(ty))
+    }
+
+    /// `19.99d`: the digits as a `Decimal`, read as the support library reads them.
+    pub(super) fn decimal_literal(&mut self, text: &str, negative: bool, span: Span) -> Expr {
+        let Some(Ty::Struct(id)) = self.decimal_ty() else {
+            self.unsupported(span, "`Decimal` is");
+            return self.unknown(span);
+        };
+        let digits = text.replace('_', "");
+        let value = match decimal::parse(digits.as_bytes()) {
+            Ok(value) => value,
+            Err(decimal::Problem::TooLong) => {
+                self.error_help(
+                    span,
+                    "this number has more digits than a `Decimal` has",
+                    "a `Decimal` has 34 digits that count (Section 4.3); a literal is not rounded to them",
+                );
+                return self.unknown(span);
+            }
+            Err(_) => {
+                self.error(span, "this decimal literal cannot be read");
+                return self.unknown(span);
+            }
+        };
+        let value = if negative { value.negated() } else { value };
+        let fields = vec![
+            self.mk(ExprKind::Int(value.hi as i64), Ty::Int, span),
+            self.mk(ExprKind::Int(value.lo as i64), Ty::Int, span),
+            self.mk(ExprKind::Int(value.exp as i64), Ty::Int, span),
+            self.mk(ExprKind::Bool(value.neg), Ty::Bool, span),
+        ];
+        self.mk(ExprKind::StructLit(id, fields), Ty::Struct(id), span)
     }
 
     /// Whether a type is a struct of the prelude whose fields are its own: a duration, a
@@ -91,13 +138,14 @@ impl Checker<'_> {
                         other => other,
                     };
                     let known = matches!(inner, Ty::Int | Ty::Float | Ty::Bool | Ty::Str)
-                        || self.time_ty().as_ref() == Some(inner);
+                        || self.time_ty().as_ref() == Some(inner)
+                        || self.decimal_ty().as_ref() == Some(inner);
                     if !known {
                         let found = self.ty_name(&value.ty);
                         self.error_help(
                             expr.span,
                             format!("a `{found}` cannot be a parameter of a query"),
-                            "a parameter is an `int`, a `float`, a `bool`, a `string` or a `Time`, an optional of one, which is NULL when it is `none`, or a list of them, which is an array (Section 10.3)",
+                            "a parameter is an `int`, a `float`, a `bool`, a `string`, a `Time` or a `Decimal`, an optional of one, which is NULL when it is `none`, or a list of them, which is an array (Section 10.3)",
                         );
                         continue;
                     }
@@ -282,8 +330,14 @@ impl Checker<'_> {
     /// times subtract to a duration. There is nothing for any other pair.
     pub(super) fn time_arithmetic(&mut self, op: BinOp, a: &Expr, b: &Expr, span: Span) -> Option<Expr> {
         let (duration, time) = (self.duration_ty()?, self.time_ty()?);
+        let decimal = self.decimal_ty()?;
         let is = |expr: &Expr, ty: &Ty| expr.ty == *ty;
         let (method, swapped) = match op {
+            // Decimals add, subtract and multiply; a quotient is asked for by name,
+            // with its decimals (Section 4.3), and a decimal mixes with no other number.
+            BinOp::Add if is(a, &decimal) && is(b, &decimal) => ("_add", false),
+            BinOp::Sub if is(a, &decimal) && is(b, &decimal) => ("_sub", false),
+            BinOp::Mul if is(a, &decimal) && is(b, &decimal) => ("_mul", false),
             BinOp::Add if is(a, &duration) && is(b, &duration) => ("_add", false),
             BinOp::Sub if is(a, &duration) && is(b, &duration) => ("_sub", false),
             BinOp::Mul if is(a, &duration) && b.ty == Ty::Int => ("_mul", false),
@@ -299,9 +353,15 @@ impl Checker<'_> {
         self.time_method(method, receiver.clone(), Some(argument.clone()), span)
     }
 
+    /// `{price:.2}`: a decimal with so many digits after the point, as text.
+    pub(super) fn decimal_fixed(&mut self, value: Expr, places: u32, span: Span) -> Option<Expr> {
+        let places = self.mk(ExprKind::Int(places as i64), Ty::Int, span);
+        self.time_method("_fixed", value, Some(places), span)
+    }
+
     /// `-d` for a duration.
     pub(super) fn negated_duration(&mut self, operand: &Expr, span: Span) -> Option<Expr> {
-        if self.duration_ty().as_ref() != Some(&operand.ty) {
+        if self.duration_ty().as_ref() != Some(&operand.ty) && self.decimal_ty().as_ref() != Some(&operand.ty) {
             return None;
         }
         self.time_method("_neg", operand.clone(), None, span)

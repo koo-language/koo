@@ -351,6 +351,90 @@ pub const INTRINSICS: &[Intrinsic] = &[
     },
     // Conversations over TCP (`std/net`, `koo-rt/src/net.rs`). A connection is a number,
     // and what a call returns is 0 or the kind of failure.
+    // The arithmetic of `Decimal` (`koo-rt/src/decimals.rs`): each takes the four
+    // fields of its operands, leaves what it makes with the thread, and returns how
+    // it went.
+    Intrinsic {
+        name: "dec_add",
+        params: &[I::Int, I::Int, I::Int, I::Bool, I::Int, I::Int, I::Int, I::Bool],
+        ret: I::Int,
+    },
+    Intrinsic {
+        name: "dec_sub",
+        params: &[I::Int, I::Int, I::Int, I::Bool, I::Int, I::Int, I::Int, I::Bool],
+        ret: I::Int,
+    },
+    Intrinsic {
+        name: "dec_mul",
+        params: &[I::Int, I::Int, I::Int, I::Bool, I::Int, I::Int, I::Int, I::Bool],
+        ret: I::Int,
+    },
+    Intrinsic {
+        name: "dec_cmp",
+        params: &[I::Int, I::Int, I::Int, I::Bool, I::Int, I::Int, I::Int, I::Bool],
+        ret: I::Int,
+    },
+    Intrinsic {
+        name: "dec_div",
+        params: &[
+            I::Int,
+            I::Int,
+            I::Int,
+            I::Bool,
+            I::Int,
+            I::Int,
+            I::Int,
+            I::Bool,
+            I::Int,
+            I::Int,
+        ],
+        ret: I::Int,
+    },
+    Intrinsic {
+        name: "dec_rescale",
+        params: &[I::Int, I::Int, I::Int, I::Bool, I::Int, I::Int],
+        ret: I::Int,
+    },
+    Intrinsic {
+        name: "dec_reduce",
+        params: &[I::Int, I::Int, I::Int, I::Bool],
+        ret: I::Int,
+    },
+    Intrinsic {
+        name: "dec_parse",
+        params: &[I::Str],
+        ret: I::Int,
+    },
+    Intrinsic {
+        name: "dec_of",
+        params: &[I::Int],
+        ret: I::Int,
+    },
+    Intrinsic {
+        name: "dec_hi",
+        params: &[],
+        ret: I::Int,
+    },
+    Intrinsic {
+        name: "dec_lo",
+        params: &[],
+        ret: I::Int,
+    },
+    Intrinsic {
+        name: "dec_exp",
+        params: &[],
+        ret: I::Int,
+    },
+    Intrinsic {
+        name: "dec_neg",
+        params: &[],
+        ret: I::Bool,
+    },
+    Intrinsic {
+        name: "dec_text",
+        params: &[I::Int, I::Int, I::Int, I::Bool],
+        ret: I::Str,
+    },
     Intrinsic {
         name: "net_take",
         params: &[I::Str, I::Str, I::Int, I::Int],

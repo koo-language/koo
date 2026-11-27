@@ -101,7 +101,7 @@ error: expected `sql.Query`, found `string`
 1 error
 ```
 
-A value in a query is an `int`, a `float`, a `bool`, a `string` or a `Time`, or an optional of one of these, and an optional that is `none` is sent as NULL. A list of them is sent as an array, so that the rows with any of several ids are asked for by `where id = any({ids})`, with `ids` an `[int]`. Because a value is sent as it is, a format (Section 8.2) would mean nothing, and is an error.
+A value in a query is an `int`, a `float`, a `bool`, a `string`, a `Time` or a `Decimal`, or an optional of one of these, and an optional that is `none` is sent as NULL. A list of them is sent as an array, so that the rows with any of several ids are asked for by `where id = any({ids})`, with `ids` an `[int]`. Because a value is sent as it is, a format (Section 8.2) would mean nothing, and is an error.
 
 The database decides what type a parameter has from the place it stands in: compared with a column, it has the column's type. In the few places where a statement gives a parameter no type, as in `select {n}`, PostgreSQL takes it for text, and a cast says otherwise: `select {n}::int`.
 
