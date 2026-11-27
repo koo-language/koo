@@ -396,6 +396,21 @@ pub const INTRINSICS: &[Intrinsic] = &[
         ret: I::Int,
     },
     Intrinsic {
+        name: "dec_fixed",
+        params: &[I::Int, I::Int, I::Int, I::Bool, I::Int],
+        ret: I::Str,
+    },
+    Intrinsic {
+        name: "dec_hash",
+        params: &[I::Int, I::Int, I::Int, I::Bool],
+        ret: I::Int,
+    },
+    Intrinsic {
+        name: "dec_float",
+        params: &[I::Int, I::Int, I::Int, I::Bool],
+        ret: I::Float,
+    },
+    Intrinsic {
         name: "dec_reduce",
         params: &[I::Int, I::Int, I::Int, I::Bool],
         ret: I::Int,

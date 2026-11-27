@@ -355,6 +355,15 @@ impl<'a> Checker<'a> {
                         );
                         Pattern::Wildcard
                     }
+                    // (`1.0d` and `1.00d` are one value, matched by what they are worth.)
+                    _ if self.decimal_ty().as_ref() == Some(&value.ty) && value.ty == *ty => {
+                        self.error_help(
+                            span,
+                            "a `Decimal` is not matched by a literal",
+                            "compare it in a guard, where `1.0d` is `1.00d`: `x if x == 0d => ...`",
+                        );
+                        Pattern::Wildcard
+                    }
                     _ => {
                         let found = self.ty_name(&value.ty);
                         mismatch(self, &format!("a literal of type `{found}`"))

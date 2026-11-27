@@ -1,0 +1,76 @@
+// A `Decimal` where the compiler keeps, finds and lays out values: as a key, by its
+// hash, alone and inside other values; as the place of a compound assignment; in a
+// format; and at the edges of a float and of a text.
+
+type Key = { amount: Decimal, name: string }
+
+fn next(n: var int) -> int {
+    n += 1
+    return n - 1
+}
+
+fn main() {
+    // Equal values are one key, however many digits they have.
+    third := 1d.divide(3d, scale: 18)
+    var seen: [Decimal: string] = [:]
+    seen[third] = "third"
+    seen[0.333333333333333333000d] = "the same"
+    seen[1.0d] = "one"
+    seen[1.00d] = "one again"
+    print(seen.len)
+    print(seen[1d] else "missing")
+    var several: Set<Decimal> = Set.new()
+    several.insert(0d)
+    several.insert(0.000d)
+    several.insert(-0.0d)
+    several.insert(9999999999999999999999999999999999d)
+    print(several.len)
+    // And so are values that hold them.
+    var keyed: [Key: int] = [:]
+    keyed[Key { amount: 1.0d, name: "a" }] = 1
+    keyed[Key { amount: 1.00d, name: "a" }] = 2
+    print("{keyed.len} {keyed[Key { amount: 1d, name: "a" }] else 0}")
+    var pairs: [(Decimal, int): int] = [:]
+    pairs[(2.50d, 1)] = 1
+    pairs[(2.5d, 1)] = 2
+    var maybes: [Decimal?: int] = [:]
+    maybes[1.10d] = 1
+    maybes[1.1d] = 2
+    print("{pairs.len} {maybes.len}")
+
+    // The place of a compound assignment is found once.
+    var prices := [1d, 2d, 3d]
+    var at := 0
+    prices[next(var at)] += 10d
+    var waits := [1s, 2s]
+    var to := 0
+    waits[next(var to)] += 1s
+    print("{prices} {at} {waits} {to}")
+
+    // So many digits after the point, whatever the decimal has; and placed as a number.
+    print("{0d:.8} {0.00000001d:.8} {0.0000004d:.8} {-0.001d:.2} {2.5d:.0} {3.5d:.0}")
+    print("{1d:.40}")
+    print("{1234567890123456789012345678901234d:.2}")
+    print("[{2.5d:6}] [{-1234.565d:10.2}] [{-3.5d:08.1}] [{7d:<4}]")
+
+    // Beyond a float's range is infinity, and a text whose zeros there is no room for
+    // is still the number.
+    big := Decimal.parse("1.8E+308") else 0d
+    print("{big.to_float()} {(-big).to_float()} {0.1d.to_float()}")
+    print(Decimal.parse("10000000000000000000000000000000000") else 0d)
+    print(Decimal.parse("1E+0000001") else 0d)
+}
+
+//= 2
+//= one again
+//= 2
+//= 1 2
+//= 1 1
+//= [11, 2, 3] 1 [2s, 2s] 1
+//= 0.00000000 0.00000001 0.00000040 0.00 2 4
+//= 1.0000000000000000000000000000000000000000
+//= 1234567890123456789012345678901234.00
+//= [   2.5] [  -1234.56] [-00003.5] [7   ]
+//= inf -inf 0.1
+//= 1.000000000000000000000000000000000E+34
+//= 1E+1

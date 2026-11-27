@@ -974,6 +974,11 @@ impl Gen<'_> {
     pub(super) fn hash_at(&mut self, ty: &Ty, place: &str, inline: bool) -> String {
         let llty = self.llty(ty);
         let seed = "-3750763034362895579";
+        // A type whose equality is its own has a hash of its own to go with it.
+        if let Some(&function) = self.p.hashes.get(ty) {
+            let name = self.fn_name(function);
+            return self.value(format!("call i64 {name}(ptr {place})"));
+        }
         match ty {
             Ty::Int => {
                 let value = self.load(ty, place);

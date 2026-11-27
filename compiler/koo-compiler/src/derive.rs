@@ -1594,6 +1594,7 @@ pub fn derive(package: &File, json: bool, rows: bool, envs: bool) -> Derived {
                                     "float" => "floats",
                                     "bool" => "bools",
                                     "string" => "strings",
+                                    "Decimal" => "decimals",
                                     _ => return None,
                                 }
                             }

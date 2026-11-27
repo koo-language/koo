@@ -10,7 +10,9 @@ itself, throws sums at it, and compares each answer: the digits, the exponent (s
 its seed, and the same seed throws the same again.
 
 Where Koo's `Decimal` is by design not Python's, the expectation here says so: zero is
-never negative; a text of more than 34 digits that count is refused, not rounded; and a
+never negative; a text of more than 34 digits that count is refused, not rounded (zeros
+at its end counting only as far as there is no room for them); `{d:.N}` has no sign
+where it is all zeros; and a
 quotient is asked for with its number of decimals, and is none if it would need more
 than 34 digits.
 """
@@ -125,7 +127,7 @@ def expect(line):
     if op == "parse":
         text = words[1]
         exact = Decimal(text)
-        counted = len(str(int("".join(map(str, exact.as_tuple().digits)) or "0")))
+        counted = len(("".join(map(str, exact.as_tuple().digits)).lstrip("0")).rstrip("0"))
         if not exact.is_zero() and counted > DIGITS:
             return "TooLong"
         made = ctx.create_decimal(text)
@@ -136,6 +138,14 @@ def expect(line):
         return shown(made)
     if op == "reduce":
         return shown(ctx.normalize(ctx.create_decimal(words[1])))
+    if op == "fixed":
+        a, places = operand(words[1]), int(words[2])
+        wide = decimal.Context(prec=10000, Emax=10**6, Emin=-10**6, rounding=decimal.ROUND_HALF_EVEN)
+        written = format(wide.quantize(a, Decimal(1).scaleb(-places)), "f")
+        return written.lstrip("-") if set(written) <= set("-0.") else written
+    if op == "hash":
+        a, b = operand(words[1]), operand(words[2])
+        return "true" if a == b else "false"
     raise ValueError(op)
 
 
@@ -154,8 +164,21 @@ def case():
         return f"div {number()} {number()} {rng.choice([0, 2, 2, 2, 4, 6, 10, 20, 33, rng.randrange(-5, 40)])} {rng.randrange(6)}"
     if kind < 0.94:
         return f"rescale {number()} {rng.choice([0, 1, 2, 2, 3, 6, rng.randrange(-10, 40)])} {rng.randrange(6)}"
-    if kind < 0.97:
+    if kind < 0.955:
         return f"parse {number()}"
+    if kind < 0.965:
+        # Digits with zeros at their end, more of them than there may be room for.
+        digits = digits_of(rng.randrange(1, DIGITS + 1)) + "0" * rng.randrange(0, 12)
+        point = rng.randrange(len(digits) + 1)
+        text = digits[:point] + ("." + digits[point:] if point < len(digits) and rng.random() < 0.5 else digits[point:])
+        return f"parse {text}E{rng.randrange(-30, 30):+d}" if rng.random() < 0.5 else f"parse {text}"
+    if kind < 0.98:
+        return f"fixed {number()} {rng.choice([0, 1, 2, 2, 2, 4, 8, rng.randrange(0, 101)])}"
+    if kind < 0.99:
+        a = number()
+        same = context().create_decimal(a)
+        twin = str(same.quantize(Decimal(1).scaleb(same.as_tuple().exponent - rng.randrange(0, 4)), context=decimal.Context(prec=60, Emax=10**6, Emin=-10**6))) if not same.is_infinite() else a
+        return f"hash {a} {twin if rng.random() < 0.6 else number()}"
     return f"reduce {number()}"
 
 
@@ -163,7 +186,7 @@ def in_range(line):
     """Whether every operand is a number at all: the generator makes some that are too
     great or too small to be one, which only `parse` is asked about."""
     words = line.split()
-    count = {"add": 2, "sub": 2, "mul": 2, "cmp": 2, "div": 2, "rescale": 1, "parse": 0, "reduce": 1}[words[0]]
+    count = {"add": 2, "sub": 2, "mul": 2, "cmp": 2, "div": 2, "rescale": 1, "parse": 0, "reduce": 1, "fixed": 1, "hash": 2}[words[0]]
     for text in words[1:1 + count]:
         if expect(f"parse {text}") in ("TooGreat", "TooLong"):
             return False

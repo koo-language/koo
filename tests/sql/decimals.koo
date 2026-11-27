@@ -11,6 +11,8 @@ import std/sql/postgres
 
 type Priced = { item: string, price: Decimal, discount: Decimal? }
 
+type Basket = { name: string, prices: [Decimal] }
+
 fn main() ! sql.Error {
     db := postgres.connect(os.env("KOO_TEST_POSTGRES") else "")?
     price := 19.990d
@@ -34,6 +36,15 @@ fn main() ! sql.Error {
         value => print(value)
         ! e => print("{e.kind}: {e.message}")
     }
+    // What the program wrote, the database writes back with all its zeros, and the
+    // program reads it, exactly.
+    great := Decimal.parse("1E+34") else 0d
+    back := db.query_row("select {great}::numeric as n, 100000000000000::numeric(40,20) as m")?
+    print("{back.decimal("n")? == great} {back.decimal("m")?}")
+    // A list of decimals is an array, both ways.
+    wanted := [1.50d, 9d]
+    found := db.query_row("select 1.5::numeric = any({wanted}) as hit, array[1.5, 2.50]::numeric[] as prices, 'b' as name")?
+    print("{found.bool("hit")?} {found.decimals("prices")?} {Basket.from_row(found)?}")
 }
 
 //= 19.990 59.970 3.30 none
@@ -45,3 +56,5 @@ fn main() ! sql.Error {
 //= Other: the column `n` holds `Infinity`, which is not a decimal of at most 34 digits
 //= Other: the column `n` holds `3333333333333333333333333333333333333333`, which is not a decimal of at most 34 digits
 //= Other: the column `n` is NULL
+//= true 100000000000000.0000000000000000000
+//= true [1.5, 2.50] Basket { name: "b", prices: [1.5, 2.50] }

@@ -186,6 +186,8 @@ pub struct Program {
     /// The types whose `==` is a function of the prelude's and not a comparison of
     /// their fields: a map or a set is what it holds, not how it happens to be laid out.
     pub equals: std::collections::HashMap<Ty, FnId>,
+    /// And their hashes, which must be alike where they are equal.
+    pub hashes: std::collections::HashMap<Ty, FnId>,
     pub structs: Vec<StructDef>,
     pub enums: Vec<EnumDef>,
     pub errors: Vec<ErrorDef>,
@@ -296,6 +298,9 @@ pub struct Format {
     pub align: Align,
     /// Whether a number is padded with zeros after its sign.
     pub zero: bool,
+    /// Whether the value is a number that is not one of the machine's, a `Decimal`,
+    /// which is placed and padded as numbers are.
+    pub number: bool,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]

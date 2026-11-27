@@ -639,7 +639,7 @@ impl Gen<'_> {
                             self.emit(format!("store ptr {empty}, ptr {piece}"));
                             self.append_value(&piece, value, format.precision);
                             let text = self.load(&Ty::Str, &piece);
-                            let number = matches!(value.ty, Ty::Int | Ty::Float | Ty::Byte);
+                            let number = matches!(value.ty, Ty::Int | Ty::Float | Ty::Byte) || format.number;
                             let align = match format.align {
                                 Align::Left => 0,
                                 Align::Right => 1,

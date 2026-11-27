@@ -129,6 +129,41 @@ pub unsafe extern "C" fn koo_dec_reduce(hi: i64, lo: i64, exp: i64, neg: bool) -
     0
 }
 
+/// A hash of the number, the same for all that are equal: `1.0` and `1.00`, and every
+/// zero.
+#[unsafe(no_mangle)]
+pub extern "C" fn koo_dec_hash(hi: i64, lo: i64, exp: i64, neg: bool) -> i64 {
+    let value = of(hi, lo, exp, neg).reduced();
+    if value.is_zero() {
+        return 0x5bd1_e995;
+    }
+    let mut hash = 0xcbf2_9ce4_8422_2325u64;
+    for part in [value.hi, value.lo, value.exp as i64 as u64, value.neg as u64] {
+        hash = (hash ^ part).wrapping_mul(0x0100_0000_01b3);
+        hash ^= hash >> 29;
+    }
+    hash as i64
+}
+
+/// The nearest float, correctly rounded; and beyond the greatest, infinity.
+#[unsafe(no_mangle)]
+pub extern "C" fn koo_dec_float(hi: i64, lo: i64, exp: i64, neg: bool) -> f64 {
+    let mut out = [0u8; 48];
+    let len = decimal::text(&of(hi, lo, exp, neg), &mut out);
+    core::str::from_utf8(&out[..len])
+        .ok()
+        .and_then(|text| text.parse::<f64>().ok())
+        .unwrap_or(f64::NAN)
+}
+
+/// The text of a number with so many digits after its point (`{price:.2}`).
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn koo_dec_fixed(hi: i64, lo: i64, exp: i64, neg: bool, places: i64) -> *mut Header {
+    let mut out = [0u8; decimal::FIXED_LONGEST];
+    let len = decimal::fixed(&of(hi, lo, exp, neg), places.clamp(0, 100) as u32, &mut out);
+    unsafe { new_str(&out[..len]) }
+}
+
 /// The number a text is.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn koo_dec_parse(text: *const Header) -> i64 {

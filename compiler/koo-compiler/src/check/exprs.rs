@@ -36,7 +36,8 @@ fn parse_format(text: &str, ty: &Ty, decimal: bool) -> Result<Format, &'static s
             break;
         }
     }
-    let number = matches!(ty, Ty::Int | Ty::Float | Ty::Byte);
+    let number = matches!(ty, Ty::Int | Ty::Float | Ty::Byte) || decimal;
+    format.number = decimal;
     if rest.len() > 1 && rest.starts_with('0') && rest.as_bytes()[1].is_ascii_digit() {
         if !number {
             return Err("padding with zeros is for numbers");
@@ -359,7 +360,10 @@ impl<'a> Checker<'a> {
                     self.require_printable(&value);
                     let decimal = self.decimal_ty().as_ref() == Some(&value.ty);
                     let mut format = match format.as_deref() {
-                        None => Format::default(),
+                        None => Format {
+                            number: decimal,
+                            ..Format::default()
+                        },
                         Some(text) => match parse_format(text, &value.ty, decimal) {
                             Ok(format) => format,
                             Err(why) => {
@@ -367,7 +371,7 @@ impl<'a> Checker<'a> {
                                     self.error_help(
                                         expr.span,
                                         format!("the format `{text}` cannot be used here: {why}"),
-                                        "a format is an alignment (`<`, `>` or `^`), a width, and for a float a precision: `{name:>10}`, `{id:08}`, `{ratio:.2}`, `{price:8.2}`",
+                                        "a format is an alignment (`<`, `>` or `^`), a width, and for a float or a `Decimal` a precision: `{name:>10}`, `{id:08}`, `{ratio:.2}`, `{price:8.2}`",
                                     );
                                 }
                                 Format::default()
@@ -558,7 +562,8 @@ impl<'a> Checker<'a> {
                     .filter(|e| e.variants.iter().any(|v| v.name == super::bare(&name.name)))
                     .map(|e| e.name.clone())
                     .collect();
-                match owners.first() {
+                // (The program's own enums come after the library's, and are the likelier.)
+                match owners.last() {
                     Some(owner) => self.error_help(
                         span,
                         format!("`{}` is not known here", name.name),
@@ -1403,7 +1408,9 @@ impl<'a> Checker<'a> {
             && (sealed(self, id) || self.handles.contains(&id))
         {
             let name = self.ty_name(&Ty::Struct(id));
-            let help = if self.is_time_type(&Ty::Struct(id)) {
+            let help = if self.decimal_ty() == Some(Ty::Struct(id)) {
+                "its fields are its own: write a decimal as `19.99d`, or get one from `Decimal.parse(text)` or `Decimal.from(n)`"
+            } else if self.is_time_type(&Ty::Struct(id)) {
                 "its fields are its own: write a duration as `250ms`, and get a time from `time.now()`, `Time.from_unix(seconds)` or `Time.parse(text)`"
             } else if self.handles.contains(&id) {
                 "a handle is what `start` returns: it is made by starting an actor, and by nothing else"

@@ -342,6 +342,9 @@ pub(crate) struct Checker<'a> {
     /// program's to give. A function the compiler wrote for an actor is not one,
     /// whatever its parameters are called.
     located: HashSet<FnId>,
+    /// Statements that must come before the one being checked: what the indexes of
+    /// its place are, worked out once (see `once`).
+    hoisted: Vec<Stmt>,
     // Lambdas (see `check/lambdas.rs`).
     /// The functions around the lambda being checked, outermost first.
     enclosing: Vec<lambdas::Enclosing>,
@@ -455,6 +458,7 @@ impl<'a> Checker<'a> {
             in_derived: false,
             handles: HashSet::new(),
             located: HashSet::new(),
+            hoisted: Vec::new(),
             enclosing: Vec::new(),
             lambda: None,
             next_lambda_is_block: false,
@@ -1073,7 +1077,12 @@ impl<'a> Checker<'a> {
                 || is_builtin_type(&name.name)
             {
                 self.already_declared(name.span, &name.name, &format!("type {}", name.name));
-                if is_builtin_type(&name.name) || matches!(name.name.as_str(), "Duration" | "Time" | "Decimal") {
+                if is_builtin_type(&name.name)
+                    || matches!(
+                        name.name.as_str(),
+                        "Duration" | "Time" | "Decimal" | "Rounding" | "Inexact" | "DivideByZero" | "Overflow"
+                    )
+                {
                     self.note(format!("`{}` is a type of the language", name.name));
                 }
             } else if let Some(kind) = kind {
@@ -1264,6 +1273,15 @@ impl<'a> Checker<'a> {
                 && of < self.prelude_types.0
             {
                 self.program.equals.insert(Ty::Struct(of), id);
+            }
+            if name == "hash"
+                && sig.ret == Ty::Int
+                && sig.params.is_empty()
+                && let Owner::Struct(of) = *owner
+                && of < self.prelude_types.0
+                && self.program.structs[of].name == "Decimal"
+            {
+                self.program.hashes.insert(Ty::Struct(of), id);
             }
         }
 
@@ -2366,8 +2384,39 @@ impl<'a> Checker<'a> {
             return;
         }
         if let Some(checked) = self.stmt_one(stmt) {
+            out.append(&mut self.hoisted);
             out.push(checked);
         }
+        self.hoisted.clear();
+    }
+
+    /// The same place, with every index in it that is more than a variable or a literal
+    /// worked out beforehand, into a variable of its own: a place that is both read and
+    /// written, as `xs[next()] += 5s` is, must be found once.
+    fn once(&mut self, place: Expr) -> Expr {
+        let Expr { kind, ty, span } = place;
+        let kind = match kind {
+            ExprKind::Index(base, index) => {
+                let base = self.once(*base);
+                let index = if matches!(index.kind, ExprKind::Local(_) | ExprKind::Int(_)) {
+                    *index
+                } else {
+                    let local = self.declare_hidden("index", Ty::Int, false, LocalKind::Owned, false);
+                    self.used[local] = true;
+                    let at = index.span;
+                    self.hoisted.push(Stmt::Let { local, init: *index });
+                    Expr {
+                        kind: ExprKind::Local(local),
+                        ty: Ty::Int,
+                        span: at,
+                    }
+                };
+                ExprKind::Index(Box::new(base), Box::new(index))
+            }
+            ExprKind::Field(base, field) => ExprKind::Field(Box::new(self.once(*base)), field),
+            other => other,
+        };
+        Expr { kind, ty, span }
     }
 
     /// Whether an expression is a map, found without reporting anything: the expression is
@@ -2570,6 +2619,7 @@ impl<'a> Checker<'a> {
                 if let Some(op) = op
                     && self.is_time_type(&target_expr.ty)
                 {
+                    let target_expr = self.once(target_expr);
                     let value = self.expr(value, None);
                     if value.ty.is_unknown() {
                         return None;
@@ -2591,10 +2641,19 @@ impl<'a> Checker<'a> {
                         }
                         None => {
                             let (left, right) = (self.ty_name(&target_expr.ty), self.ty_name(&value.ty));
+                            let help = if self.decimal_ty().as_ref() == Some(&target_expr.ty) {
+                                if op == BinOp::Div {
+                                    "a quotient is asked for with the digits it is to have after the point: `x = x.divide(y, scale: 2)` (Section 4.3)"
+                                } else {
+                                    "a `Decimal` adds, subtracts and multiplies with a `Decimal` only: `1d` for `1`, `Decimal.from(n)` for an `int` (Section 4.3)"
+                                }
+                            } else {
+                                "durations add and subtract, and are multiplied and divided by an `int`; a `Time` and a `Duration` add to a `Time` (Section 10.6)"
+                            };
                             self.error_help(
                                 stmt.span,
                                 format!("this operator is not defined for `{left}` and `{right}`"),
-                                "durations add and subtract, and are multiplied and divided by an `int`; a `Time` and a `Duration` add to a `Time` (Section 10.6)",
+                                help,
                             );
                             None
                         }

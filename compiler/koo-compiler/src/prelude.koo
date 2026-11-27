@@ -1593,17 +1593,14 @@ fn (self: Decimal) compare(other: Decimal) -> int {
 fn (self: Decimal) _same(other: Decimal) -> bool { return self.compare(other) == 0 }
 
 /// The same for all that are equal, whatever zeros their digits end with.
-fn (self: Decimal) hash() -> int {
-    __dec_reduce(self._hi, self._lo, self._exp, self._neg)
-    return (__dec_hi() * 31 + __dec_lo()) * 31 + __dec_exp() * 2 + (if __dec_neg() { 1 } else { 0 })
-}
+fn (self: Decimal) hash() -> int { return __dec_hash(self._hi, self._lo, self._exp, self._neg) }
 
 /// Its digits, with a point as many from their end as it has decimals: `1.50d` is
 /// `1.50`.
 fn (self: Decimal) to_string() -> string { return __dec_text(self._hi, self._lo, self._exp, self._neg) }
 
 /// The nearest float, for what is no longer counted exactly.
-fn (self: Decimal) to_float() -> float { return float.parse(self.to_string()) else 0.0 }
+fn (self: Decimal) to_float() -> float { return __dec_float(self._hi, self._lo, self._exp, self._neg) }
 
 /// The number a text is, exactly: digits with at most one point, a sign before them
 /// if any, and `e` and a power of ten after them if any. A text of more than 34 digits
@@ -1654,10 +1651,7 @@ fn Decimal.from_json(text: string) -> Decimal ! JsonError {
 
 /// The number with so many digits after the point, for `{price:.2}`: rounded half to
 /// even if it had more, with zeros if it had fewer.
-fn (self: Decimal) _fixed(places: int) -> string {
-    if __dec_rescale(self._hi, self._lo, self._exp, self._neg, places, 0) > 1 { return self.to_string() }
-    return d__made().to_string()
-}
+fn (self: Decimal) _fixed(places: int) -> string { return __dec_fixed(self._hi, self._lo, self._exp, self._neg, places) }
 
 fn (self: Time) _json_write(out: var string) { out += __json_quote(self.to_string()) }
 
@@ -2678,6 +2672,7 @@ fn (self: [T]) _sql() -> string? {
 fn (self: int) _sql_element() -> string { return "{self}" }
 fn (self: float) _sql_element() -> string { return "{self}" }
 fn (self: Time) _sql_element() -> string { return "\"{self}\"" }
+fn (self: Decimal) _sql_element() -> string { return self.to_string() }
 
 fn (self: bool) _sql_element() -> string {
     if self { return "true" }
@@ -2760,6 +2755,14 @@ fn (self: Sql__Row) floats(column: string) -> [float] ! Sql__Error {
     var out: [float] = []
     for item in self._array(column, "a float")? {
         out.push(s__float(item) else fail s__not(column, "an array of floats", item))
+    }
+    return out
+}
+
+fn (self: Sql__Row) decimals(column: string) -> [Decimal] ! Sql__Error {
+    var out: [Decimal] = []
+    for item in self._array(column, "a decimal")? {
+        out.push(Decimal.parse(item) else fail s__not(column, "an array of decimals of at most 34 digits", item))
     }
     return out
 }

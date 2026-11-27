@@ -84,7 +84,7 @@ A `Decimal` is a number of up to 34 decimal digits and a power of ten, written `
 | `d.scale() -> int` | how many digits it has after the point |
 | `d.abs() -> Decimal`, `d.is_zero() -> bool`, `d.compare(other) -> int` | |
 | `d.to_string() -> string` | the digits, with a point as many from their end as there are decimals: `1.50d` is `1.50`. A number whose last digit counts tens or more, or that is less than a millionth, is written with `E` and a power of ten: `1.5E+3` |
-| `d.to_float() -> float` | the nearest float |
+| `d.to_float() -> float` | the nearest float; beyond the greatest, `inf` or `-inf` |
 | `"{d:.2}"` | with so many digits after the point, rounded half to even |
 
 `Rounding` is `HalfEven`, `HalfUp`, `Down` (toward zero), `Up` (away from it), `Floor` or `Ceiling`. In JSON a decimal is a string, `"19.99"`, and is read from a string or from a number, whose digits are taken as they are written (Section B.8). In a query it is a parameter like any other, and `row.decimal(name)` and `row.maybe_decimal(name)` read a column of PostgreSQL's `numeric`, as does a field of type `Decimal` in a struct read by `from_row` (Section B.15); a value of the database's that is not a number, or has more than 34 digits, is an error.
@@ -501,7 +501,7 @@ A `sql.Query` is written as a string literal where one is expected: the values i
 | --- | --- |
 | `row.int(column: string) -> int ! sql.Error`, and `float`, `bool`, `string`, `time`, `decimal` | the value of a column; fails if it is NULL |
 | `row.maybe_int(column: string) -> int? ! sql.Error`, and `maybe_float`, `maybe_bool`, `maybe_string`, `maybe_time`, `maybe_decimal` | the value of a column, or `none` if it is NULL |
-| `row.ints(column: string) -> [int] ! sql.Error`, and `floats`, `bools`, `strings` | a column that is an array of one dimension, as a list; fails if it is NULL or has a NULL in it |
+| `row.ints(column: string) -> [int] ! sql.Error`, and `floats`, `bools`, `strings`, `decimals` | a column that is an array of one dimension, as a list; fails if it is NULL or has a NULL in it |
 | `row.columns() -> [string]` | the names of the columns |
 | `"{row}"` | the row as text, each column with what it holds as the database wrote it: `{id: "1", note: NULL}` |
 | `T.from_row(row: sql.Row) -> T ! sql.Error` | for a structure `T` whose fields are of the five types or optionals of them: each field from the column of its name |

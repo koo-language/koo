@@ -565,7 +565,9 @@ pub fn divide(a: &Dec, b: &Dec, scale: i64, round: Round) -> Result<(Dec, bool),
 
 /// The number that a text is: digits with at most one point, a sign before them if
 /// any, and after them, if any, `e` or `E` and a power of ten. More than 34 digits
-/// that count are not rounded: such a text is no `Decimal`.
+/// that count are not rounded: such a text is no `Decimal`. (Zeros at the end of the
+/// digits count only as far as there is room for them: `1` and 34 zeros is `1` and 33
+/// zeros `E+1`, exactly, as the standard's decimal128 has it.)
 pub fn parse(text: &[u8]) -> Result<Dec, Problem> {
     let (neg, rest) = match text {
         [b'-', rest @ ..] => (true, rest),
@@ -574,18 +576,32 @@ pub fn parse(text: &[u8]) -> Result<Dec, Problem> {
     };
     let mut wide = Wide::ZERO;
     let (mut seen, mut point, mut after, mut count) = (false, false, 0i64, 0usize);
+    // Zeros after a digit that counts, not yet put into `wide`: they are put in when
+    // another digit comes, or at the end as far as there is room.
+    let mut zeros = 0i64;
     let mut at = 0;
     while at < rest.len() {
         match rest[at] {
+            b'0' if count > 0 => {
+                seen = true;
+                zeros += 1;
+                if point {
+                    after += 1;
+                }
+            }
             digit @ b'0'..=b'9' => {
                 seen = true;
-                if count > 0 || digit != b'0' {
-                    count += 1;
-                    if count > DIGITS {
+                if digit != b'0' {
+                    if count as i64 + zeros + 1 > DIGITS as i64 {
                         return Err(Problem::TooLong);
                     }
+                    for _ in 0..zeros {
+                        wide = wide.times_small(10);
+                    }
+                    count += zeros as usize + 1;
+                    zeros = 0;
+                    wide = wide.times_small(10).add(&Wide::small((digit - b'0') as u32));
                 }
-                wide = wide.times_small(10).add(&Wide::small((digit - b'0') as u32));
                 if point {
                     after += 1;
                 }
@@ -606,9 +622,15 @@ pub fn parse(text: &[u8]) -> Result<Dec, Problem> {
             [b'+', digits @ ..] => (false, digits),
             digits => (false, digits),
         };
-        if digits.is_empty() || digits.len() > 7 {
+        // (Zeros before the power's digits are nothing.)
+        let first = digits
+            .iter()
+            .position(|digit| *digit != b'0')
+            .unwrap_or(digits.len().saturating_sub(1));
+        if digits.is_empty() || digits.len() - first > 7 {
             return Err(Problem::NotANumber);
         }
+        let digits = &digits[first..];
         for digit in digits {
             if !digit.is_ascii_digit() {
                 return Err(Problem::NotANumber);
@@ -619,6 +641,13 @@ pub fn parse(text: &[u8]) -> Result<Dec, Problem> {
             power = -power;
         }
     }
+    // The zeros at the end that there is room for; those there is not raise the power.
+    let room = (DIGITS - count) as i64;
+    let kept = zeros.min(room);
+    for _ in 0..kept {
+        wide = wide.times_small(10);
+    }
+    let power = power + (zeros - kept);
     // What is too great is not a number here; what is too small to be told from zero
     // without loss is not either, a text being something to read exactly.
     match finished(neg, wide, power - after, Round::HalfEven) {
@@ -626,6 +655,98 @@ pub fn parse(text: &[u8]) -> Result<Dec, Problem> {
         Ok((_, true)) => Err(Problem::TooLong),
         Err(problem) => Err(problem),
     }
+}
+
+/// The longest text `fixed` writes: a sign, every digit of the greatest number, a
+/// point and a hundred decimals.
+pub const FIXED_LONGEST: usize = 1 + DIGITS + GREATEST as usize + 1 + 100;
+
+/// The text of a number with so many digits after its point, rounded half to even
+/// where it has more, and how long it is: never in the form with `E`, and with no
+/// sign where what is written is zero (`-0.001` to two places is `0.00`).
+pub fn fixed(value: &Dec, places: u32, out: &mut [u8; FIXED_LONGEST]) -> usize {
+    let places = places.min(100) as i64;
+    let count = value.digits();
+    let wide = value.wide();
+    // The digits of the value times ten to the `places`, rounded to a whole number.
+    let mut digits = [0u8; FIXED_LONGEST];
+    let mut len = 0usize;
+    let shift = value.exp as i64 + places;
+    if value.is_zero() {
+    } else if shift >= 0 {
+        for at in 0..count {
+            digits[len] = wide.digit(count - 1 - at) as u8;
+            len += 1;
+        }
+        for _ in 0..shift {
+            digits[len] = 0;
+            len += 1;
+        }
+    } else {
+        let dropped = (-shift) as usize;
+        let kept = count.saturating_sub(dropped);
+        for at in 0..kept {
+            digits[len] = wide.digit(count - 1 - at) as u8;
+            len += 1;
+        }
+        // Whether to round up: by the first digit dropped and whether any after it is
+        // not a zero, and if it is exactly half, by whether the last kept is odd.
+        let up = if dropped > count {
+            false
+        } else {
+            let first = wide.digit(dropped - 1);
+            let rest = (0..dropped - 1).any(|at| wide.digit(at) != 0);
+            let odd = len > 0 && digits[len - 1] % 2 == 1;
+            first > 5 || (first == 5 && (rest || odd))
+        };
+        if up {
+            let mut at = len;
+            loop {
+                if at == 0 {
+                    digits.copy_within(0..len, 1);
+                    digits[0] = 1;
+                    len += 1;
+                    break;
+                }
+                at -= 1;
+                if digits[at] == 9 {
+                    digits[at] = 0;
+                } else {
+                    digits[at] += 1;
+                    break;
+                }
+            }
+        }
+    }
+    let nothing = digits[..len].iter().all(|digit| *digit == 0);
+    let mut written = 0;
+    let mut push = |byte: u8| {
+        out[written] = byte;
+        written += 1;
+    };
+    if value.neg && !nothing {
+        push(b'-');
+    }
+    // As many digits as there must be: one before the point, and the places after it.
+    let places = places as usize;
+    let whole = len.saturating_sub(places);
+    if whole == 0 {
+        push(b'0');
+    } else {
+        for digit in &digits[..whole] {
+            push(b'0' + digit);
+        }
+    }
+    if places > 0 {
+        push(b'.');
+        for _ in len..places {
+            push(b'0');
+        }
+        for digit in &digits[whole..len] {
+            push(b'0' + digit);
+        }
+    }
+    written
 }
 
 /// The text of a number, and how long it is: its digits, with a point as many from

@@ -10,9 +10,18 @@ fn main() {
     print(12345678901234567890123456789012345d)
     print(price % 2d)
     half: Decimal = 0.5
+    var total := 1d
+    total += 1
+    total /= 2d
+    match total {
+        0d => print("none")
+        _ => print("some")
+    }
+    made := Decimal { _hi: 0, _lo: 1, _exp: 0, _neg: false }
 }
 
 type Decimal = { digits: string }
+enum Rounding { Nearest }
 //! error `/` is not defined for `Decimal`
 //! stderr a.divide(b, scale: 2)
 //! error `*` is not defined for `Decimal` and `float`
@@ -23,3 +32,13 @@ type Decimal = { digits: string }
 //! error `%` is not defined for `Decimal`
 //! error expected `Decimal`, found `float`
 //! error `Decimal` is already declared
+//! error this operator is not defined for `Decimal` and `int`
+//! stderr a `Decimal` adds, subtracts and multiplies with a `Decimal` only
+//! error this operator is not defined for `Decimal` and `Decimal`
+//! stderr `x = x.divide(y, scale: 2)`
+//! error a `Decimal` is not matched by a literal
+//! stderr compare it in a guard
+//! error `Decimal` cannot be built from its fields
+//! stderr write a decimal as `19.99d`
+//! error `Rounding` is already declared
+//! stderr `Rounding` is a type of the language

@@ -5,7 +5,7 @@
 //!
 //! A line is an operation and its operands: `add a b`, `sub a b`, `mul a b`,
 //! `cmp a b`, `div a b scale round`, `rescale a scale round`, `parse text`,
-//! `reduce a`. An answer is the number as text and whether it had to be rounded, or
+//! `reduce a`, `fixed a places`, `hash a b` (whether the two hash alike). An answer is the number as text and whether it had to be rounded, or
 //! the name of what went wrong.
 #[path = "../../compiler/koo-rt/src/decimal.rs"]
 mod decimal;
@@ -46,6 +46,16 @@ fn main() {
                 )?),
                 "parse" => shown(&number(1)?),
                 "reduce" => shown(&number(1)?.reduced()),
+                "fixed" => {
+                    let mut out = [0u8; FIXED_LONGEST];
+                    let len = fixed(&number(1)?, words[2].parse().unwrap(), &mut out);
+                    String::from_utf8_lossy(&out[..len]).to_string()
+                }
+                "hash" => {
+                    let (a, b) = (number(1)?.reduced(), number(2)?.reduced());
+                    let alike = (a.is_zero() && b.is_zero()) || (a.hi, a.lo, a.exp, a.neg) == (b.hi, b.lo, b.exp, b.neg);
+                    format!("{alike}")
+                }
                 other => panic!("no such operation: {other}"),
             })
         })();

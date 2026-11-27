@@ -234,9 +234,9 @@ Inside a string constant or a text block, `{` *expression* `}` is replaced by th
 - `<`, `>` or `^`: the text is placed at the left, at the right, or in the middle of the field;
 - `0`: a number is padded with zeros after its sign instead of with blanks;
 - a decimal number, the least width of the field, in characters;
-- `.` and a decimal number, for a `float` the number of digits after the decimal point.
+- `.` and a decimal number, for a `float` or a `Decimal` the number of digits after the decimal point; a `Decimal` is rounded to them half to even, and is never written with an exponent.
 
-Without an alignment, a number is placed at the right and any other value at the left. A text longer than the width is not shortened.
+Without an alignment, a number, a `Decimal` among them, is placed at the right and any other value at the left. A text longer than the width is not shortened.
 
 ## A.6 Statements
 
@@ -426,6 +426,7 @@ The text form of a value is:
 - for an `int` or `byte`, its decimal digits, with a minus sign if it is negative;
 - for a `float`, its decimal digits, always with a decimal point or an exponent, so that it cannot be taken for an integer; or `inf`, `-inf` or `NaN`;
 - for a `bool`, `true` or `false`;
+- for a `Decimal`, its digits, with a point as many from their end as it has decimals, so that `1.50d` is `1.50`; or, where its last digit counts tens or more or it is less than a millionth, its first digit, the others after a point, `E` and a power of ten: `1.5E+3`;
 - for a `Duration`, a duration constant, with a minus sign if it is negative, and `0s` for none; for a `Time`, the date and time in UTC as RFC 3339 writes them, `2026-01-31T12:00:00Z`, with a fraction of a second if there is one;
 - for a string, its characters; but where the string is an element or field of another value, the characters in double quotes, with escape sequences;
 - for a list, `[e1, e2]`; for a map, `[k1: v1, k2: v2]`; for a set, `Set[e1, e2]`; for a tuple, `(e1, e2)`;

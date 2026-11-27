@@ -182,7 +182,7 @@ nobody has the number 3
 
 `query_one` returns a `sql.Row? ! sql.Error`, an optional inside a result, and the line that calls it takes the two layers off one after the other: the `?` passes on a failure of the database, and the `else` deals with there being no row. The same line with `else fail NotFound { id }` is how a function says that the thing asked for does not exist.
 
-More often than a value at a time, a row is wanted as a structure. For a structure whose fields are of the types a column can hold, the compiler writes a function `from_row`, as it writes `from_json` (Section 8.7): each field is read from the column of its name, and an optional field may be NULL. A field that is a list of `int`, `float`, `bool` or `string` is read from a column that is an array, as `row.ints`, `row.floats`, `row.bools` and `row.strings` read one.
+More often than a value at a time, a row is wanted as a structure. For a structure whose fields are of the types a column can hold, the compiler writes a function `from_row`, as it writes `from_json` (Section 8.7): each field is read from the column of its name, and an optional field may be NULL. A field that is a list of `int`, `float`, `bool`, `string` or `Decimal` is read from a column that is an array, as `row.ints`, `row.floats`, `row.bools`, `row.strings` and `row.decimals` read one.
 
 ```koo
 import std/os
