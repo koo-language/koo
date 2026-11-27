@@ -2849,23 +2849,41 @@ fn requests_have_names() {
         // answered), one 404, one that was no request (400) and one whose client
         // left (counted with the 4xx, as the 499 it is logged as), two 500, of which
         // one was a panic; and each that was a request was timed.
-        let (_, counted) = ask("/metrics", None);
-        let count_of = |name: &str| -> Option<f64> {
+        // (The leaver's handler is ended in a moment, which a busy machine makes long:
+        // the counts are asked for until it is counted, and each asking before the
+        // last is one more request answered 200.)
+        let count_in = |counted: &str, name: &str| -> Option<f64> {
             counted
                 .lines()
                 .find_map(|line| line.strip_prefix(name)?.strip_prefix(' ')?.parse().ok())
         };
+        let mut asked_before = 0.0;
+        let counted = loop {
+            let (_, counted) = ask("/metrics", None);
+            if count_in(&counted, "koo_http_requests_abandoned_total") == Some(left) || asked_before >= 100.0 {
+                break counted;
+            }
+            asked_before += 1.0;
+            std::thread::sleep(std::time::Duration::from_millis(100));
+        };
+        let count_of = |name: &str| count_in(&counted, name);
         let started = if workers == "1" { 0.0 } else { 3.0 };
         for (name, expected) in [
-            ("koo_http_requests_total{status=\"2xx\"}", 6.0),
+            ("koo_http_requests_total{status=\"2xx\"}", 6.0 + asked_before),
             ("koo_http_requests_total{status=\"4xx\"}", 2.0 + left),
             ("koo_http_requests_total{status=\"5xx\"}", 2.0),
             ("koo_http_requests_abandoned_total", left),
             ("koo_http_handler_panics_total", 1.0),
             ("koo_http_workers_started_total", started),
-            ("koo_http_request_duration_seconds_count", 9.0 + left),
-            ("koo_http_request_duration_seconds_bucket{le=\"+Inf\"}", 9.0 + left),
-            ("koo_http_request_duration_seconds_bucket{le=\"10.000\"}", 9.0 + left),
+            ("koo_http_request_duration_seconds_count", 9.0 + left + asked_before),
+            (
+                "koo_http_request_duration_seconds_bucket{le=\"+Inf\"}",
+                9.0 + left + asked_before,
+            ),
+            (
+                "koo_http_request_duration_seconds_bucket{le=\"10.000\"}",
+                9.0 + left + asked_before,
+            ),
         ] {
             assert_eq!(
                 count_of(name),
