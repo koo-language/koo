@@ -1,0 +1,20 @@
+// A server that has work of its own to finish after it has been told to stop
+// (`a_program_is_told_to_stop`): it asked whether it was to stop before it served, so
+// the signal ends nothing for it, before the server, during it or after; and after the
+// server has ended, the answer is that it was told.
+import std/http
+import std/os
+import std/time
+
+fn main() ! http.Error {
+    print("asked: {os.stopping()}")
+    var app := http.App.new()
+    app.get("/ping", req -> http.text("pong\n"))
+    app.serve(workers: int.parse(os.env("WORKERS") else "") else 1)?
+    print("the server ended; told to stop: {os.stopping()}")
+    // What is left to do takes a while, and a second signal comes meanwhile.
+    for step in 0..6 {
+        time.sleep(100ms)
+    }
+    print("what was left was done")
+}

@@ -861,3 +861,79 @@ fn allowed() -> usize {
 fn allowed() -> usize {
     usize::MAX
 }
+
+/// Those who wait for one of a few things that are given back one at a time, a
+/// connection of a pool, in the order they came: without it, whoever asks at the moment
+/// one is given back has it, and under steady load that is whoever has just finished
+/// with one, again and again, while one that waits by looking every so often never
+/// looks at the right moment and waits out its whole time. It is used under the lock
+/// of what is waited for.
+pub struct Turns {
+    /// The number of each that waits (0 for a place nobody has), and the time by
+    /// which it will have stopped waiting.
+    waiting: [(u64, i64); MOST_WAITING],
+}
+
+/// As many as can wait at all: a worker of a server has 127 handlers at the most, and
+/// the process that keeps the actors 128 threads that answer for them.
+const MOST_WAITING: usize = 160;
+
+/// The numbers are of one sequence for everything that is waited for, so that a number
+/// keeps its place if what it waits for is set up again.
+static NEXT_TURN: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(1);
+
+impl Turns {
+    pub const fn new() -> Turns {
+        Turns {
+            waiting: [(0, 0); MOST_WAITING],
+        }
+    }
+
+    /// Whether the caller may take what is free now: nobody waits, or the caller has
+    /// waited longest. `number` is its own, 0 if it has not had to wait yet.
+    pub fn mine(&mut self, number: u64, now: i64) -> bool {
+        let mut first = 0;
+        for (waiting, until) in self.waiting.iter_mut() {
+            // One whose time was over a second ago has gone, however it went: what
+            // ended it may not have come back here to say so.
+            if *waiting != 0 && until.saturating_add(1_000_000_000) < now {
+                *waiting = 0;
+            }
+            if *waiting != 0 && (first == 0 || *waiting < first) {
+                first = *waiting;
+            }
+        }
+        first == 0 || (number != 0 && number <= first)
+    }
+
+    /// The caller waits, until `until` at the longest. Its number is given it the
+    /// first time, and is put back if what is waited for has been set up again since.
+    pub fn wait(&mut self, number: &mut u64, until: i64) {
+        if *number == 0 {
+            *number = NEXT_TURN.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+        }
+        if self.waiting.iter().any(|(waiting, _)| waiting == number) {
+            return;
+        }
+        // (With no room, it waits unnumbered, and has what is free when nobody
+        // numbered waits.)
+        if let Some(free) = self.waiting.iter_mut().find(|(waiting, _)| *waiting == 0) {
+            *free = (*number, until);
+        }
+    }
+
+    /// The caller waits no longer: it has what it waited for, or has given up.
+    pub fn done(&mut self, number: u64) {
+        if number != 0 {
+            for (waiting, _) in self.waiting.iter_mut().filter(|(waiting, _)| *waiting == number) {
+                *waiting = 0;
+            }
+        }
+    }
+}
+
+impl Default for Turns {
+    fn default() -> Turns {
+        Turns::new()
+    }
+}

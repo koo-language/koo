@@ -1654,6 +1654,10 @@ fn tcp_server() -> (
                             pause(400);
                             stream.write_all(answer.as_bytes())
                         }
+                        "nap" => {
+                            pause(5);
+                            stream.write_all(answer.as_bytes())
+                        }
                         "twice" => stream.write_all(format!("{answer}{answer}").as_bytes()),
                         "again" => {
                             let _ = stream.write_all(answer.as_bytes());
@@ -1858,6 +1862,42 @@ fn a_server_talks_over_tcp() {
             std::thread::sleep(std::time::Duration::from_millis(25));
         }
         let body = |answer: String| answer.rsplit("\r\n\r\n").next().unwrap_or("").trim().to_string();
+        // Those who wait for the one connection of a pool have it in turn. Three
+        // clients each ask again as soon as they are answered: without turns, the one
+        // that has just been answered has the connection again before a waiter looks,
+        // and a waiter is answered once in the time the others are a hundred times, or
+        // not at all in the time it is given.
+        if workers == 1 {
+            let until = std::time::Instant::now() + std::time::Duration::from_millis(1500);
+            let clients: Vec<_> = (0..3)
+                .map(|client| {
+                    std::thread::spawn(move || {
+                        let (mut answered, mut failed) = (0, Vec::new());
+                        while std::time::Instant::now() < until {
+                            let answer = get(port, &format!("/narrow/c{client}"));
+                            let said = answer.rsplit("\r\n\r\n").next().unwrap_or("").trim().to_string();
+                            if said.ends_with(&format!(" c{client}")) {
+                                answered += 1;
+                            } else {
+                                failed.push(said);
+                            }
+                        }
+                        (answered, failed)
+                    })
+                })
+                .collect();
+            let counts: Vec<(i32, Vec<String>)> = clients.into_iter().map(|client| client.join().unwrap()).collect();
+            let answered: Vec<i32> = counts.iter().map(|(answered, _)| *answered).collect();
+            let (least, most) = (*answered.iter().min().unwrap(), *answered.iter().max().unwrap());
+            assert!(
+                counts.iter().all(|(_, failed)| failed.is_empty()) && least * 2 >= most && least >= 10,
+                "three clients of a pool of one were answered {answered:?} times, and failed with {:?}",
+                counts
+                    .iter()
+                    .flat_map(|(_, failed)| failed.iter().take(2))
+                    .collect::<Vec<_>>()
+            );
+        }
         // Each answer is its asker's own: what was asked comes back, after the number
         // of the connection it came on.
         // The connection `main` had its first conversation on, before there were
@@ -2473,6 +2513,54 @@ fn a_program_is_told_to_stop() {
         assert!(
             status.success() && rest == "told to stop after some work; the last piece was finished\n",
             "after {signal}: {status}, and it said: {rest}"
+        );
+    }
+    // A server that asked before it served, and has something left to do after: a
+    // second signal while it does that ends nothing either, and it knows it was told.
+    let executable = dir.join("after");
+    let built = Command::new(env!("CARGO_BIN_EXE_koo"))
+        .arg("build")
+        .arg(root.join("tests/os/after.koo"))
+        .arg("-o")
+        .arg(&executable)
+        .output()
+        .expect("koo runs");
+    assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
+    for workers in ["1", "3"] {
+        let port = std::net::TcpListener::bind("127.0.0.1:0")
+            .unwrap()
+            .local_addr()
+            .unwrap()
+            .port();
+        let mut child = Command::new(&executable)
+            .env("PORT", port.to_string())
+            .env("WORKERS", workers)
+            .stdout(std::process::Stdio::piped())
+            .spawn()
+            .expect("the server starts");
+        for _ in 0..200 {
+            if std::net::TcpStream::connect(("127.0.0.1", port)).is_ok() {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(25));
+        }
+        let tell = |child: &std::process::Child| {
+            Command::new("kill")
+                .args(["-TERM", &child.id().to_string()])
+                .status()
+                .unwrap();
+        };
+        tell(&child);
+        // (The server answers what it has in hand for three tenths of a second, and
+        // then `main` goes on: the second signal finds it there.)
+        std::thread::sleep(std::time::Duration::from_millis(550));
+        tell(&child);
+        let mut said = String::new();
+        child.stdout.take().unwrap().read_to_string(&mut said).unwrap();
+        let status = child.wait().unwrap();
+        assert!(
+            status.success() && said == "asked: false\nthe server ended; told to stop: true\nwhat was left was done\n",
+            "with {workers} workers: {status}, and it said: {said}"
         );
     }
     let _ = std::fs::remove_dir_all(&dir);

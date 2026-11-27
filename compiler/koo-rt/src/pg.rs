@@ -224,6 +224,8 @@ struct Db {
     limit: usize,
     /// How long, in milliseconds, a statement waits for a connection when all are in use.
     patience: i64,
+    /// Those that wait for one, who have it in the order they came.
+    turns: thread::Turns,
     conns: [Conn; MOST_CONNS],
 }
 
@@ -254,6 +256,7 @@ const NO_DB: Db = Db {
     authorities: Buf::new(),
     limit: 0,
     patience: 30_000,
+    turns: thread::Turns::new(),
     conns: [NO_CONN; MOST_CONNS],
 };
 
@@ -1663,17 +1666,24 @@ unsafe fn check_out(db: &mut Db) -> Option<&mut Conn> {
         adopt();
         POOL.lock();
         let until = koo_now_nanos().saturating_add(db.patience.saturating_mul(1_000_000));
+        // The number of this one among those that wait, once it has had to.
+        let mut number = 0u64;
         let slot = loop {
-            if let Some(index) = db.conns.iter().position(|conn| conn.fd >= 0 && !conn.busy) {
+            // A connection that is free is for whoever has waited longest for one.
+            let turn = db.turns.mine(number, koo_now_nanos());
+            if turn && let Some(index) = db.conns.iter().position(|conn| conn.fd >= 0 && !conn.busy) {
                 db.conns[index].busy = true;
+                db.turns.done(number);
                 POOL.unlock();
                 return Some(&mut db.conns[index]);
             }
             let open = db.conns.iter().filter(|conn| conn.fd >= 0 || conn.busy).count();
-            if open < db.limit
+            if turn
+                && open < db.limit
                 && let Some(index) = db.conns.iter().position(|conn| conn.fd < 0 && !conn.busy)
             {
                 db.conns[index].busy = true;
+                db.turns.done(number);
                 break index;
             }
             // Every connection is in use. If each is in a transaction that this very
@@ -1686,6 +1696,7 @@ unsafe fn check_out(db: &mut Db) -> Option<&mut Conn> {
                     .filter(|conn| conn.busy)
                     .all(|conn| conn.transaction != 0 && conn.began == mine);
             if all_mine {
+                db.turns.done(number);
                 POOL.unlock();
                 failed(
                     OTHER,
@@ -1695,6 +1706,7 @@ unsafe fn check_out(db: &mut Db) -> Option<&mut Conn> {
             }
             let left = (until - koo_now_nanos()) / 1_000_000;
             if left <= 0 {
+                db.turns.done(number);
                 POOL.unlock();
                 let mut text = Buffer::new();
                 let _ = write!(
@@ -1708,14 +1720,18 @@ unsafe fn check_out(db: &mut Db) -> Option<&mut Conn> {
             // (One whose request was given up does not wait at all, and must not be
             // let ask again and again without waiting.)
             if crate::http::given_up() {
+                db.turns.done(number);
                 POOL.unlock();
                 failed(TIMEOUT, &[GIVEN_UP]);
                 return None;
             }
+            db.turns.wait(&mut number, until);
             // A handler of a server that waits for a connection lets the others go on,
-            // one of which has it; anything else sleeps until one is given back.
+            // one of which has it, and is woken when one is given back (and looks
+            // again before long whether or not, since a connection is also freed by
+            // being closed); anything else sleeps until one is given back.
             POOL.unlock();
-            let paused = fiber::pause(1_000_000);
+            let paused = crate::http::await_turn(2_000_000) || fiber::pause(1_000_000);
             POOL.lock();
             if !paused {
                 POOL.wait_for(left);
@@ -1746,6 +1762,7 @@ unsafe fn give_back(conn: &mut Conn, broken: bool) {
         // pool this is not sleep again.
         POOL.wake_all();
         POOL.unlock();
+        crate::http::give_turns();
     }
 }
 

@@ -51,6 +51,10 @@ mod stub {
     pub unsafe fn waits_elsewhere(_: usize) -> bool {
         false
     }
+    pub unsafe fn await_turn(_: i64) -> bool {
+        false
+    }
+    pub unsafe fn give_turns() {}
     pub unsafe fn asking(_: bool) {}
     pub unsafe fn leave_if_out_of_grace() {}
     #[unsafe(no_mangle)]
@@ -2387,13 +2391,19 @@ mod imp {
             CURRENT.answered = true;
             EVENT_COUNT = 0;
             EVENT_AT = 0;
-            signal(SIGINT, 0);
-            signal(SIGTERM, 0);
             if CHILD {
                 koo_flush();
                 exit(0);
             }
-            STOP.store(false, core::sync::atomic::Ordering::Relaxed);
+            // A program that has asked whether it is to stop goes on hearing the
+            // signal after its server has ended, as it did before: the signal ends
+            // nothing for it (`koo_os_stopping`). For any other, the signal is again
+            // what ends the program. And what the server was told is not forgotten:
+            // the program was told to stop, and `main`, which goes on, can ask.
+            let hears = WATCHING.load(core::sync::atomic::Ordering::Acquire);
+            let heard = if hears { stop as extern "C" fn(i32) as usize } else { 0 };
+            signal(SIGINT, heard);
+            signal(SIGTERM, heard);
             STOPPED_AT = 0;
         }
     }
@@ -2556,7 +2566,11 @@ mod imp {
                     .saturating_sub(16)
                     .max(8);
             }
-            STOP.store(false, core::sync::atomic::Ordering::Relaxed);
+            // (A program that asks whether it is to stop, and was told before its server
+            // began, is not untold: the server ends as soon as it has begun.)
+            if !WATCHING.load(core::sync::atomic::Ordering::Acquire) {
+                STOP.store(false, core::sync::atomic::Ordering::Relaxed);
+            }
             STOPPED_AT = 0;
             CHILD = false;
             CHILD_COUNT = 0;
@@ -2654,6 +2668,9 @@ mod imp {
         fd: i32,
         until: i64,
         late: bool,
+        /// Whether what it waits for is its turn at something that another handler
+        /// gives back, a connection of a pool: it is woken when one is (`give_turns`).
+        turn: bool,
         /// Whether its request was given up: the client that made it has left, and
         /// there is nobody to answer. A handler whose request was given up waits for
         /// nothing more (see `given_up`).
@@ -2686,6 +2703,7 @@ mod imp {
         fd: -1,
         until: 0,
         late: false,
+        turn: false,
         given_up: false,
         deadline: 0,
         timed_out: false,
@@ -2858,6 +2876,42 @@ mod imp {
                     continue;
                 }
                 return fiber::Waited::TimeUp;
+            }
+        }
+    }
+
+    /// The handler waits its turn at something that another handler will give back:
+    /// the thread does other work until one says it has (`give_turns`), or for so long
+    /// at the most. Returns whether it did; if not, the caller waits as a thread does
+    /// where no server runs.
+    #[allow(static_mut_refs)]
+    pub unsafe fn await_turn(length: i64) -> bool {
+        unsafe {
+            if !may_leave() {
+                return false;
+            }
+            let here = HERE;
+            PLACES[here].turn = true;
+            let waited = wait_in_place(-1, false, nanos() + length.max(0));
+            PLACES[here].turn = false;
+            waited != fiber::Waited::NotHere
+        }
+    }
+
+    /// Something that handlers wait their turn at has been given back: those that
+    /// wait are woken, to see whose turn it is. From any other thread than the
+    /// server's it does nothing, since the handlers are that thread's alone.
+    #[allow(static_mut_refs)]
+    pub unsafe fn give_turns() {
+        unsafe {
+            if SERVER.load(core::sync::atomic::Ordering::Acquire) != thread::this_thread() || !SIDE_BY_SIDE {
+                return;
+            }
+            for place in PLACES[..PLACE_COUNT].iter_mut() {
+                if place.turn && place.doing == Doing::Waiting {
+                    place.late = false;
+                    place.doing = Doing::Ready;
+                }
             }
         }
     }

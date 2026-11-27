@@ -1651,6 +1651,7 @@ mod remote {
         fn accept(fd: i32, address: *mut u8, len: *mut u32) -> i32;
         fn close(fd: i32) -> i32;
         fn getpid() -> i32;
+        fn getppid() -> i32;
         fn poll(fds: *mut PollFd, count: usize, milliseconds: i32) -> i32;
         fn unlink(path: *const u8) -> i32;
         fn signal(number: i32, handler: usize) -> usize;
@@ -1790,7 +1791,14 @@ mod remote {
         out: *mut u8,
         out_len: usize,
         out_sent: usize,
+        /// When it was taken: one taken a moment ago has an asker about to write to
+        /// it, and does not give way to another yet (see where room is made).
+        born: i64,
     }
+
+    /// How long a connection that was just taken is kept though nothing has arrived on
+    /// it, in nanoseconds.
+    const JUST_TAKEN: i64 = 200_000_000;
 
     const NO_CONN: Conn = Conn {
         fd: -1,
@@ -1805,6 +1813,7 @@ mod remote {
         out: core::ptr::null_mut(),
         out_len: 0,
         out_sent: 0,
+        born: 0,
     };
 
     /// The connections, and whose turn it is. `SERVED` is held to read or change them:
@@ -2197,6 +2206,8 @@ mod remote {
     /// Where the actors of a server are kept, in a process that is one of its workers:
     /// the home of the process that started it.
     static PARENT: AtomicPtr<Header> = AtomicPtr::new(core::ptr::null_mut());
+    /// And which process that is: while it is this one's parent still, it is there.
+    static PARENT_PID: core::sync::atomic::AtomicI32 = core::sync::atomic::AtomicI32::new(0);
 
     /// In a process about to start workers: if the program has actors at all, this
     /// process has a home, where its workers find them and start more.
@@ -2239,6 +2250,7 @@ mod remote {
     pub unsafe fn after_fork() {
         unsafe {
             PARENT.store(HOME.load(Acquire), Release);
+            PARENT_PID.store(getppid(), Release);
             if LISTENER.load(Acquire) >= 0 {
                 close(LISTENER.load(Acquire));
                 LISTENER.store(-1, Release);
@@ -2444,12 +2456,17 @@ mod remote {
                 let made_room = |full: bool| -> bool {
                     SERVED.lock();
                     // The one that has lain unused the longest: one that was taken a
-                    // moment ago has an asker about to write to it.
+                    // moment ago has an asker about to write to it, and is not given
+                    // up for the next, or under a press of askers each would be let go
+                    // of before it had asked, and its asker would take the process for
+                    // gone.
                     let mut idle: Option<usize> = None;
+                    let now = crate::koo_now_nanos();
                     for (index, conn) in CONNS[..CONN_COUNT].iter().enumerate() {
                         let mut byte = [0u8; 1];
                         if conn.doing == IDLE
                             && conn.got == 0
+                            && now - conn.born > JUST_TAKEN
                             && idle.is_none_or(|idle| conn.turn < CONNS[idle].turn)
                             && recv(conn.fd, byte.as_mut_ptr(), 1, MSG_PEEK | MSG_DONTWAIT) < 0
                             && error() == EAGAIN
@@ -2492,6 +2509,7 @@ mod remote {
                         CONNS[CONN_COUNT] = Conn {
                             fd,
                             turn: TURNS,
+                            born: crate::koo_now_nanos(),
                             ..NO_CONN
                         };
                         TURNS += 1;
@@ -3028,10 +3046,15 @@ mod remote {
                 // moment, which Linux says in so many words; or it is not there.
                 // (Or this process has no file left to make a connection with, which
                 // 23 and 24 say: one is free when another of its handlers is done.)
+                // Where the system does not say which, the process that keeps a
+                // server's actors is known to be there while it is still the parent
+                // of this worker: it has no room, and is not gone.
                 let busy = if fd < 0 {
                     matches!(error(), 23 | 24)
                 } else {
-                    cfg!(target_os = "linux") && error() == EAGAIN
+                    let parent = PARENT.load(Acquire);
+                    (cfg!(target_os = "linux") && error() == EAGAIN)
+                        || (!parent.is_null() && bytes(parent) == name && getppid() == PARENT_PID.load(Acquire))
                 };
                 if fd >= 0 {
                     close(fd);
@@ -3165,13 +3188,16 @@ mod remote {
             let asked = method.rsplit(|b| *b == b' ').next().unwrap_or(method);
             koo_flush();
             // A process that is there and cannot take a connection this moment, because
-            // as many as it lets wait are waiting, is tried for two seconds; one that
-            // took the connection and let go of it, three times.
+            // as many as it lets wait are waiting, is tried for two seconds; and so is
+            // one that took the connection and let go of it, which a process that is
+            // there does when it has no room for all who ask: three such tries were
+            // over in a moment, and their asker took for gone a process that was only
+            // short of files.
             let (mut attempt, mut refusals, mut fresh) = (0, 0, false);
             // (A handler that asks says so: one whose request was given up is let
             // wait a second for the answer, and is ended only when that is over.)
             crate::http::asking(true);
-            while attempt < 3 && refusals < 100 {
+            while attempt < 100 && refusals < 100 {
                 // A handler whose request was given up, and whose second for answers
                 // is over, asks nothing more and stops waiting for what it has asked:
                 // the connection it asked on was let go of below, and not kept, so

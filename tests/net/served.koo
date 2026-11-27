@@ -38,8 +38,11 @@ fn main() ! net.Error | http.Error {
     // A conversation before there are workers: its connection is kept, by this process.
     first := say(pool, "echo first")
     speaker := Speaker.start(pool: pool)
+    // A pool of one connection, which those who want it must wait for.
+    narrow := net.pool(address, size: 1, wait: 2s, name: "narrow")?
     var app := http.App.new()
     app.get("/first", req -> http.text("{first}\n"))
+    app.get("/narrow/:text", req -> http.text("{say(narrow, "nap {req.param("text")}")}\n"))
     app.get("/main/:text", req -> http.text("{say(pool, "echo {req.param("text")}")}\n"))
     app.get("/own/:text", req -> {
         mine := net.pool(address, size: 4) else e => return http.text("{e.kind}\n")

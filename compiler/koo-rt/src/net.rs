@@ -100,12 +100,15 @@ struct Pool {
     address: Buf,
     /// How many connections it has, in use or not.
     open: usize,
+    /// Those that wait for one, who have it in the order they came.
+    turns: crate::thread::Turns,
 }
 
 const NO_POOL: Pool = Pool {
     used: false,
     address: Buf::new(),
     open: 0,
+    turns: crate::thread::Turns::new(),
 };
 
 static NET: Lock = Lock::new();
@@ -278,6 +281,7 @@ unsafe fn pool_of(address: &[u8]) -> Option<usize> {
         POOLS[free].address.len = 0;
         POOLS[free].address.push(address);
         POOLS[free].open = 0;
+        POOLS[free].turns = crate::thread::Turns::new();
         Some(free)
     }
 }
@@ -346,6 +350,9 @@ pub unsafe extern "C" fn koo_net_take(address: *const Header, name: *const Heade
             NET.unlock();
             -failed(CONNECTION, &[b"a program has at most 1,024 connections at once"])
         };
+        // The number of this one among those that wait for a connection of the pool,
+        // once it has had to.
+        let mut number = 0u64;
         let place = if once {
             match reserve(ALONE, false) {
                 Some(index) => Err(index),
@@ -363,9 +370,11 @@ pub unsafe extern "C" fn koo_net_take(address: *const Header, name: *const Heade
                 // One that is kept, if it is still good: the other end may have closed
                 // it, or said something that nobody asked for, and then it is not.
                 let now = koo_now_nanos();
+                // (And a connection that is free is for whoever has waited longest.)
+                let turn = POOLS[pool].turns.mine(number, now);
                 let mut kept = None;
                 for (index, conn) in CONNS.iter_mut().enumerate() {
-                    if conn.fd < 0 || conn.out || conn.pool != pool {
+                    if !turn || conn.fd < 0 || conn.out || conn.pool != pool {
                         continue;
                     }
                     if has_something(conn.fd) || now - conn.since > KEPT_FOR {
@@ -376,6 +385,7 @@ pub unsafe extern "C" fn koo_net_take(address: *const Header, name: *const Heade
                     break;
                 }
                 if let Some(index) = kept {
+                    POOLS[pool].turns.done(number);
                     break Ok(index);
                 }
                 // (The last connection of the address may just have been closed, and
@@ -392,7 +402,8 @@ pub unsafe extern "C" fn koo_net_take(address: *const Header, name: *const Heade
                         .iter()
                         .filter(|conn| conn.out && conn.pool == pool)
                         .all(|conn| crate::http::waits_elsewhere(conn.holder));
-                if POOLS[pool].open < limit || stuck {
+                if (turn && POOLS[pool].open < limit) || stuck {
+                    POOLS[pool].turns.done(number);
                     match reserve(pool, stuck) {
                         Some(index) => break Err(index),
                         None => {
@@ -403,8 +414,9 @@ pub unsafe extern "C" fn koo_net_take(address: *const Header, name: *const Heade
                         }
                     }
                 }
-                NET.unlock();
                 if koo_now_nanos() >= until || crate::http::given_up() {
+                    POOLS[pool].turns.done(number);
+                    NET.unlock();
                     return -failed(
                         TIMEOUT,
                         &[
@@ -414,8 +426,12 @@ pub unsafe extern "C" fn koo_net_take(address: *const Header, name: *const Heade
                         ],
                     );
                 }
-                // A handler of a server lets the others go on, one of which has one.
-                if !fiber::pause(1_000_000) {
+                POOLS[pool].turns.wait(&mut number, until);
+                NET.unlock();
+                // A handler of a server lets the others go on, one of which has one,
+                // and is woken when it is given back; and looks again before long
+                // whether or not, since a connection is also freed by being closed.
+                if !crate::http::await_turn(2_000_000) && !fiber::pause(1_000_000) {
                     koo_sleep(1_000_000);
                 }
                 NET.lock();
@@ -506,6 +522,7 @@ pub unsafe extern "C" fn koo_net_give(number: i64, keep: bool) {
             }
         }
         NET.unlock();
+        crate::http::give_turns();
     }
 }
 

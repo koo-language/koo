@@ -172,13 +172,16 @@ def count_of(actor, path="seen"):
     return -1
 
 
-def start(workers):
+def start(workers, files=None):
+    """The server, with so many workers; and, if said, allowed no more files than that."""
+    import resource
+    limit = files and (lambda: resource.setrlimit(resource.RLIMIT_NOFILE, (files, files)))
     env = dict(os.environ, PORT=str(PORT), WORKERS=str(workers))
     env.pop("KOO_TARGET", None)
     if ask("/ping", timeout=1)[0] == 200:
         print(f"FAIL  something already answers on port {PORT}")
         sys.exit(1)
-    server = subprocess.Popen([binary], env=env, stdout=subprocess.DEVNULL, stderr=open(errors, "a"))
+    server = subprocess.Popen([binary], env=env, stdout=subprocess.DEVNULL, stderr=open(errors, "a"), preexec_fn=limit or None)
     atexit.register(lambda: server.poll() is None and server.kill())
     for _ in range(100):
         if server.poll() is None and ask("/ping", timeout=1)[0] == 200:
@@ -728,6 +731,17 @@ def no_room(name, server):
     check(name, problems)
 
 
+def few_files(name):
+    """More handlers ask actors at once than the supervising process may have
+    connections open: those it has no room for wait, and none is told that the process,
+    which is there all the while, is gone."""
+    results = fan([(lambda a=a: ask(f"/nap/{a}/100", timeout=60)) for a in range(400)])
+    wrong = sorted(set(str(r[0]) for r in results if r[0] != 200))
+    with open(errors, errors="replace") as written:
+        gone = written.read().count("whose process is gone")
+    check(name, [wrong and f"asks were answered with {wrong}", gone and f"{gone} asks were told that the process was gone"])
+
+
 def settled(name, server, files_before):
     """Some time after the load: nothing spins, and nothing was left open or running."""
     time.sleep(13)
@@ -800,6 +814,13 @@ settled("afterwards nothing spins and nothing is left open", server, files_befor
 stop(server, "told to stop, the server ends at once with status 0")
 server = start(WORKERS)
 stop_while_sending(server, "told to stop while long answers are going out, the server sends them whole")
+
+if not os.environ.get("CHECK_NO_DIVE"):
+    WORKERS = 3
+    print(f"== {WORKERS} workers, and no process may have more than 256 files open")
+    server = start(WORKERS, files=256)
+    few_files("400 asks at once are all answered, though the supervising process has no room for as many")
+    stop(server, "told to stop, the server ends at once with status 0")
 
 WORKERS = 1
 print(f"== {WORKERS} worker: the actors are in the process that answers")
