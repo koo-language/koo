@@ -1486,7 +1486,19 @@ fn send_all(stream: &mut std::net::TcpStream, mut data: &[u8]) {
                 std::thread::sleep(std::time::Duration::from_millis(1))
             }
             Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
-            Err(e) => panic!("the request could not be written: {e}"),
+            Err(e) => {
+                // The server may have answered before it had all of the request, and
+                // closed: what it said is the reason.
+                use std::io::Read;
+                let _ = stream.set_read_timeout(Some(std::time::Duration::from_secs(1)));
+                let mut answer = Vec::new();
+                let _ = stream.read_to_end(&mut answer);
+                panic!(
+                    "the request could not be written after {} bytes are left: {e}; the server said: {}",
+                    data.len(),
+                    String::from_utf8_lossy(&answer)
+                )
+            }
         }
     }
 }
@@ -1498,7 +1510,8 @@ fn http(port: u16, request: &str) -> String {
 /// The same, waiting so many seconds for the answer.
 fn http_within(port: u16, request: &str, seconds: u64) -> String {
     use std::io::Read;
-    let mut stream = std::net::TcpStream::connect(("127.0.0.1", port)).expect("the server accepts");
+    let mut stream = std::net::TcpStream::connect(("127.0.0.1", port))
+        .unwrap_or_else(|e| panic!("the server on port {port} does not accept: {e}\n{}", told(port)));
     stream
         .set_read_timeout(Some(std::time::Duration::from_secs(seconds)))
         .unwrap();
@@ -1578,8 +1591,25 @@ fn serve(executable: &Path, workers: usize, files: &Path) -> (Server, u16) {
         .spawn()
         .expect("the server starts");
     for _ in 0..200 {
-        if std::net::TcpStream::connect(("127.0.0.1", port)).is_ok() {
-            return (Server(child), port);
+        // A connection to a port nobody listens on yet may be given that port for its
+        // own end, and then it is connected to itself (TCP's "simultaneous open"): the
+        // server is not there, and holds its port no longer. So a connection counts
+        // only if it reached another socket, of a server that is still running.
+        if let Ok(stream) = std::net::TcpStream::connect(("127.0.0.1", port)) {
+            let itself = stream.local_addr().ok() == stream.peer_addr().ok();
+            drop(stream);
+            if !itself && matches!(child.try_wait(), Ok(None)) {
+                return (Server(child), port);
+            }
+            if itself {
+                eprintln!("serve: a connection to port {port} reached itself, and is not taken for the server");
+            }
+        }
+        if let Ok(Some(status)) = child.try_wait() {
+            panic!(
+                "the server on port {port} ended with {status} before it listened:\n{}",
+                told(port)
+            );
         }
         std::thread::sleep(std::time::Duration::from_millis(25));
     }
@@ -3597,6 +3627,77 @@ fn a_stopping_server_answers_what_it_has_in_hand() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// The process that keeps a server's actors stops without dying, as a process stopped
+/// by a debugger or starved of the processor does: the handlers that ask it are given the
+/// time a request has, and a second, and are then answered 503, while those that do not
+/// ask it are answered at once; and when it goes on, the server goes on with it.
+#[test]
+fn a_frozen_actor_process_costs_its_askers_their_time() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let dir = std::env::temp_dir().join(format!("koo-frozen-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let executable = dir.join("frozen");
+    let built = Command::new(env!("CARGO_BIN_EXE_koo"))
+        .arg("build")
+        .arg(root.join("tests/client/frozen.koo"))
+        .arg("-o")
+        .arg(&executable)
+        .output()
+        .expect("koo runs");
+    assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
+    let (server, port) = serve(&executable, 2, &dir);
+    assert!(get(port, "/bump").ends_with("\r\n\r\n1\n"), "{}", told(port));
+    // With several workers the actors are in the process that started them.
+    let pid = server.0.id().to_string();
+    let signal = |name: &str| {
+        assert!(Command::new("kill").args([name, &pid]).status().unwrap().success());
+    };
+    signal("-STOP");
+    let began = std::time::Instant::now();
+    let asked: Vec<_> = (0..4)
+        .map(|_| {
+            std::thread::spawn(move || {
+                http_within(
+                    port,
+                    "GET /bump HTTP/1.1\r\nHost: test\r\nConnection: close\r\n\r\n",
+                    20,
+                )
+            })
+        })
+        .collect();
+    std::thread::sleep(std::time::Duration::from_millis(200));
+    let plain_began = std::time::Instant::now();
+    let plain = get(port, "/plain");
+    let plain_took = plain_began.elapsed();
+    let answers: Vec<String> = asked.into_iter().map(|answer| answer.join().unwrap()).collect();
+    let took = began.elapsed();
+    signal("-CONT");
+    assert!(plain.ends_with("\r\n\r\nplain\n"), "{plain}");
+    assert!(
+        plain_took < std::time::Duration::from_secs(1),
+        "the plain request took {plain_took:?}"
+    );
+    for answer in &answers {
+        assert!(answer.starts_with("HTTP/1.1 503 "), "{answer}\n{}", told(port));
+    }
+    assert!(
+        took >= std::time::Duration::from_secs(2) && took < std::time::Duration::from_secs(8),
+        "the askers were answered after {took:?}"
+    );
+    // The process goes on, and so does the server.
+    let mut after = String::new();
+    for _ in 0..50 {
+        after = get(port, "/bump");
+        if after.starts_with("HTTP/1.1 200 ") {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+    assert!(after.starts_with("HTTP/1.1 200 "), "{after}\n{}", told(port));
+    stop(server, port);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 /// `http.get` and the rest ask a real server, which is `tests/client/server.koo`, and
 /// `tests/client/client.koo` prints what it says it prints.
 #[test]
@@ -3636,10 +3737,11 @@ fn a_program_asks_another_server() {
         let stdout = String::from_utf8_lossy(&output.stdout).replace(&format!(":{port}"), ":PORT");
         if stdout != expected.stdout || !output.status.success() {
             failures.push(format!(
-                "release {release}: {}\n--- expected\n{}--- found\n{stdout}--- stderr\n{}",
+                "release {release}: {}\n--- expected\n{}--- found\n{stdout}--- stderr\n{}--- the server\n{}",
                 output.status,
                 expected.stdout,
-                String::from_utf8_lossy(&output.stderr)
+                String::from_utf8_lossy(&output.stderr),
+                told(port)
             ));
         }
     }

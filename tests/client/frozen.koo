@@ -1,0 +1,23 @@
+// A server whose actors are in a process that stops answering (`a_frozen_actor_process_
+// costs_its_askers_their_time` in the tests freezes it with SIGSTOP): a handler that asks
+// it is answered 503 when its time is over, the others are answered as ever, and when
+// the process goes on, so does the server.
+import std/http
+import std/os
+
+actor Counter {
+    var n: int = 0
+
+    fn bump() -> int {
+        n += 1
+        return n
+    }
+}
+
+fn main() ! http.Error {
+    counter := Counter.start()
+    var app := http.App.new()
+    app.get("/bump", req -> http.text("{counter.bump()}\n"))
+    app.get("/plain", req -> http.text("plain\n"))
+    app.serve(workers: int.parse(os.env("WORKERS") else "") else 2, timeout: 2s)?
+}
