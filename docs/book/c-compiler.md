@@ -147,7 +147,7 @@ The compiler reports the mistakes it can find in one run, not only the first, an
 
 The [specification](../../SPEC.md) describes more than the compiler builds. For a construct that it knows of and does not build, the compiler says "is not supported by this compiler yet". These are the ones that a reader of this book is most likely to reach for.
 
-*Types.* There is no `char`: a character is a string. There are no integer or floating-point types of other sizes, and no decimal numbers. A `Time` cannot yet be shown in the time of a place, only in UTC, and there are no dates apart from times. A structure cannot contain itself through an optional (Section 6.5). An interface cannot be the type of a value (Section 6.9). `distinct` types and `resource` types are not built.
+*Types.* There is no `char`: a character is a string. There are no integer or floating-point types of other sizes. A `Date` has no literal, and so cannot be the default of a field or a constant. A structure cannot contain itself through an optional (Section 6.5). An interface cannot be the type of a value (Section 6.9). `distinct` types and `resource` types are not built.
 
 *Type parameters.* The body of a function with type parameters is checked for each type it is used with, and not once against its constraints (Section 6.8). An actor cannot have type parameters.
 
@@ -155,7 +155,7 @@ The [specification](../../SPEC.md) describes more than the compiler builds. For 
 
 *Statements.* Loops cannot be labeled, so `break` and `continue` apply to the innermost loop. There is no `defer`.
 
-*Constants.* A constant at the top level is a number, a string, or `true` or `false`; it cannot be a list, a structure or a computed value. A default, of a field or of a parameter, is one of those, a duration, `none`, an empty list or map, or a variant of an enumeration that has no fields, as `priority: Priority = Priority.Normal`.
+*Constants.* A constant at the top level is a number, a decimal, a duration, a string, or `true` or `false`; it cannot be a list, a structure or a computed value. A default, of a field or of a parameter, is one of those, `none`, an empty list or map, or a variant of an enumeration that has no fields, as `priority: Priority = Priority.Normal`.
 
 *Concurrency.* Of the concurrency that the specification describes, actors are built, as Chapter 9 describes them, with the limits listed in Section 9.11. Tasks, `spawn`, `scope`, channels and `select` are not.
 

@@ -35,7 +35,7 @@ There are only a few basic types in Koo:
 
 There is one size of integer and one of floating-point number. The compiler knows the names that other languages give to other sizes, such as `i32` and `f32`, only well enough to say that it does not have them. An `int` holds the values from −9223372036854775808 to 9223372036854775807. A `float` is a number in the IEEE format that nearly every machine uses, with about sixteen significant decimal digits.
 
-From the basic types the others are built: lists, maps and sets (Chapter 5), tuples, structures and enumerations (Chapter 6), optionals, which were introduced in Chapter 1, and functions, since a function is also a value (Chapter 4). There are also two types for time, `Duration` and `Time`, with constants like `250ms`; they are described in Section 8.8.
+From the basic types the others are built: lists, maps and sets (Chapter 5), tuples, structures and enumerations (Chapter 6), optionals, which were introduced in Chapter 1, and functions, since a function is also a value (Chapter 4). There is a decimal type, `Decimal`, for money, with constants like `19.99d` (Section 2.5). And there are four types for time and the calendar: `Duration`, with constants like `250ms`, `Time`, `Date` and `Zone`; they are described in Section 8.8.
 
 ## 2.3 Constants
 

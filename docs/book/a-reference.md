@@ -81,6 +81,7 @@ A line that begins with `-` is not a continuation. A list between parentheses, b
 | `byte` | integers from 0 to 255 |
 | `string` | sequences of characters, encoded in UTF-8, always valid |
 | `Duration` | lengths of time, as a signed count of nanoseconds in 64 bits |
+| `Decimal` | decimal numbers of up to 34 significant digits and a power of ten, exactly (decimal128) |
 | `Time` | instants, as the nanoseconds from the beginning of 1970 in UTC, in 64 bits |
 | `Date` | days of the calendar, from the first of January of the year 1 to the last of December 9999, with no time of day and no zone |
 | `Zone` | time zones of the IANA database, by name |
@@ -99,7 +100,7 @@ A line that begins with `-` is not a continuation. A list between parentheses, b
 
 together with the types that a program declares: structures, enumerations, errors, and the handles of actors (A.7).
 
-The key type of a map and the element type of a set must be hashable: `int`, `bool`, `byte`, `string`, and lists, tuples, optionals, structures and enumerations of hashable types. A `float` is not hashable.
+The key type of a map and the element type of a set must be hashable: `int`, `bool`, `byte`, `string`, `Decimal`, `Duration`, `Time`, `Date`, `Zone`, and lists, tuples, optionals, structures and enumerations of hashable types. A `float` is not hashable.
 
 ### A.3.3 Values and Storage
 
@@ -128,7 +129,7 @@ A *constant*
     name := constant
     name: Type = constant
 
-declares a name whose value is an integer, floating, string, boolean or duration constant, or the negation of a number. A constant cannot be `var`.
+declares a name whose value is an integer, floating, decimal, string, boolean or duration constant, or the negation of a number. A constant cannot be `var`.
 
 The other declarations are described in A.7.
 
@@ -169,7 +170,7 @@ The element type of `[]`, the types of `[:]` and the type of `none` are taken fr
 
 ### A.5.3 Arithmetic Operators
 
-The operands of `+`, `-`, `*`, `/` and `%` are both `int` or both `float`, and the result has the same type. The operand of unary `-` is an `int` or a `float`.
+The operands of `+`, `-`, `*`, `/` and `%` are both `int` or both `float`, and the result has the same type. The operand of unary `-` is an `int` or a `float`. Durations, times and decimals have the operators given below, and no others.
 
 For `int`, `/` truncates toward zero, and `%` has the sign of its left operand; the program panics if the right operand of either is zero, or if the result of `+`, `-`, `*`, `/` or unary `-` cannot be represented.
 
@@ -178,6 +179,8 @@ For `float`, the operations are those of IEEE 754, and none panics.
 `+` also applies to two strings, and yields their concatenation.
 
 For durations and times the operators are these, and no others: `Duration + Duration`, `Duration - Duration` and unary `-` yield a `Duration`; `Duration * int`, `int * Duration` and `Duration / int` yield a `Duration`; `Time + Duration`, `Duration + Time` and `Time - Duration` yield a `Time`; `Time - Time` yields a `Duration`. The program panics if a result cannot be represented.
+
+For decimals they are `Decimal + Decimal`, `Decimal - Decimal`, `Decimal * Decimal` and unary `-`, each a `Decimal`; a result of more than 34 significant digits is rounded half to even, and one whose exponent cannot be represented is a panic. `/` and `%` are not defined for `Decimal`, whose quotient is asked for with the digits it is to have, `a.divide(b, scale: 2)`, and a decimal is not mixed with an `int` or a `float`. A `Date` and a `Zone` have no arithmetic operators.
 
 ### A.5.4 Ranges
 
@@ -259,7 +262,7 @@ The first two declare a name that cannot be assigned to; the next two, a variabl
     place = expression
     place += expression        and likewise -=, *=, /=
 
-A *place* is a variable declared with `var`, or a `var` parameter or receiver, optionally followed by any number of field selections `.f` and list or map subscripts `[i]`. The compound forms are not allowed when the place ends in a map subscript. `+=` on a string appends. For a `Duration` or a `Time` the compound forms are those whose operator yields the type of the place. An assignment has no value, and one assignment assigns to one place.
+A *place* is a variable declared with `var`, or a `var` parameter or receiver, optionally followed by any number of field selections `.f` and list or map subscripts `[i]`. The compound forms are not allowed when the place ends in a map subscript. `+=` on a string appends. For a `Duration`, a `Time` or a `Decimal` the compound forms are those whose operator yields the type of the place. An assignment has no value, and one assignment assigns to one place.
 
 ### A.6.3 Expression Statements
 
@@ -390,7 +393,7 @@ declares an actor, and the type `Name` of its handles. In the body of a method, 
 
 A mailbox holds 1,024 messages, or the number given by `@mailbox(n)` on a line before the declaration of the actor.
 
-The types of a method's parameters and result, and of the fields given to `start`, are restricted to those that can be messages: `int`, `float`, `bool`, `string`, `Duration`, `Time`, `Date`, `Decimal`, `Zone`, lists and optionals of message types, maps from `string` to a message type, structures, enumerations and errors whose fields are message types, and handles. The fields given to `start` may in addition be of types that the others exclude, provided they contain no function.
+The types of a method's parameters and result, and of the fields given to `start`, are restricted to those that can be messages: `int`, `float`, `bool`, `byte`, `string`, `Duration`, `Time`, `Date`, `Decimal`, `Zone`, lists and optionals of message types, maps from `string` to a message type, structures, enumerations and errors whose fields are message types, and handles. The fields given to `start` may in addition be of types that the others exclude, provided they contain no function.
 
 A program ends when `main` has returned and every message that was told has been executed.
 

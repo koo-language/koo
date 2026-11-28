@@ -141,7 +141,7 @@ The operator `else`, the binding condition and `match` are the other ways to use
 | `v.pick() -> T?` | an element chosen by chance, or `none` of an empty list |
 | `var` `v.shuffle()` | puts the elements in an order chosen by chance |
 
-`contains` and `index_of` need a type with `==`; `sorted`, `sort`, `min` and `max` a type that is ordered; `sum` a list of `int` or `float`.
+`contains` and `index_of` need a type with `==`; `sorted`, `sort`, `min` and `max` a type that is ordered; `sum` a list of `int`, `float`, `Decimal` or `Duration`.
 
 ```koo
 fn main() {
@@ -337,7 +337,7 @@ The key of a field is its name, or what `@json("key")` after the field's type sa
 
 | `Time` | |
 | --- | --- |
-| `Time.parse(text: string) -> Time ! ParseError` | the time that a text in the form of RFC 3339 names |
+| `Time.parse(text: string) -> Time ! ParseError` | the time that a text in the form of RFC 3339 names, or with an offset of seconds as well, `+00:09:21` |
 | `Time.from_unix(seconds: int) -> Time` | the time so many seconds after the beginning of 1970 in UTC |
 | `Time.utc(year: int, month: int, day: int, hour: int = 0, minute: int = 0, second: int = 0) -> Time ! ParseError` | the time that a date and a time of day are in UTC; fails for a date that no calendar has |
 | `t.year() -> int`, `t.month()`, `t.day()`, `t.hour()`, `t.minute()`, `t.second()` | the parts of the time, as a calendar and a clock in UTC have them |
@@ -369,7 +369,7 @@ The key of a field is its name, or what `@json("key")` after the field's type sa
 | `z.abbreviation(at: Time) -> string` | what the zone's time is called then: `CET`, `CEST`, `+0545` |
 | `z.date(at: Time) -> Date`, `z.clock(at: Time) -> (int, int, int)` | the day, and the hour, minute and second, that the zone's clocks show at a time |
 | `z.today() -> Date` | the day it is in the zone, by the clock of the machine |
-| `z.format(at: Time) -> string` | the time as RFC 3339 writes it with the zone's offset: `2026-07-01T18:30:00+02:00` |
+| `z.format(at: Time) -> string` | the time as RFC 3339 writes it with the zone's offset: `2026-07-01T18:30:00+02:00`; an offset of seconds, which places had before their clocks kept to a zone, is written with them, `+00:09:21`, and `Time.parse` reads it |
 | `z.time(date: Date, hour: int = 0, minute: int = 0, second: int = 0) -> Time ! ParseError` | the instant at which the zone's clocks show a time of a day: the first of two where they show it twice, and where they never show it, the time as the offset before the change has it; fails for a time of day no clock shows |
 | `z.parse(text: string) -> Time ! ParseError` | a time as `Time.parse` reads it, or one without an offset, `2026-12-24T20:00:00`, as the zone's clocks show it |
 

@@ -1442,8 +1442,16 @@ fn Time.parse(text: string) -> Time ! ParseError {
             fail ParseError { input: text }
         }
         offset = hours * 3600 + minutes * 60
-        if zone == 45 { offset = -offset }
         at += 6
+        // An offset of seconds as well, as a zone writes the time of a place before its
+        // clocks kept to a zone (`Zone.format`): `+00:09:21`.
+        if t__at(b, at) == 58 {
+            seconds := t__number(b, at + 1, 2)
+            if seconds < 0 or seconds > 59 { fail ParseError { input: text } }
+            offset += seconds
+            at += 3
+        }
+        if zone == 45 { offset = -offset }
     } else {
         fail ParseError { input: text }
     }
@@ -1694,6 +1702,12 @@ fn (self: Zone) parse(text: string) -> Time ! ParseError {
     // Read as if it were in UTC, which no offset makes out of range.
     b := text.bytes()
     if b.len < 19 { fail ParseError { input: text } }
+    // A date, `T` and a clock, all of them in the characters of ASCII, which is what
+    // makes the tenth byte the place to cut.
+    for each in b {
+        if int.from(each) > 127 { fail ParseError { input: text } }
+    }
+    if int.from(b[10]) != 84 and int.from(b[10]) != 116 { fail ParseError { input: text } }
     last := int.from(b[b.len - 1])
     if last == 90 or last == 122 { fail ParseError { input: text } }
     var seconds := 0

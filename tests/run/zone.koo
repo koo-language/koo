@@ -58,6 +58,11 @@ fn main() {
     print("{local.get(Zone.named("Europe/Paris") else york)} {local.get(york)} {Zone.release().len}")
     diary := Diary.start()
     print("{diary.add(york)} {paris.today() == paris.date(time.now())}")
+    // What a zone writes is read back as the same instant, an offset of seconds and all;
+    // and a text that is not a time is an error, whatever characters it has.
+    old := Time.parse("1890-01-01T00:00:00Z") else winter
+    print("{paris.format(old)} {(Time.parse(paris.format(old)) else winter) == old} {(paris.parse(paris.format(old)) else winter) == old}")
+    print("{paris.parse("2026-10-2\u{e9}T02:30:00") else old} {Time.parse("2026-01-01T00:00:00+01:00:60") else old}")
 }
 
 //= Europe/Paris 1h CET 2026-11-27T10:30:00+01:00
@@ -81,3 +86,5 @@ fn main() {
 //= /zone: expected the name of a time zone such as "Europe/Paris", found "Europe/Pariss"
 //= home none 5
 //= America/New_York true
+//= 1890-01-01T00:09:21+00:09:21 true true
+//= 1890-01-01T00:00:00Z 1890-01-01T00:00:00Z
