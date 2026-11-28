@@ -257,7 +257,7 @@ Koo is statically typed with local inference. Types appear on function signature
 
 ### 4.1 Prelude
 
-The following are in scope in every file without an import: the primitive types of Section 4.2; `Decimal`, `Duration`, `Time`, `List`, `Map`, `Set`, `Json`; the interfaces `Equatable`, `Ordered`, `Hashable`, `Failure`, `Any`, `Iterator`, `Reader`, `Writer`; the enum `Rounding`; the error types `Overflow`, `Inexact`, `DivideByZero`, `ParseError`, `Invalid`, `IoError`; the functions `panic`, `print`. All are defined in `std/core`, except `Json`, which is defined in `std/json`. In runtime mode the prelude also includes, from `std/task`: `Channel`, `Shared`, `Timeout`, `Panic`, `with_timeout` and `isolate`. The list methods `map_parallel` and `map_parallel_settled` (Section 7.2) are built into `[T]` and implemented by the runtime, not by `std/core`; a core-mode package may not call them. Everything else is imported.
+The following are in scope in every file without an import: the primitive types of Section 4.2; `Decimal`, `Duration`, `Time`, `Date`, `List`, `Map`, `Set`, `Json`; the interfaces `Equatable`, `Ordered`, `Hashable`, `Failure`, `Any`, `Iterator`, `Reader`, `Writer`; the enum `Rounding`; the error types `Overflow`, `Inexact`, `DivideByZero`, `ParseError`, `Invalid`, `IoError`; the functions `panic`, `print`. All are defined in `std/core`, except `Json`, which is defined in `std/json`. In runtime mode the prelude also includes, from `std/task`: `Channel`, `Shared`, `Timeout`, `Panic`, `with_timeout` and `isolate`. The list methods `map_parallel` and `map_parallel_settled` (Section 7.2) are built into `[T]` and implemented by the runtime, not by `std/core`; a core-mode package may not call them. Everything else is imported.
 
 ### 4.2 Primitive types
 
@@ -280,7 +280,7 @@ The following are in scope in every file without an import: the primitive types 
 
 **No implicit mixing.** `3 / 2` is `1`; `3.0 / 2.0` is `1.5`; `3 / 2.0` is a compile error. `Decimal` mixes with neither: `price * 1.1` is a compile error, `price * 1.1d` is correct.
 
-**Ordering and hashing.** The integer types, `string`, `char`, `bool`, `Decimal`, `Duration` and `Time` satisfy `Ordered` and `Hashable`. Strings compare and order by their bytes, which is scalar-value order; no normalization is applied. `Decimal` hashes its normalized value, so `1.0d` and `1.00d`, which are equal, hash alike.
+**Ordering and hashing.** The integer types, `string`, `char`, `bool`, `Decimal`, `Duration`, `Time` and `Date` satisfy `Ordered` and `Hashable`. Strings compare and order by their bytes, which is scalar-value order; no normalization is applied. `Decimal` hashes its normalized value, so `1.0d` and `1.00d`, which are equal, hash alike.
 
 `float` satisfies `Ordered` too, but differs from the others in two ways. Its operators, `<` and its relatives included, are IEEE 754's, in generic code as elsewhere: `NaN == NaN` is false, `NaN < x` is false and `-0.0 == 0.0` is true. Its `compare` is the IEEE `totalOrder` predicate, and every library algorithm that needs a total order (`sort`, `largest`, `min`, `max`, binary search) calls `compare` and never `<`, so sorting is well defined with `NaN` last. And because no hash can agree with IEEE equality, `float` is not `Hashable`: a float, or a struct containing one, cannot be a map key or a set element.
 
@@ -1097,7 +1097,7 @@ On both targets `int` is 64 bits, a `[byte]` is limited to 4 GB, and exhausting 
 
 | Package | Contents | Mode |
 | --- | --- | --- |
-| `std/core` | The prelude (Section 4.1): primitive types, `Decimal`, `Duration`, `Time`, collections, `Set`, formatting, the interfaces `Failure`, `Any`, `Equatable`, `Ordered`, `Hashable`, `Iterator`, `Reader`, `Writer`, the prelude error types, `panic`, `print`; and, outside the prelude, the `Allocator` interface | core |
+| `std/core` | The prelude (Section 4.1): primitive types, `Decimal`, `Duration`, `Time`, `Date`, collections, `Set`, formatting, the interfaces `Failure`, `Any`, `Equatable`, `Ordered`, `Hashable`, `Iterator`, `Reader`, `Writer`, the prelude error types, `panic`, `print`; and, outside the prelude, the `Allocator` interface | core |
 | `std/core/sync` | OS threads, atomics, futex (Section 9.4) | core |
 | `std/ffi` | The types that describe C to Koo: platform integers, `Ptr`, `Str`, `CString`, `Fn` (Section 11.2) | core |
 | `std/decimal` | Rounding modes, `Money`, `Currency` | core |
@@ -1105,7 +1105,7 @@ On both targets `int` is 64 bits, a `[byte]` is limited to 4 GB, and exhausting 
 | `std/json` | Typed encode and decode, JSON Schema, streaming parser, `Json` dynamic value (Section 10.4) | core |
 | `std/encoding` | base64, hex, URL encoding, CSV, Protobuf wire format | core |
 | `std/crypto` | HMAC, AES-GCM, ChaCha20-Poly1305, Ed25519, X25519, secure random, Argon2. A Koo API over the statically linked aws-lc library, whose primitives are constant-time and assembly-optimized; Koo does not reimplement them. | runtime |
-| `std/time` | `Time.now()`, monotonic clock, `Date`, `Zone` with the IANA database, formatting and parsing | runtime |
+| `std/time` | `time.now()`, `time.today()`, monotonic clock, `Zone` with the IANA database, formatting and parsing | runtime |
 | `std/task` | `Channel`, `Shared`, `with_timeout`, `isolate`, `select` support, `task.context()`, `task.yield()`, `task.blocking()` | runtime |
 | `std/actor` | Actor runtime, supervision, registry, introspection | runtime |
 | `std/io` | Files, directories, buffered readers and writers, streams | runtime |
@@ -1177,6 +1177,7 @@ They are the members of two interfaces: `json.Encode` (`to_json`, `write_json`, 
 | `Decimal` | string | `"19.99"`, scale preserved. Decode accepts a string or a number and reads the digits exactly, never through a float. `@json(number)` encodes as a number. |
 | `string`, `char`, `bool` | string, string, boolean | A `char` is a one-character string. |
 | `Time` | string | RFC 3339 in UTC: `"2026-03-01T12:00:00.25Z"`. |
+| `Date` | string | ISO 8601: `"2026-03-01"`. |
 | `Duration` | string | Literal form: `"250ms"`, `"1h30min"`. `@json(seconds)` and `@json(millis)` encode as a number. |
 | `[byte]` | string | Base64, standard alphabet, padded. |
 | `[T]`, `Set<T>`, `[T; N]`, tuple | array | A set encodes in insertion order. |
@@ -1226,6 +1227,8 @@ The derivers for JSON, rows and CSV ship in `std` and are applied implicitly on 
 ### 10.6 Time
 
 `Time` is a UTC instant at nanosecond precision; a `Zone` converts it for display and parsing. There is no local-time type that depends on the machine's setting. `Duration` is a signed count of nanoseconds with the literal suffixes of Section 3.3; there is no day unit, because a calendar day is not a fixed duration. `Duration * int`, `Duration / int` and `Duration + Duration` are `Duration`. `Time + Duration` is a `Time`, `Time - Time` is a `Duration`, `Time + Time` is a compile error.
+
+`Date` is a day of the calendar, from 0001-01-01 to 9999-12-31, with no time of day and no zone. It has no arithmetic operators, because a day and a month are not one length: `d.add_days(n)` and `d.add_months(n)` move it, the latter to the last day of a shorter month, and `a.days_until(b)` counts the days between two. A result outside its years is a panic. `Date.of(y, m, d)` and `Date.parse("2026-03-01")` fail with a `ParseError` for a day no calendar has; `t.date()` and `d.midnight()` convert to and from `Time` in UTC, and `time.today()` is `time.now().date()`. A `Date` is a query parameter and is read from a column of type `date`.
 
 ## 11. Foreign function interface
 

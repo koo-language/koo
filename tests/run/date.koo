@@ -1,0 +1,76 @@
+// A `Date` is a day of the calendar with no time of day and no zone (Section 10.6): its
+// parts, the days and months it moves by, the days between two, its midnight as a
+// `Time` and the date of a `Time`, its text and its JSON, and a date as a key and as a
+// message to an actor.
+import std/time
+
+type Invoice = { id: int, due: Date, paid: Date? }
+
+actor Calendar {
+    var days: [Date] = []
+
+    fn add(day: Date) -> int {
+        days.push(day)
+        return days.len
+    }
+
+    fn first() -> Date? { return days.sorted().first() }
+}
+
+fn main() {
+    epoch := Date.of(1970, 1, 1) else panic("no date")
+    d := Date.of(2026, 1, 31) else epoch
+    print("{d} {d.year()} {d.month()} {d.day()} {d.weekday()}")
+    // A month later is the last day of a shorter month.
+    print("{d.add_months(1)} {d.add_months(13)} {d.add_months(-11)} {(Date.of(2024, 2, 29) else d).add_months(12)}")
+    print("{d.add_days(29)} {d.add_days(-31)} {d.add_days(0) == d}")
+    print("{epoch.days_until(Date.parse("0001-01-01") else d)} {epoch.days_until(Date.parse("9999-12-31") else d)}")
+    // What is not a date of a calendar, or not written as ISO 8601 writes one.
+    for text in ["2024-02-29", "2023-02-29", "0000-01-01", "2026-1-01", "2026-01-01T00:00:00Z", "10000-01-01", " 2026-01-01"] {
+        match Date.parse(text) {
+            day => print("{text} is {day}")
+            ! e => print("{text} is not a date")
+        }
+    }
+    print("{Date.of(2026, 13, 1) else epoch} {Date.of(2026, 4, 31) else epoch}")
+    e := Date.parse("2026-11-27") else d
+    print("{d.days_until(e)} {e.days_until(d)} {d < e} {d == (Date.of(2026, 1, 31) else e)} {[e, d, epoch].sorted()}")
+    print("{e.midnight()} {e.midnight().date() == e} {e.midnight().unix() / 86400}")
+    late := Time.parse("1969-12-31T23:59:59.5Z") else e.midnight()
+    print("{late.date()} {(Time.parse("2026-11-27T23:30:00-02:00") else late).date()}")
+    i := Invoice { id: 1, due: e, paid: d }
+    json := i.to_json()
+    print(json)
+    print("{(Invoice.from_json(json) else Invoice { id: 0, due: d, paid: none }) == i} {e.to_json()} {Date.from_json("\"2026-12-01\"") else d}")
+    match Invoice.from_json("\{\"id\":1,\"due\":\"2026-02-30\"}") {
+        x => print("{x.id}")
+        ! err => print("{err.path}: {err.message}")
+    }
+    var seen: [Date: string] = [:]
+    seen[e] = "due"
+    print("{seen.get(Date.of(2026, 11, 27) else d)} {seen.get(d)} {"{e:>12}|{e:<11}|"} {time.today().year() >= 2026}")
+    calendar := Calendar.start()
+    calendar.add(e)
+    print("{calendar.add(d)} {calendar.first()}")
+}
+
+//= 2026-01-31 2026 1 31 6
+//= 2026-02-28 2027-02-28 2025-02-28 2025-02-28
+//= 2026-03-01 2025-12-31 true
+//= -719162 2932896
+//= 2024-02-29 is 2024-02-29
+//= 2023-02-29 is not a date
+//= 0000-01-01 is not a date
+//= 2026-1-01 is not a date
+//= 2026-01-01T00:00:00Z is not a date
+//= 10000-01-01 is not a date
+//=  2026-01-01 is not a date
+//= 1970-01-01 1970-01-01
+//= 300 -300 true true [1970-01-01, 2026-01-31, 2026-11-27]
+//= 2026-11-27T00:00:00Z true 20784
+//= 1969-12-31 2026-11-28
+//= {"id":1,"due":"2026-11-27","paid":"2026-01-31"}
+//= true "2026-11-27" 2026-12-01
+//= /due: expected a date such as "2026-11-27", found "2026-02-30"
+//= due none   2026-11-27|2026-11-27 | true
+//= 2 2026-01-31

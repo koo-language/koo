@@ -1,0 +1,44 @@
+// A `date` of the database is a `Date` of the program: as a parameter, as a column read
+// by name, and as the field of a struct read from a row; and a list of dates, or of
+// times, is an array both ways. What a `Date` cannot be, a day before the year 1 or
+// after 9999, or the database's `infinity`, is an error and not a panic. Run against a
+// PostgreSQL server whose address is in KOO_TEST_POSTGRES (see
+// `a_database_answers_queries` in compiler/koo/tests/programs.rs).
+
+import std/os
+import std/sql
+import std/sql/postgres
+
+type Invoice = { id: int, due: Date, paid: Date?, reminders: [Date], sent: [Time] }
+
+fn main() ! sql.Error {
+    db := postgres.connect(os.env("KOO_TEST_POSTGRES") else "")?
+    due := Date.of(2026, 1, 31) else Date.of(1970, 1, 1) else panic("no date")
+    row := db.query_row("select {due}::date as a, {due}::date + 30 as b, date '2024-02-29' as c, null::date as d, {due}::date - date '2025-12-25' as gap")?
+    print("{row.date("a")?} {row.date("b")?} {row.date("c")?} {row.maybe_date("d")?} {row.int("gap")?}")
+    print("{row.date("a")? == due} {due.days_until(row.date("b")?)}")
+    // A time is a date's midnight in UTC, as the database also has it.
+    print(db.query_row("select ({due.midnight()}::timestamptz at time zone 'UTC')::date as day")?.date("day")?)
+    invoice := Invoice.from_row(db.query_row("select 7 as id, date '2026-11-27' as due, null::date as paid, array[date '2026-11-20', date '2026-11-26'] as reminders, array['2026-11-20 09:00:00+00'::timestamptz, '2026-11-26 09:30:00.5+02'::timestamptz] as sent")?)?
+    print(invoice)
+    wanted := [due, Date.of(2026, 11, 27) else due]
+    found := db.query_row("select date '2026-11-27' = any({wanted}) as hit, {wanted}::date[] as back, {invoice.sent}::timestamptz[] as times")?
+    print("{found.bool("hit")?} {found.dates("back")?} {found.times("times")?}")
+    for query in ["select date '0044-03-15 BC' as d", "select date '10000-01-01' as d", "select 'infinity'::date as d", "select null::date as d", "select 'soon' as d"] {
+        match db.query_row(sql.Query.raw(query))?.date("d") {
+            value => print(value)
+            ! e => print("{e.kind}: {e.message}")
+        }
+    }
+}
+
+//= 2026-01-31 2026-03-02 2024-02-29 none 37
+//= true 30
+//= 2026-01-31
+//= Invoice { id: 7, due: 2026-11-27, paid: none, reminders: [2026-11-20, 2026-11-26], sent: [2026-11-20T09:00:00Z, 2026-11-26T07:30:00.5Z] }
+//= true [2026-01-31, 2026-11-27] [2026-11-20T09:00:00Z, 2026-11-26T07:30:00.5Z]
+//= Other: the column `d` holds `0044-03-15 BC`, which is not a date from the year 1 to 9999
+//= Other: the column `d` holds `10000-01-01`, which is not a date from the year 1 to 9999
+//= Other: the column `d` holds `infinity`, which is not a date from the year 1 to 9999
+//= Other: the column `d` is NULL
+//= Other: the column `d` holds `soon`, which is not a date from the year 1 to 9999

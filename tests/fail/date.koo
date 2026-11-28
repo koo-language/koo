@@ -1,0 +1,24 @@
+// What a `Date` does not do (Section 10.6): it has no arithmetic, since a day and a
+// month are not one length, it is not built from its field, and its name is the
+// language's.
+fn main() {
+    var due := Date.of(2026, 11, 27) else Date.of(1970, 1, 1) else panic("no date")
+    print(due + 1)
+    print(due - due)
+    due += 7
+    made := Date { _days: 0 }
+    print(due._days)
+}
+
+type Date = { day: int }
+//! error `+` is not defined for `Date` and `int`
+//! stderr d.add_days(n)
+//! error `-` is not defined for `Date` and `Date`
+//! stderr a.days_until(b)
+//! error this operator is not defined for `Date`
+//! stderr `d = d.add_days(n)`
+//! error `Date` cannot be built from its fields
+//! stderr `Date.of(year, month, day)`
+//! error `Date` has no field `_days`
+//! error `Date` is already declared
+//! stderr `Date` is a type of the language

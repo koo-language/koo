@@ -42,6 +42,10 @@ impl Checker<'_> {
         self.prelude_struct("Time")
     }
 
+    pub(super) fn date_ty(&self) -> Option<Ty> {
+        self.prelude_struct("Date")
+    }
+
     pub(super) fn decimal_ty(&self) -> Option<Ty> {
         self.prelude_struct("Decimal")
     }
@@ -139,13 +143,14 @@ impl Checker<'_> {
                     };
                     let known = matches!(inner, Ty::Int | Ty::Float | Ty::Bool | Ty::Str)
                         || self.time_ty().as_ref() == Some(inner)
+                        || self.date_ty().as_ref() == Some(inner)
                         || self.decimal_ty().as_ref() == Some(inner);
                     if !known {
                         let found = self.ty_name(&value.ty);
                         self.error_help(
                             expr.span,
                             format!("a `{found}` cannot be a parameter of a query"),
-                            "a parameter is an `int`, a `float`, a `bool`, a `string`, a `Time` or a `Decimal`, an optional of one, which is NULL when it is `none`, or a list of them, which is an array (Section 10.3)",
+                            "a parameter is an `int`, a `float`, a `bool`, a `string`, a `Time`, a `Date` or a `Decimal`, an optional of one, which is NULL when it is `none`, or a list of them, which is an array (Section 10.3)",
                         );
                         continue;
                     }

@@ -564,7 +564,7 @@ impl<'a> Checker<'a> {
                         "JSON is written for a struct or an enum whose every field is a number, a string, a boolean, a byte, a list, an optional, a map with string keys, or another such type. A type with a field that is a function, a tuple or an optional of an optional has none, nor an enum with a variant whose field has the key `type`, which says which variant it is (Section 8.7)",
                     ),
                     "from_row" => Some(
-                        "`from_row` is written for a struct whose every field is an `int`, a `float`, a `bool`, a `string`, a `Time` or a `Decimal`, or an optional of one: each is read from the column of its name (Section 10.3)",
+                        "`from_row` is written for a struct whose every field is an `int`, a `float`, a `bool`, a `string`, a `Time`, a `Date` or a `Decimal`, or an optional of one, or a list of one: each is read from the column of its name, and a list from an array (Section 10.3)",
                     ),
                     _ => None,
                 };

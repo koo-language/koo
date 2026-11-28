@@ -325,7 +325,7 @@ Set[1, 2] 0
 
 The key of a field is its name, or what `@json("key")` after the field's type says; `@json(rename: camel)` before a type, or `pascal` or `kebab`, names all its fields that way. `JsonError` has the fields `message: string` and `path: string`. Section 8.7 gives the correspondence between types and JSON.
 
-## B.9 Durations and Times
+## B.9 Durations, Times and Dates
 
 | `Duration` | |
 | --- | --- |
@@ -345,8 +345,21 @@ The key of a field is its name, or what `@json("key")` after the field's type sa
 | `t.unix() -> int` | the whole seconds from the beginning of 1970 to the time |
 | `t.unix_nanos() -> int` | the same in nanoseconds |
 | `t.compare(other: Time) -> int` | negative, zero or positive, by the order of `<` |
+| `t.date() -> Date` | the day of the calendar that the time falls on in UTC |
 
-Both have `to_string`, `to_json` and `from_json`. The operators on them are in Section A.5.3.
+| `Date` | |
+| --- | --- |
+| `Date.of(year: int, month: int, day: int) -> Date ! ParseError` | the date of a year from 1 to 9999, a month and a day of the month; fails for a date that no calendar has |
+| `Date.parse(text: string) -> Date ! ParseError` | the date that a text names as ISO 8601 writes one, `2026-11-27`, and nothing more |
+| `d.year() -> int`, `d.month()`, `d.day()` | the parts of the date |
+| `d.weekday() -> int` | the day of the week, from 1 for Monday to 7 for Sunday |
+| `d.add_days(days: int) -> Date` | the date so many days later, or earlier for a negative number; a panic outside the years 1 to 9999 |
+| `d.add_months(months: int) -> Date` | the same day so many months later or earlier, or the last day of a shorter month; a panic outside the years 1 to 9999 |
+| `d.days_until(other: Date) -> int` | the days from this date to the other, positive if the other is later |
+| `d.midnight() -> Time` | the time at which the day begins in UTC; a panic for a day before 1677-09-22 or after 2262-04-11, which a `Time` does not hold |
+| `d.compare(other: Date) -> int` | negative, zero or positive, by the order of `<` |
+
+All three have `to_string`, `to_json` and `from_json`. The operators on durations and times are in Section A.5.3; a date has none.
 
 ```koo
 fn main() {
@@ -371,6 +384,7 @@ fn main() {
 | | |
 | --- | --- |
 | `time.now() -> Time` | the time, by the clock of the machine |
+| `time.today() -> Date` | the day it is in UTC, by the clock of the machine |
 | `time.uptime() -> Duration` | how long the program has been running, by a clock that only goes forward |
 | `time.sleep(length: Duration)` | waits; a length that is not positive does not wait |
 
@@ -478,7 +492,7 @@ A request of another server returns a `http.Reply`:
 | --- | --- |
 | `postgres.connect(url: string, pool: int = 10, wait: Duration = 30s) -> sql.Pool ! sql.Error` | connects to the database at `postgres://user:password@host:port/database`, with at most `pool` connections, for one of which a statement waits `wait` at the longest; a part the address leaves out is what the environment says of it, in `PGHOST`, `PGPORT`, `PGUSER`, `PGPASSWORD` and `PGDATABASE` (Section 11.1) |
 
-A `sql.Query` is written as a string literal where one is expected: the values in braces become parameters of the statement, each an `int`, a `float`, a `bool`, a `string`, a `Time` or a `Decimal`, an optional of one, which is NULL when it is `none`, or a list of them, which is an array.
+A `sql.Query` is written as a string literal where one is expected: the values in braces become parameters of the statement, each an `int`, a `float`, a `bool`, a `string`, a `Time`, a `Date` or a `Decimal`, an optional of one, which is NULL when it is `none`, or a list of them, which is an array.
 
 | `sql.Query` | |
 | --- | --- |
@@ -499,12 +513,12 @@ A `sql.Query` is written as a string literal where one is expected: the values i
 
 | `sql.Row` | |
 | --- | --- |
-| `row.int(column: string) -> int ! sql.Error`, and `float`, `bool`, `string`, `time`, `decimal` | the value of a column; fails if it is NULL |
-| `row.maybe_int(column: string) -> int? ! sql.Error`, and `maybe_float`, `maybe_bool`, `maybe_string`, `maybe_time`, `maybe_decimal` | the value of a column, or `none` if it is NULL |
-| `row.ints(column: string) -> [int] ! sql.Error`, and `floats`, `bools`, `strings`, `decimals` | a column that is an array of one dimension, as a list; fails if it is NULL or has a NULL in it |
+| `row.int(column: string) -> int ! sql.Error`, and `float`, `bool`, `string`, `time`, `date`, `decimal` | the value of a column; fails if it is NULL |
+| `row.maybe_int(column: string) -> int? ! sql.Error`, and `maybe_float`, `maybe_bool`, `maybe_string`, `maybe_time`, `maybe_date`, `maybe_decimal` | the value of a column, or `none` if it is NULL |
+| `row.ints(column: string) -> [int] ! sql.Error`, and `floats`, `bools`, `strings`, `times`, `dates`, `decimals` | a column that is an array of one dimension, as a list; fails if it is NULL or has a NULL in it |
 | `row.columns() -> [string]` | the names of the columns |
 | `"{row}"` | the row as text, each column with what it holds as the database wrote it: `{id: "1", note: NULL}` |
-| `T.from_row(row: sql.Row) -> T ! sql.Error` | for a structure `T` whose fields are of the five types or optionals of them: each field from the column of its name |
+| `T.from_row(row: sql.Row) -> T ! sql.Error` | for a structure `T` whose fields are of the seven types, optionals of them, or lists of them: each field from the column of its name, and a list from an array |
 
 `sql.Error` has the fields `kind: sql.ErrorKind`, `message: string` and `code: string`, and `sql.ErrorKind` is an enumeration: `Connection`, `Constraint`, `Syntax`, `Serialization`, `Timeout`, `NoRows`, `Other`. Chapter 11 has programs that use these.
 

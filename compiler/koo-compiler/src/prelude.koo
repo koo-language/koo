@@ -1304,6 +1304,13 @@ fn (self: Time) _civil() -> (int, int, int, int) {
         rest += 86400
         days -= 1
     }
+    (year, month, day) := t__civil(days)
+    return (year, month, day, rest)
+}
+
+/// The year, the month and the day of the month of the day so many days after the
+/// first of January 1970.
+fn t__civil(days: int) -> (int, int, int) {
     // The date of a day, counted from the first of March of a year divisible by 400,
     // so that the day a leap year adds is the last of its year.
     z := days + 719468
@@ -1315,7 +1322,18 @@ fn (self: Time) _civil() -> (int, int, int, int) {
     day := day_of_year - (153 * shifted + 2) / 5 + 1
     month := if shifted < 10 { shifted + 3 } else { shifted - 9 }
     year := year_of_era + era * 400 + (if month <= 2 { 1 } else { 0 })
-    return (year, month, day, rest)
+    return (year, month, day)
+}
+
+/// The days from the first of January 1970 to a date, which is one that calendars have.
+fn t__days(year: int, month: int, day: int) -> int {
+    y := if month <= 2 { year - 1 } else { year }
+    era := (if y >= 0 { y } else { y - 399 }) / 400
+    year_of_era := y - era * 400
+    shifted := if month > 2 { month - 3 } else { month + 9 }
+    day_of_year := (153 * shifted + 2) / 5 + day - 1
+    day_of_era := year_of_era * 365 + year_of_era / 4 - year_of_era / 100 + day_of_year
+    return era * 146097 + day_of_era - 719468
 }
 
 /// The parts of a time as a calendar and a clock in UTC have them.
@@ -1430,13 +1448,7 @@ fn Time.parse(text: string) -> Time ! ParseError {
         fail ParseError { input: text }
     }
     if at != b.len { fail ParseError { input: text } }
-    y := if month <= 2 { year - 1 } else { year }
-    era := y / 400
-    year_of_era := y - era * 400
-    shifted := if month > 2 { month - 3 } else { month + 9 }
-    day_of_year := (153 * shifted + 2) / 5 + day - 1
-    day_of_era := year_of_era * 365 + year_of_era / 4 - year_of_era / 100 + day_of_year
-    days := era * 146097 + day_of_era - 719468
+    days := t__days(year, month, day)
     seconds := days * 86400 + hour * 3600 + minute * 60 + second - offset
     // An `int` of nanoseconds reaches from 1677 to 2262.
     // Every time that is printed is read back, to the last moment at each end of the
@@ -1449,7 +1461,109 @@ fn Time.parse(text: string) -> Time ! ParseError {
     return Time { _ns: seconds * 1000000000 + nanos }
 }
 
-// As JSON a duration is its literal, and a time is RFC 3339, each in a string.
+/// The day of the calendar that a time falls on, in UTC.
+fn (self: Time) date() -> Date {
+    (year, month, day, rest) := self._civil()
+    return Date { _days: t__days(year, month, day) }
+}
+
+// ---- Date (Section 10.6) ----------------------------------------------------------------
+
+/// A day of the calendar, from the first of January of the year 1 to the last of
+/// December 9999, with no time of day and no zone: a birthday, a due date, the day an
+/// invoice is for. Its field is the days from the first of January 1970.
+pub type Date = { _days: int }
+
+/// The first and the last day a date may be: 0001-01-01 and 9999-12-31.
+fn d__first() -> int { return -719162 }
+fn d__last() -> int { return 2932896 }
+
+/// The date of a year, a month and a day of the month. A date that no calendar has,
+/// the thirtieth of February, is an error that names it.
+fn Date.of(year: int, month: int, day: int) -> Date ! ParseError {
+    if year < 1 or year > 9999 or month < 1 or month > 12 or day < 1 or day > t__month_days(year, month) {
+        fail ParseError { input: "{year:04}-{month:02}-{day:02}" }
+    }
+    return Date { _days: t__days(year, month, day) }
+}
+
+/// The date that a text names as ISO 8601 writes one: `2026-11-27`, and nothing more.
+fn Date.parse(text: string) -> Date ! ParseError {
+    b := text.bytes()
+    if b.len != 10 or t__at(b, 4) != 45 or t__at(b, 7) != 45 { fail ParseError { input: text } }
+    year := t__number(b, 0, 4)
+    month := t__number(b, 5, 2)
+    day := t__number(b, 8, 2)
+    if year < 1 or month < 1 or month > 12 or day < 1 or day > t__month_days(year, month) {
+        fail ParseError { input: text }
+    }
+    return Date { _days: t__days(year, month, day) }
+}
+
+fn (self: Date) year() -> int {
+    (year, month, day) := t__civil(self._days)
+    return year
+}
+
+fn (self: Date) month() -> int {
+    (year, month, day) := t__civil(self._days)
+    return month
+}
+
+fn (self: Date) day() -> int {
+    (year, month, day) := t__civil(self._days)
+    return day
+}
+
+/// The day of the week, from 1 for Monday to 7 for Sunday.
+fn (self: Date) weekday() -> int {
+    // The first day of 1970 was a Thursday.
+    var day := (self._days + 3) % 7
+    if day < 0 { day += 7 }
+    return day + 1
+}
+
+fn (self: Date) compare(other: Date) -> int { return self._days.compare(other._days) }
+
+/// The date so many days later, or earlier if the number is negative. A date before the
+/// year 1 or after 9999 is a panic.
+fn (self: Date) add_days(days: int, location: string) -> Date {
+    if days > d__last() - self._days or days < d__first() - self._days {
+        panic("a date outside the years 1 to 9999")
+    }
+    return Date { _days: self._days + days }
+}
+
+/// The date so many months later, or earlier: the same day of the month, or the last
+/// day of the month if that one is shorter, so that a month after the 31st of January
+/// is the 28th or 29th of February. A date before the year 1 or after 9999 is a panic.
+fn (self: Date) add_months(months: int, location: string) -> Date {
+    (year, month, day) := t__civil(self._days)
+    if months > 120000 or months < -120000 { panic("a date outside the years 1 to 9999") }
+    total := year * 12 + month - 1 + months
+    new_year := total / 12
+    new_month := total % 12 + 1
+    if new_year < 1 or new_year > 9999 { panic("a date outside the years 1 to 9999") }
+    return Date { _days: t__days(new_year, new_month, day.min(t__month_days(new_year, new_month))) }
+}
+
+/// The days from this date to another: positive if the other is later.
+fn (self: Date) days_until(other: Date) -> int { return other._days - self._days }
+
+/// The time at which the day begins, in UTC. A `Time` reaches from a moment of
+/// 1677-09-21 to one of 2262-04-11, and a day whose midnight is outside is a panic.
+fn (self: Date) midnight(location: string) -> Time {
+    if self._days > 106751 or self._days < -106751 { panic("a date whose midnight a `Time` does not hold: the first is 1677-09-22, the last 2262-04-11") }
+    return Time { _ns: self._days * 86400000000000 }
+}
+
+fn (self: Date) to_string() -> string {
+    (year, month, day) := t__civil(self._days)
+    return "{year:04}-{month:02}-{day:02}"
+}
+
+// As JSON a duration is its literal, a time is RFC 3339, and a date is ISO 8601, each
+// in a string.
 
 fn (self: Duration) _json_write(out: var string) { out += __json_quote(self.to_string()) }
 
@@ -1673,10 +1787,33 @@ fn Time.from_json(text: string) -> Time ! JsonError {
     return value
 }
 
+fn (self: Date) _json_write(out: var string) { out += __json_quote(self.to_string()) }
+
+fn (self: Date) to_json() -> string { return __json_quote(self.to_string()) }
+
+fn Date._json_read(text: string, at: var int) -> Date ! JsonError {
+    written := j__str(text, var at)?
+    return Date.parse(written) else fail JsonError {
+        message: "expected a date such as \"2026-11-27\", found \"{written}\"",
+        path: "",
+    }
+}
+
+fn Date.from_json(text: string) -> Date ! JsonError {
+    __json_begin()
+    var at := 0
+    value := Date._json_read(text, var at)?
+    j__end(text, at)?
+    return value
+}
+
 // ---- std/time ---------------------------------------------------------------------------
 
 /// The time now, by the clock of the machine.
 fn time__now() -> Time { return Time { _ns: __time_now() } }
+
+/// The day it is now, by the clock of the machine, in UTC.
+fn time__today() -> Date { return time__now().date() }
 
 /// How long the program has been running, by a clock that only goes forward: the
 /// difference of two of these is how long something took, whatever is done to the
@@ -2646,6 +2783,7 @@ fn (self: int) _sql() -> string? { return "{self}" }
 fn (self: float) _sql() -> string? { return "{self}" }
 fn (self: string) _sql() -> string? { return self }
 fn (self: Time) _sql() -> string? { return self.to_string() }
+fn (self: Date) _sql() -> string? { return self.to_string() }
 fn (self: Decimal) _sql() -> string? { return self.to_string() }
 
 fn (self: bool) _sql() -> string? {
@@ -2672,6 +2810,7 @@ fn (self: [T]) _sql() -> string? {
 fn (self: int) _sql_element() -> string { return "{self}" }
 fn (self: float) _sql_element() -> string { return "{self}" }
 fn (self: Time) _sql_element() -> string { return "\"{self}\"" }
+fn (self: Date) _sql_element() -> string { return "{self}" }
 fn (self: Decimal) _sql_element() -> string { return self.to_string() }
 
 fn (self: bool) _sql_element() -> string {
@@ -2763,6 +2902,22 @@ fn (self: Sql__Row) decimals(column: string) -> [Decimal] ! Sql__Error {
     var out: [Decimal] = []
     for item in self._array(column, "a decimal")? {
         out.push(Decimal.parse(item) else fail s__not(column, "an array of decimals of at most 34 digits", item))
+    }
+    return out
+}
+
+fn (self: Sql__Row) times(column: string) -> [Time] ! Sql__Error {
+    var out: [Time] = []
+    for item in self._array(column, "a time")? {
+        out.push(s__time(item) else fail s__not(column, "an array of times", item))
+    }
+    return out
+}
+
+fn (self: Sql__Row) dates(column: string) -> [Date] ! Sql__Error {
+    var out: [Date] = []
+    for item in self._array(column, "a date")? {
+        out.push(Date.parse(item) else fail s__not(column, "an array of dates from the year 1 to 9999", item))
     }
     return out
 }
@@ -2881,6 +3036,16 @@ fn (self: Sql__Row) bool(column: string) -> bool ! Sql__Error {
 
 fn (self: Sql__Row) time(column: string) -> Time ! Sql__Error {
     return self.maybe_time(column)? else fail s__null(column)
+}
+
+/// A column of PostgreSQL's `date`, as it writes one in the ISO style: `2026-11-27`.
+fn (self: Sql__Row) maybe_date(column: string) -> Date? ! Sql__Error {
+    text := self._text(column)? else return none
+    return Date.parse(text) else fail s__not(column, "a date from the year 1 to 9999", text)
+}
+
+fn (self: Sql__Row) date(column: string) -> Date ! Sql__Error {
+    return self.maybe_date(column)? else fail s__null(column)
 }
 
 /// A time as PostgreSQL writes one: `2026-01-31 12:00:00.5+00`, or without an offset,

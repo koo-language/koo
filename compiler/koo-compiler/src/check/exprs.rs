@@ -959,6 +959,16 @@ impl<'a> Checker<'a> {
         if a.ty.is_unknown() || b.ty.is_unknown() {
             return self.unknown(span);
         }
+        // A date has no arithmetic: it moves by days or by months, which are not the same.
+        if arithmetic && self.date_ty().is_some_and(|date| a.ty == date || b.ty == date) {
+            let (left, right) = (self.ty_name(&a.ty), self.ty_name(&b.ty));
+            self.error_help(
+                span,
+                format!("`{}` is not defined for `{left}` and `{right}`", op.as_str()),
+                "a date moves with `d.add_days(n)` and `d.add_months(n)`, and `a.days_until(b)` is the days from one date to another (Section 10.6)",
+            );
+            return self.unknown(span);
+        }
         // Arithmetic on durations and times is the prelude's (`check/time.rs`).
         if arithmetic && (self.is_time_type(&a.ty) || self.is_time_type(&b.ty)) {
             let time_op = match op {
@@ -1440,6 +1450,8 @@ impl<'a> Checker<'a> {
             let name = self.ty_name(&Ty::Struct(id));
             let help = if self.decimal_ty() == Some(Ty::Struct(id)) {
                 "its fields are its own: write a decimal as `19.99d`, or get one from `Decimal.parse(text)` or `Decimal.from(n)`"
+            } else if self.date_ty() == Some(Ty::Struct(id)) {
+                "its fields are its own: get a date from `Date.of(year, month, day)`, `Date.parse(text)`, `time.today()` or `t.date()`"
             } else if self.is_time_type(&Ty::Struct(id)) {
                 "its fields are its own: write a duration as `250ms`, and get a time from `time.now()`, `Time.from_unix(seconds)` or `Time.parse(text)`"
             } else if self.handles.contains(&id) {

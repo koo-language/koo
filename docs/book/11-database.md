@@ -101,7 +101,7 @@ error: expected `sql.Query`, found `string`
 1 error
 ```
 
-A value in a query is an `int`, a `float`, a `bool`, a `string`, a `Time` or a `Decimal`, or an optional of one of these, and an optional that is `none` is sent as NULL. A list of them is sent as an array, so that the rows with any of several ids are asked for by `where id = any({ids})`, with `ids` an `[int]`. Because a value is sent as it is, a format (Section 8.2) would mean nothing, and is an error.
+A value in a query is an `int`, a `float`, a `bool`, a `string`, a `Time`, a `Date` or a `Decimal`, or an optional of one of these, and an optional that is `none` is sent as NULL. A list of them is sent as an array, so that the rows with any of several ids are asked for by `where id = any({ids})`, with `ids` an `[int]`. Because a value is sent as it is, a format (Section 8.2) would mean nothing, and is an error.
 
 The database decides what type a parameter has from the place it stands in: compared with a column, it has the column's type. In the few places where a statement gives a parameter no type, as in `select {n}`, PostgreSQL takes it for text, and a cast says otherwise: `select {n}::int`.
 
@@ -139,7 +139,7 @@ For the rare statement that a program must put together as text, such as one who
 
 ## 11.3 Rows
 
-A row is a `sql.Row`. A value is taken from it by the name of its column, with a method that says what type is wanted: `row.int("price")`, `row.float`, `row.bool`, `row.string` and `row.time`. Each fails, with a `sql.Error`, if the row has no such column, if the value is not of that type, or if it is NULL. For a column that may be NULL there are `maybe_int`, `maybe_float`, `maybe_bool`, `maybe_string` and `maybe_time`, which return an optional. `row.columns()` is the list of the columns' names.
+A row is a `sql.Row`. A value is taken from it by the name of its column, with a method that says what type is wanted: `row.int("price")`, `row.float`, `row.bool`, `row.string`, `row.time`, `row.date` and `row.decimal`. Each fails, with a `sql.Error`, if the row has no such column, if the value is not of that type, or if it is NULL. For a column that may be NULL there are `maybe_int`, `maybe_float`, `maybe_bool`, `maybe_string`, `maybe_time`, `maybe_date` and `maybe_decimal`, which return an optional. `row.columns()` is the list of the columns' names.
 
 Besides `query` there are two methods for a statement of which one row is wanted. `query_one` returns the first row, or `none` if there is none; `query_row` is for a statement that must produce a row, and fails if it does not.
 
@@ -182,7 +182,7 @@ nobody has the number 3
 
 `query_one` returns a `sql.Row? ! sql.Error`, an optional inside a result, and the line that calls it takes the two layers off one after the other: the `?` passes on a failure of the database, and the `else` deals with there being no row. The same line with `else fail NotFound { id }` is how a function says that the thing asked for does not exist.
 
-More often than a value at a time, a row is wanted as a structure. For a structure whose fields are of the types a column can hold, the compiler writes a function `from_row`, as it writes `from_json` (Section 8.7): each field is read from the column of its name, and an optional field may be NULL. A field that is a list of `int`, `float`, `bool`, `string` or `Decimal` is read from a column that is an array, as `row.ints`, `row.floats`, `row.bools`, `row.strings` and `row.decimals` read one.
+More often than a value at a time, a row is wanted as a structure. For a structure whose fields are of the types a column can hold, the compiler writes a function `from_row`, as it writes `from_json` (Section 8.7): each field is read from the column of its name, and an optional field may be NULL. A field that is a list of `int`, `float`, `bool`, `string`, `Time`, `Date` or `Decimal` is read from a column that is an array, as `row.ints`, `row.floats`, `row.bools`, `row.strings`, `row.times`, `row.dates` and `row.decimals` read one.
 
 ```koo
 import std/os

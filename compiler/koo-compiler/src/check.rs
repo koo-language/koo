@@ -1080,7 +1080,7 @@ impl<'a> Checker<'a> {
                 if is_builtin_type(&name.name)
                     || matches!(
                         name.name.as_str(),
-                        "Duration" | "Time" | "Decimal" | "Rounding" | "Inexact" | "DivideByZero" | "Overflow"
+                        "Duration" | "Time" | "Date" | "Decimal" | "Rounding" | "Inexact" | "DivideByZero" | "Overflow"
                     )
                 {
                     self.note(format!("`{}` is a type of the language", name.name));
@@ -2661,6 +2661,17 @@ impl<'a> Checker<'a> {
                             None
                         }
                     };
+                }
+                if op.is_some() && self.date_ty().as_ref() == Some(&target_expr.ty) {
+                    let value = self.expr(value, None);
+                    if !value.ty.is_unknown() {
+                        self.error_help(
+                            stmt.span,
+                            "this operator is not defined for `Date`",
+                            "a date moves with `d = d.add_days(n)` and `d = d.add_months(n)` (Section 10.6)",
+                        );
+                    }
+                    return None;
                 }
                 let value = self.expr(value, Some(&target_expr.ty));
                 let value = self.coerce(value, &target_expr.ty);
