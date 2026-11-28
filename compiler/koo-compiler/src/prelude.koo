@@ -1702,11 +1702,8 @@ fn (self: Zone) parse(text: string) -> Time ! ParseError {
     // Read as if it were in UTC, which no offset makes out of range.
     b := text.bytes()
     if b.len < 19 { fail ParseError { input: text } }
-    // A date, `T` and a clock, all of them in the characters of ASCII, which is what
-    // makes the tenth byte the place to cut.
-    for each in b {
-        if int.from(each) > 127 { fail ParseError { input: text } }
-    }
+    // A date, `T` and a clock: a `T` at the tenth byte is a character of its own, so
+    // the text is cut there and nowhere else.
     if int.from(b[10]) != 84 and int.from(b[10]) != 116 { fail ParseError { input: text } }
     last := int.from(b[b.len - 1])
     if last == 90 or last == 122 { fail ParseError { input: text } }

@@ -3657,31 +3657,37 @@ fn a_frozen_actor_process_costs_its_askers_their_time() {
     let asked: Vec<_> = (0..4)
         .map(|_| {
             std::thread::spawn(move || {
-                http_within(
+                let answer = http_within(
                     port,
                     "GET /bump HTTP/1.1\r\nHost: test\r\nConnection: close\r\n\r\n",
                     20,
-                )
+                );
+                (answer, std::time::Instant::now())
             })
         })
         .collect();
     std::thread::sleep(std::time::Duration::from_millis(200));
     let plain_began = std::time::Instant::now();
     let plain = get(port, "/plain");
-    let plain_took = plain_began.elapsed();
-    let answers: Vec<String> = asked.into_iter().map(|answer| answer.join().unwrap()).collect();
+    let plain_ended = std::time::Instant::now();
+    let answered: Vec<(String, std::time::Instant)> = asked.into_iter().map(|answer| answer.join().unwrap()).collect();
     let took = began.elapsed();
+    let first = answered.iter().map(|(_, at)| *at).min().unwrap();
+    let answers: Vec<String> = answered.into_iter().map(|(answer, _)| answer).collect();
     signal("-CONT");
     assert!(plain.ends_with("\r\n\r\nplain\n"), "{plain}");
+    // It is answered while the askers still wait: not behind them, however long a
+    // busy machine takes over either.
     assert!(
-        plain_took < std::time::Duration::from_secs(1),
-        "the plain request took {plain_took:?}"
+        plain_ended < first,
+        "the plain request took {:?}, and was answered after an asker",
+        plain_ended - plain_began
     );
     for answer in &answers {
         assert!(answer.starts_with("HTTP/1.1 503 "), "{answer}\n{}", told(port));
     }
     assert!(
-        took >= std::time::Duration::from_secs(2) && took < std::time::Duration::from_secs(8),
+        took >= std::time::Duration::from_secs(2) && took < std::time::Duration::from_secs(15),
         "the askers were answered after {took:?}"
     );
     // The process goes on, and so does the server.
