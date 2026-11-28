@@ -182,7 +182,7 @@ The compiler implements the part of the language below and rejects everything el
 | Tooling | `koo run`, `koo build`, `koo check`, `koo test`, `koo parse`, with `--release`, `--emit-llvm`, `--sanitize` and `--sanitize=thread` |
 | Editors | Syntax highlighting for Visual Studio Code, in [`editors/vscode`](editors/vscode) |
 
-Not yet: the package manager and its registry (a package of your own is imported by its path, `import ./orders`), the rest of the standard library (dates and time zones, listening sockets and datagrams; and in the server HTTPS, HTTP/2 and streamed bodies), interface values, tasks, channels and `select`, and of actors the generic ones and `spawn` inside one, resources, `defer`, variadic parameters, the WebAssembly targets, Windows, the formatter and the language server.
+Not yet: the package manager and its registry (a package of your own is imported by its path, `import ./orders`), the rest of the standard library (listening sockets and datagrams; and in the server HTTPS, HTTP/2 and streamed bodies), interface values, tasks, channels and `select`, and of actors the generic ones and `spawn` inside one, resources, `defer`, variadic parameters, the WebAssembly targets, Windows, the formatter and the language server.
 
 What has been checked, and how:
 

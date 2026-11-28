@@ -325,7 +325,7 @@ Set[1, 2] 0
 
 The key of a field is its name, or what `@json("key")` after the field's type says; `@json(rename: camel)` before a type, or `pascal` or `kebab`, names all its fields that way. `JsonError` has the fields `message: string` and `path: string`. Section 8.7 gives the correspondence between types and JSON.
 
-## B.9 Durations, Times and Dates
+## B.9 Durations, Times, Dates and Zones
 
 | `Duration` | |
 | --- | --- |
@@ -359,7 +359,21 @@ The key of a field is its name, or what `@json("key")` after the field's type sa
 | `d.midnight() -> Time` | the time at which the day begins in UTC; a panic for a day before 1677-09-22 or after 2262-04-11, which a `Time` does not hold |
 | `d.compare(other: Date) -> int` | negative, zero or positive, by the order of `<` |
 
-All three have `to_string`, `to_json` and `from_json`. The operators on durations and times are in Section A.5.3; a date has none.
+| `Zone` | |
+| --- | --- |
+| `Zone.named(name: string) -> Zone ! ParseError` | the zone of a name of the IANA time zone database, `Europe/Paris`; fails for a name it does not have |
+| `Zone.utc() -> Zone` | UTC |
+| `Zone.release() -> string` | the release of the database that the program carries: `2026f` |
+| `z.name() -> string` | the zone's name |
+| `z.offset(at: Time) -> Duration` | how far the zone's clocks are ahead of UTC at a time |
+| `z.abbreviation(at: Time) -> string` | what the zone's time is called then: `CET`, `CEST`, `+0545` |
+| `z.date(at: Time) -> Date`, `z.clock(at: Time) -> (int, int, int)` | the day, and the hour, minute and second, that the zone's clocks show at a time |
+| `z.today() -> Date` | the day it is in the zone, by the clock of the machine |
+| `z.format(at: Time) -> string` | the time as RFC 3339 writes it with the zone's offset: `2026-07-01T18:30:00+02:00` |
+| `z.time(date: Date, hour: int = 0, minute: int = 0, second: int = 0) -> Time ! ParseError` | the instant at which the zone's clocks show a time of a day: the first of two where they show it twice, and where they never show it, the time as the offset before the change has it; fails for a time of day no clock shows |
+| `z.parse(text: string) -> Time ! ParseError` | a time as `Time.parse` reads it, or one without an offset, `2026-12-24T20:00:00`, as the zone's clocks show it |
+
+All four have `to_string`, `to_json` and `from_json`. The operators on durations and times are in Section A.5.3; a date and a zone have none.
 
 ```koo
 fn main() {
@@ -409,7 +423,7 @@ fn main() {
 | `os.env(name: string) -> string?` | the value of an environment variable |
 | `os.exit(status: int)` | ends the program with a status |
 | `os.stopping() -> bool` | whether the program has been told to stop; from the first time it is asked, the signal that says so ends nothing (Section 8.5) |
-| `T.from_env() -> T ! EnvError` | with no import, for a structure `T` whose fields are `int`, `float`, `bool`, `string`, `Duration` or optionals of them: each field from the environment variable of its name in capitals (Section 8.5) |
+| `T.from_env() -> T ! EnvError` | with no import, for a structure `T` whose fields are `int`, `float`, `bool`, `string`, `Duration`, `Time`, `Date`, `Decimal`, `Zone` or optionals of them: each field from the environment variable of its name in capitals (Section 8.5) |
 
 ## B.13 `std/http`
 

@@ -1080,7 +1080,15 @@ impl<'a> Checker<'a> {
                 if is_builtin_type(&name.name)
                     || matches!(
                         name.name.as_str(),
-                        "Duration" | "Time" | "Date" | "Decimal" | "Rounding" | "Inexact" | "DivideByZero" | "Overflow"
+                        "Duration"
+                            | "Time"
+                            | "Date"
+                            | "Zone"
+                            | "Decimal"
+                            | "Rounding"
+                            | "Inexact"
+                            | "DivideByZero"
+                            | "Overflow"
                     )
                 {
                     self.note(format!("`{}` is a type of the language", name.name));

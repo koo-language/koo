@@ -85,6 +85,8 @@ fn main() ! http.Error | JsonError {
     print(http.get(base + "?x=1", redirects: 1)?.body)
     // From a path that holds a character of more than one byte to a path beside it.
     show("accent", http.get(base + "/accent", redirects: 3))
+    // A date, a zone, a time and a decimal go to an actor of another process and back.
+    print(http.get(base + "/dated")?.body.trim())
 }
 //= Echo { method: "GET", path: "/echo", body: "", agent: "koo", kind: "", token: "" }
 //= Echo { method: "POST", path: "/echo", body: "\{\"id\":7,\"sku\":\"nails\"}", agent: "koo", kind: "application/json", token: "s3cret" }
@@ -127,3 +129,4 @@ fn main() ! http.Error | JsonError {
 //= nothing in brackets: Address: `http://[]:8080/` is not an address that can be asked: one is `http://host/path` or `https://host:port/path?query`
 //= nobody, no token
 //= accent: 200 true 22 bytes, text/plain; charset=utf-8
+//= true Dated { day: 2026-02-28, zone: Asia/Tokyo, at: 2026-02-28T14:00:00Z, price: 12.50, days: [2026-02-28, 2026-03-02], by_zone: ["Asia/Tokyo": 2026-02-28] } 2026-02-28T23:00:00+09:00 2026-03-01

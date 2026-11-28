@@ -1185,4 +1185,4 @@ None of them can corrupt memory. Errors you expect, such as a missing file or ba
 
 ## What is not here yet
 
-The compiler does not build these parts of the specification yet, and says so if you use them: importing one package of your own from another, parts of the standard library (HTTPS in the server, sockets, dates and time zones), tasks, channels and `select`, interface values (a list of different shapes), `Decimal`, resources and `defer`, and the WebAssembly targets. The [README](../README.md) keeps the current list.
+The compiler does not build these parts of the specification yet, and says so if you use them: parts of the standard library (HTTPS in the server, listening sockets and datagrams), tasks, channels and `select`, interface values (a list of different shapes), resources and `defer`, and the WebAssembly targets. The [README](../README.md) keeps the current list.

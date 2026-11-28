@@ -104,6 +104,11 @@ jobs:
       # digit, the exponent and whether it was rounded. A run says its seed.
       - name: the arithmetic of Decimal, against another's
         run: python3 tests/decimal/differential.py --cases 100000
+      # The time zones against Python's `zoneinfo`, both reading the files the support
+      # library carries: every zone, either side of every change of its clocks, and at
+      # random over the years a `Time` holds. A run says its seed.
+      - name: the time zones, against another's
+        run: python3 -I tests/zone/differential.py target/debug/koo
       # What is nearly right, thrown at every reader the support library has of what
       # comes from outside: requests, bodies of JSON, and the answers of another
       # server, of a database and of a Redis. The server must go on, with the workers

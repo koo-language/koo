@@ -47,6 +47,7 @@ pub mod net;
 pub mod pg;
 pub mod thread;
 pub mod tls;
+pub mod zone;
 
 unsafe extern "C" {
     fn malloc(size: usize) -> *mut u8;

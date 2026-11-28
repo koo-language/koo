@@ -1450,6 +1450,8 @@ impl<'a> Checker<'a> {
             let name = self.ty_name(&Ty::Struct(id));
             let help = if self.decimal_ty() == Some(Ty::Struct(id)) {
                 "its fields are its own: write a decimal as `19.99d`, or get one from `Decimal.parse(text)` or `Decimal.from(n)`"
+            } else if self.program.structs[id].name == "Zone" && id < self.prelude_types.0 {
+                "its field is its own: a zone is had by its name, `Zone.named(\"Europe/Paris\")`, which fails for a name that the database of zones does not have"
             } else if self.date_ty() == Some(Ty::Struct(id)) {
                 "its fields are its own: get a date from `Date.of(year, month, day)`, `Date.parse(text)`, `time.today()` or `t.date()`"
             } else if self.is_time_type(&Ty::Struct(id)) {

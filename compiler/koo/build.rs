@@ -23,6 +23,8 @@ fn main() {
         "pg.rs",
         "thread.rs",
         "tls.rs",
+        "zone.rs",
+        "tzdata.bin",
     ] {
         println!("cargo:rerun-if-changed={}", source.with_file_name(file).display());
     }

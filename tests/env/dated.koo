@@ -1,0 +1,37 @@
+// A setting may be a time, a date, a decimal or a time zone, each written as its type reads it,
+// and one that is not what it should be is an error that says what was expected.
+type Billing = {
+    launch: Time,
+    cutoff: Date,
+    fee: Decimal,
+    grace: Date?,
+    trial_ends: Date?,
+    cap: Decimal = 100d,
+    office: Zone,
+    second_office: Zone?,
+}
+
+type Broken = { bad_day: Date }
+
+type Costly = { bad_fee: Decimal }
+
+type Placed = { bad_zone: Zone }
+
+fn main() {
+    match Billing.from_env() {
+        billing => print("{billing} {billing.fee * 3d} {billing.cutoff.add_days(1)} {billing.office.format(billing.launch)}")
+        ! e => print("{e.name}: {e}")
+    }
+    match Broken.from_env() {
+        broken => print(broken)
+        ! e => print("{e.name}: {e}")
+    }
+    match Costly.from_env() {
+        costly => print(costly)
+        ! e => print("{e.name}: {e}")
+    }
+    match Placed.from_env() {
+        placed => print(placed)
+        ! e => print("{e.name}: {e}")
+    }
+}

@@ -1562,6 +1562,179 @@ fn (self: Date) to_string() -> string {
     return "{year:04}-{month:02}-{day:02}"
 }
 
+// ---- Zone (Section 10.6) ----------------------------------------------------------------
+
+/// A time zone of the IANA database, by its name: `Europe/Paris`, `America/New_York`,
+/// `UTC`. What the zone's clocks show at an instant, and the instant at which they show
+/// a time, are the database's, of the release the program was built with, which it
+/// carries; so a zone is the same on every machine and needs nothing of the one it runs
+/// on. A zone is its name, so that it is a key, JSON and a message like any string.
+pub type Zone = { _name: string }
+
+/// The zone of a name of the database. A name it does not have is an error that says it:
+/// names are written as the database writes them, `Europe/Paris` and not `europe/paris`.
+fn Zone.named(name: string) -> Zone ! ParseError {
+    if not __zone_known(name) { fail ParseError { input: name } }
+    return Zone { _name: name }
+}
+
+/// UTC, whose clocks are never changed.
+fn Zone.utc() -> Zone { return Zone { _name: "UTC" } }
+
+/// The release of the database that the zones are from: `2026f`.
+fn Zone.release() -> string { return __zone_release() }
+
+fn (self: Zone) name() -> string { return self._name }
+
+fn (self: Zone) to_string() -> string { return self._name }
+
+/// The whole seconds from the beginning of 1970 to a time, rounded down.
+fn z__seconds(t: Time) -> int {
+    seconds := t._ns / 1000000000
+    if t._ns % 1000000000 < 0 { return seconds - 1 }
+    return seconds
+}
+
+/// How far the zone's clocks are ahead of UTC at a time: `1h` for Paris in winter,
+/// `-4h` for New York in summer.
+fn (self: Zone) offset(at: Time) -> Duration {
+    return Duration { _ns: __zone_offset(self._name, z__seconds(at)) * 1000000000 }
+}
+
+/// What the zone's time is called at a time: `CET` or `CEST`, `EST` or `EDT`, and for
+/// many zones only the offset, `+0530`.
+fn (self: Zone) abbreviation(at: Time) -> string { return __zone_abbreviation(self._name, z__seconds(at)) }
+
+/// The seconds from the beginning of 1970 to what the zone's clocks show at a time, as
+/// if what they showed were in UTC.
+fn (self: Zone) _local(at: Time) -> int {
+    seconds := z__seconds(at)
+    return seconds + __zone_offset(self._name, seconds)
+}
+
+/// The day of the calendar that it is in the zone at a time.
+fn (self: Zone) date(at: Time) -> Date {
+    local := self._local(at)
+    var days := local / 86400
+    if local % 86400 < 0 { days -= 1 }
+    return Date { _days: days }
+}
+
+/// The hour, the minute and the second that the zone's clocks show at a time.
+fn (self: Zone) clock(at: Time) -> (int, int, int) {
+    var rest := self._local(at) % 86400
+    if rest < 0 { rest += 86400 }
+    return (rest / 3600, rest % 3600 / 60, rest % 60)
+}
+
+/// The day it is in the zone now, by the clock of the machine.
+fn (self: Zone) today() -> Date { return self.date(time__now()) }
+
+/// A time as RFC 3339 writes it with the zone's offset: `2026-11-27T10:00:00+01:00`.
+/// An offset of seconds as well, which places had before their clocks kept to a zone,
+/// is written with them: `+00:09:21`.
+fn (self: Zone) format(at: Time) -> string {
+    offset := __zone_offset(self._name, z__seconds(at))
+    local := z__seconds(at) + offset
+    var days := local / 86400
+    var rest := local % 86400
+    if rest < 0 {
+        rest += 86400
+        days -= 1
+    }
+    (year, month, day) := t__civil(days)
+    var out := "{year:04}-{month:02}-{day:02}T{rest / 3600:02}:{rest % 3600 / 60:02}:{rest % 60:02}"
+    var nanos := at._ns % 1000000000
+    if nanos < 0 { nanos += 1000000000 }
+    if nanos != 0 {
+        var fraction := "{nanos:09}"
+        while fraction.ends_with("0") { fraction = fraction.slice(0, fraction.len - 1) }
+        out += "." + fraction
+    }
+    size := offset.abs()
+    out += if offset < 0 { "-" } else { "+" }
+    out += "{size / 3600:02}:{size % 3600 / 60:02}"
+    if size % 60 != 0 { out += ":{size % 60:02}" }
+    return out
+}
+
+/// The instant at which the zone's clocks show a time of a day. Where they show it twice,
+/// in the hour they are put back, it is the first of the two; where they never show it,
+/// in the hour they are put forward, it is the time that the clocks would have shown had
+/// they not been, which they show as an hour later: 02:30 on the morning that Paris goes
+/// from 02:00 to 03:00 is 03:30. A time of day that no clock has, 24:00, is an error, as
+/// is an instant that a `Time` does not hold.
+fn (self: Zone) time(date: Date, hour: int = 0, minute: int = 0, second: int = 0) -> Time ! ParseError {
+    if hour < 0 or hour > 23 or minute < 0 or minute > 59 or second < 0 or second > 59 {
+        fail ParseError { input: "{date}T{hour:02}:{minute:02}:{second:02}" }
+    }
+    local := date._days * 86400 + hour * 3600 + minute * 60 + second
+    return z__instant(__zone_local(self._name, local), 0, "{date}T{hour:02}:{minute:02}:{second:02}")?
+}
+
+/// The time of so many seconds and nanoseconds from the beginning of 1970, if a `Time`
+/// holds it.
+fn z__instant(seconds: int, nanos: int, text: string) -> Time ! ParseError {
+    if seconds == -9223372037 and nanos >= 145224192 {
+        return Time { _ns: -9223372036000000000 + (nanos - 1000000000) }
+    }
+    if seconds > 9223372036 or seconds < -9223372036 { fail ParseError { input: text } }
+    if seconds == 9223372036 and nanos > 854775807 { fail ParseError { input: text } }
+    return Time { _ns: seconds * 1000000000 + nanos }
+}
+
+/// The time that a text names: as `Time.parse` reads it if it says its offset, with
+/// `Z` or `+01:00`; and if it does not, `2026-11-27T10:00:00` with or without a fraction
+/// of a second, as the zone's clocks show it, which `time` makes an instant.
+fn (self: Zone) parse(text: string) -> Time ! ParseError {
+    match Time.parse(text) {
+        t => return t
+        ! e => {}
+    }
+    // Read as if it were in UTC, which no offset makes out of range.
+    b := text.bytes()
+    if b.len < 19 { fail ParseError { input: text } }
+    last := int.from(b[b.len - 1])
+    if last == 90 or last == 122 { fail ParseError { input: text } }
+    var seconds := 0
+    var nanos := 0
+    match Time.parse(text + "Z") {
+        t => {
+            seconds = z__seconds(t)
+            nanos = t._ns - seconds * 1000000000
+        }
+        ! e => {
+            // The two ends of a `Time`, read as UTC, are out of its range by a little;
+            // the date and the clock are read again on their own.
+            date := Date.parse(text.slice(0, 10)) else fail ParseError { input: text }
+            clock := Time.parse("1970-01-01" + text.slice(10, text.len) + "Z") else fail ParseError { input: text }
+            seconds = date._days * 86400 + z__seconds(clock)
+            nanos = clock._ns - z__seconds(clock) * 1000000000
+        }
+    }
+    return z__instant(__zone_local(self._name, seconds), nanos, text)?
+}
+
+fn (self: Zone) _json_write(out: var string) { out += __json_quote(self._name) }
+
+fn (self: Zone) to_json() -> string { return __json_quote(self._name) }
+
+fn Zone._json_read(text: string, at: var int) -> Zone ! JsonError {
+    written := j__str(text, var at)?
+    return Zone.named(written) else fail JsonError {
+        message: "expected the name of a time zone such as \"Europe/Paris\", found \"{written}\"",
+        path: "",
+    }
+}
+
+fn Zone.from_json(text: string) -> Zone ! JsonError {
+    __json_begin()
+    var at := 0
+    value := Zone._json_read(text, var at)?
+    j__end(text, at)?
+    return value
+}
+
 // As JSON a duration is its literal, a time is RFC 3339, and a date is ISO 8601, each
 // in a string.
 
@@ -2615,6 +2788,42 @@ fn e__maybe_bool(name: string) -> bool? ! EnvError {
 fn e__maybe_duration(name: string) -> Duration? ! EnvError {
     text := os__env(name) else return none
     return Duration.parse(text.trim()) else fail e__not(name, "a duration such as `250ms` or `30s`", text)
+}
+
+fn e__maybe_time(name: string) -> Time? ! EnvError {
+    text := os__env(name) else return none
+    return Time.parse(text.trim()) else fail e__not(name, "a time such as `2026-01-31T12:00:00Z`", text)
+}
+
+fn e__maybe_date(name: string) -> Date? ! EnvError {
+    text := os__env(name) else return none
+    return Date.parse(text.trim()) else fail e__not(name, "a date such as `2026-01-31`", text)
+}
+
+fn e__maybe_decimal(name: string) -> Decimal? ! EnvError {
+    text := os__env(name) else return none
+    return Decimal.parse(text.trim()) else fail e__not(name, "a decimal such as `19.99` of at most 34 digits", text)
+}
+
+fn e__maybe_zone(name: string) -> Zone? ! EnvError {
+    text := os__env(name) else return none
+    return Zone.named(text.trim()) else fail e__not(name, "the name of a time zone such as `Europe/Paris`", text)
+}
+
+fn e__zone(name: string) -> Zone ! EnvError {
+    return e__maybe_zone(name)? else fail e__unset(name)
+}
+
+fn e__time(name: string) -> Time ! EnvError {
+    return e__maybe_time(name)? else fail e__unset(name)
+}
+
+fn e__date(name: string) -> Date ! EnvError {
+    return e__maybe_date(name)? else fail e__unset(name)
+}
+
+fn e__decimal(name: string) -> Decimal ! EnvError {
+    return e__maybe_decimal(name)? else fail e__unset(name)
 }
 
 fn e__string(name: string) -> string ! EnvError {

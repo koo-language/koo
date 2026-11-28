@@ -1,0 +1,35 @@
+// What `tests/zone/differential.py` asks of the zones, a question to a line of the
+// standard input, and the answers, a line each:
+//
+//     o NAME SECONDS   the offset in seconds, the abbreviation, the date and the clock
+//                      in the zone at that instant
+//     l NAME SECONDS   the instant, in seconds, at which the zone's clocks show the time
+//                      that is so many seconds from the beginning of 1970 in UTC
+import std/io
+
+fn main() {
+    epoch := Date.of(1970, 1, 1) else panic("no date")
+    var out := ""
+    for line in io.read_lines() {
+        parts := line.split(" ")
+        zone := Zone.named(parts[1]) else panic("no zone {parts[1]}")
+        seconds := int.parse(parts[2]) else panic("no number")
+        if parts[0] == "o" {
+            t := Time.from_unix(seconds)
+            (hour, minute, second) := zone.clock(t)
+            out += "{zone.offset(t).nanos() / 1000000000} {zone.abbreviation(t)} {zone.date(t)} {hour}:{minute}:{second}\n"
+        } else {
+            var days := seconds / 86400
+            var rest := seconds % 86400
+            if rest < 0 {
+                rest += 86400
+                days -= 1
+            }
+            match zone.time(epoch.add_days(days), hour: rest / 3600, minute: rest % 3600 / 60, second: rest % 60) {
+                t => out += "{t.unix()}\n"
+                ! e => out += "out of range\n"
+            }
+        }
+    }
+    io.write(out)
+}

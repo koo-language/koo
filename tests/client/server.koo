@@ -10,6 +10,9 @@ error Refused
 
 type Reading = { value: float }
 
+// The values of the calendar and the clock, sent to the process that keeps the actors.
+type Dated = { day: Date, zone: Zone, at: Time, price: Decimal, days: [Date], by_zone: [string: Date] }
+
 // Bytes wherever a value may have them: as they are, perhaps there and perhaps not, in
 // a list, in a map, in a structure with a type parameter, and beside lists of other
 // things a byte might be taken for.
@@ -45,6 +48,14 @@ actor Visits {
     }
 
     // And so do bytes inside other things, in every place a value may have them.
+    fn same_dated(dated: Dated) -> Dated {
+        return dated
+    }
+
+    fn next_day(zone: Zone, at: Time) -> Date {
+        return zone.date(at).add_days(1)
+    }
+
     fn same_parcel(parcel: Parcel) -> Parcel {
         return parcel
     }
@@ -232,6 +243,14 @@ fn main() ! http.Error {
         return http.text("{back.weight} {back.to_json()} {Tag.from_json(back.to_json())?.weight} {back._uses}\n")
     })
     app.get("/bytes", req -> http.text("{visits.same_bytes("a\u{ff}".bytes())}\n"))
+    app.get("/dated", req -> {
+        zone := Zone.named("Asia/Tokyo") else Zone.utc()
+        day := Date.of(2026, 2, 28) else zone.today()
+        at := zone.time(day, hour: 23) else time.now()
+        dated := Dated { day, zone, at, price: 12.50d, days: [day, day.add_days(2)], by_zone: [zone.name(): day] }
+        back := visits.same_dated(dated)
+        return http.text("{back == dated} {back} {zone.format(back.at)} {visits.next_day(zone, at)}\n")
+    })
     app.get("/parcel", req -> {
         var every: [byte] = []
         for i in 0..256 {

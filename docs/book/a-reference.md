@@ -83,6 +83,7 @@ A line that begins with `-` is not a continuation. A list between parentheses, b
 | `Duration` | lengths of time, as a signed count of nanoseconds in 64 bits |
 | `Time` | instants, as the nanoseconds from the beginning of 1970 in UTC, in 64 bits |
 | `Date` | days of the calendar, from the first of January of the year 1 to the last of December 9999, with no time of day and no zone |
+| `Zone` | time zones of the IANA database, by name |
 
 ### A.3.2 Derived Types
 
@@ -389,7 +390,7 @@ declares an actor, and the type `Name` of its handles. In the body of a method, 
 
 A mailbox holds 1,024 messages, or the number given by `@mailbox(n)` on a line before the declaration of the actor.
 
-The types of a method's parameters and result, and of the fields given to `start`, are restricted to those that can be messages: `int`, `float`, `bool`, `string`, `Duration`, `Time`, `Date`, `Decimal`, lists and optionals of message types, maps from `string` to a message type, structures, enumerations and errors whose fields are message types, and handles. The fields given to `start` may in addition be of types that the others exclude, provided they contain no function.
+The types of a method's parameters and result, and of the fields given to `start`, are restricted to those that can be messages: `int`, `float`, `bool`, `string`, `Duration`, `Time`, `Date`, `Decimal`, `Zone`, lists and optionals of message types, maps from `string` to a message type, structures, enumerations and errors whose fields are message types, and handles. The fields given to `start` may in addition be of types that the others exclude, provided they contain no function.
 
 A program ends when `main` has returned and every message that was told has been executed.
 
@@ -428,7 +429,7 @@ The text form of a value is:
 - for a `float`, its decimal digits, always with a decimal point or an exponent, so that it cannot be taken for an integer; or `inf`, `-inf` or `NaN`;
 - for a `bool`, `true` or `false`;
 - for a `Decimal`, its digits, with a point as many from their end as it has decimals, so that `1.50d` is `1.50`; or, where its last digit counts tens or more or it is less than a millionth, its first digit, the others after a point, `E` and a power of ten: `1.5E+3`;
-- for a `Duration`, a duration constant, with a minus sign if it is negative, and `0s` for none; for a `Time`, the date and time in UTC as RFC 3339 writes them, `2026-01-31T12:00:00Z`, with a fraction of a second if there is one; for a `Date`, the year, the month and the day as ISO 8601 writes them, `2026-01-31`;
+- for a `Duration`, a duration constant, with a minus sign if it is negative, and `0s` for none; for a `Time`, the date and time in UTC as RFC 3339 writes them, `2026-01-31T12:00:00Z`, with a fraction of a second if there is one; for a `Date`, the year, the month and the day as ISO 8601 writes them, `2026-01-31`; for a `Zone`, its name;
 - for a string, its characters; but where the string is an element or field of another value, the characters in double quotes, with escape sequences;
 - for a list, `[e1, e2]`; for a map, `[k1: v1, k2: v2]`; for a set, `Set[e1, e2]`; for a tuple, `(e1, e2)`;
 - for an optional, the text form of its value, or `none`;

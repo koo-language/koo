@@ -840,9 +840,16 @@ fn build(args: &[String], mode: Mode, program_args: &[std::ffi::OsString]) -> Ex
         .arg("-Wno-override-module");
     let object = dir.path.join("program.o");
     let status = match cross {
+        // What the program does not use of the support library is left out of it, the
+        // time zones (`koo-rt/src/zone.rs`) among them.
         None => clang
             .arg(&ir_path)
             .arg(&runtime)
+            .arg(if cfg!(target_os = "macos") {
+                "-Wl,-dead_strip"
+            } else {
+                "-Wl,--gc-sections"
+            })
             .args(loads.then_some("-ldl"))
             .arg("-o")
             .arg(&executable)

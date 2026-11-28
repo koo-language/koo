@@ -613,6 +613,32 @@ pub const INTRINSICS: &[Intrinsic] = &[
         params: &[I::Int],
         ret: I::Unit,
     },
+    // Time zones (`koo-rt/src/zone.rs`): a zone by its name, and instants in seconds.
+    Intrinsic {
+        name: "zone_known",
+        params: &[I::Str],
+        ret: I::Bool,
+    },
+    Intrinsic {
+        name: "zone_offset",
+        params: &[I::Str, I::Int],
+        ret: I::Int,
+    },
+    Intrinsic {
+        name: "zone_abbreviation",
+        params: &[I::Str, I::Int],
+        ret: I::Str,
+    },
+    Intrinsic {
+        name: "zone_local",
+        params: &[I::Str, I::Int],
+        ret: I::Int,
+    },
+    Intrinsic {
+        name: "zone_release",
+        params: &[],
+        ret: I::Str,
+    },
     // Reading and writing JSON.
     Intrinsic {
         name: "json_ws",

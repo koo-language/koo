@@ -558,7 +558,7 @@ impl<'a> Checker<'a> {
                 // The functions the compiler writes for a type that can have them.
                 let written = match name.name.as_str() {
                     "from_env" => Some(
-                        "`from_env` is written for a struct whose every field is an `int`, a `float`, a `bool`, a `string` or a `Duration`, or an optional of one: each is read from the environment variable of its name in capitals",
+                        "`from_env` is written for a struct whose every field is an `int`, a `float`, a `bool`, a `string`, a `Duration`, a `Time`, a `Date`, a `Decimal` or a `Zone`, or an optional of one: each is read from the environment variable of its name in capitals",
                     ),
                     "from_json" => Some(
                         "JSON is written for a struct or an enum whose every field is a number, a string, a boolean, a byte, a list, an optional, a map with string keys, or another such type. A type with a field that is a function, a tuple or an optional of an optional has none, nor an enum with a variant whose field has the key `type`, which says which variant it is (Section 8.7)",

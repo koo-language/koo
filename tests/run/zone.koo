@@ -1,0 +1,83 @@
+// A `Zone` of the IANA database (Section 10.6): the offset, the name of the time, the
+// date and the clock it has at an instant; the instant at which its clocks show a time,
+// where they show it twice and where they never do; a text of its time read and
+// written; and a zone as JSON, as a key and as a message to an actor.
+import std/time
+
+type Meeting = { title: string, at: Time, zone: Zone }
+
+actor Diary {
+    var zones: [Zone] = []
+
+    fn add(zone: Zone) -> string {
+        zones.push(zone)
+        return zone.name()
+    }
+}
+
+fn main() {
+    paris := Zone.named("Europe/Paris") else Zone.utc()
+    york := Zone.named("America/New_York") else Zone.utc()
+    winter := Time.parse("2026-11-27T09:30:00Z") else time.now()
+    summer := Time.parse("2026-07-01T12:00:00Z") else winter
+    print("{paris} {paris.offset(winter)} {paris.abbreviation(winter)} {paris.format(winter)}")
+    print("{paris.offset(summer)} {paris.abbreviation(summer)} {york.format(summer)} {york.offset(summer)} {york.clock(summer)}")
+    // The day is the zone's: in New York it is still the 30th of June.
+    late := Time.parse("2026-07-01T02:00:00Z") else winter
+    print("{late.date()} {york.date(late)} {york.date(late).weekday()} {Zone.utc().date(late)}")
+    // The night Paris puts its clocks forward, 02:30 is never shown; and the night it
+    // puts them back, it is shown twice, and the first is meant.
+    spring := Date.of(2026, 3, 29) else late.date()
+    autumn := Date.of(2026, 10, 25) else late.date()
+    print("{paris.time(spring, hour: 1, minute: 59) else winter} {paris.time(spring, hour: 2, minute: 30) else winter} {paris.time(spring, hour: 3) else winter}")
+    print("{paris.time(autumn, hour: 2, minute: 30) else winter} {paris.time(autumn, hour: 3) else winter} {paris.time(autumn, hour: 24) else winter}")
+    print("{paris.parse("2026-11-27T10:00:00") else winter} {paris.parse("2026-11-27T10:00:00.25") else winter} {paris.parse("2026-11-27T10:00:00-05:00") else winter} {paris.parse("tomorrow") else winter}")
+    for name in ["Asia/Kathmandu", "Australia/Lord_Howe", "Europe/Dublin", "Africa/Casablanca", "Pacific/Chatham", "UTC"] {
+        zone := Zone.named(name) else Zone.utc()
+        print("{name}: {zone.format(winter)} {zone.abbreviation(winter)} {zone.format(summer)} {zone.abbreviation(summer)}")
+    }
+    // Before clocks kept to zones, a place's time was its own, to the second; and long
+    // after the last change the zone's file foresees, its rule goes on.
+    print("{paris.format(Time.parse("1890-01-01T00:00:00Z") else winter)} {paris.format(Time.parse("2200-07-01T00:00:00Z") else winter)}")
+    for name in ["europe/paris", "Mars/Olympus", ""] {
+        match Zone.named(name) {
+            zone => print(zone)
+            ! e => print("not a zone: \"{e.input}\"")
+        }
+    }
+    meeting := Meeting { title: "plan", at: winter, zone: paris }
+    json := meeting.to_json()
+    print(json)
+    print("{(Meeting.from_json(json) else meeting) == meeting} {Zone.from_json("\"Asia/Tokyo\"") else york}")
+    match Meeting.from_json(`{"title": "x", "at": "2026-01-01T00:00:00Z", "zone": "Europe/Pariss"}`) {
+        m => print(m)
+        ! e => print("{e.path}: {e.message}")
+    }
+    var local: [Zone: string] = [:]
+    local[paris] = "home"
+    print("{local.get(Zone.named("Europe/Paris") else york)} {local.get(york)} {Zone.release().len}")
+    diary := Diary.start()
+    print("{diary.add(york)} {paris.today() == paris.date(time.now())}")
+}
+
+//= Europe/Paris 1h CET 2026-11-27T10:30:00+01:00
+//= 2h CEST 2026-07-01T08:00:00-04:00 -4h (8, 0, 0)
+//= 2026-07-01 2026-06-30 2 2026-07-01
+//= 2026-03-29T00:59:00Z 2026-03-29T01:30:00Z 2026-03-29T01:00:00Z
+//= 2026-10-25T00:30:00Z 2026-10-25T02:00:00Z 2026-11-27T09:30:00Z
+//= 2026-11-27T09:00:00Z 2026-11-27T09:00:00.25Z 2026-11-27T15:00:00Z 2026-11-27T09:30:00Z
+//= Asia/Kathmandu: 2026-11-27T15:15:00+05:45 +0545 2026-07-01T17:45:00+05:45 +0545
+//= Australia/Lord_Howe: 2026-11-27T20:30:00+11:00 +11 2026-07-01T22:30:00+10:30 +1030
+//= Europe/Dublin: 2026-11-27T09:30:00+00:00 GMT 2026-07-01T13:00:00+01:00 IST
+//= Africa/Casablanca: 2026-11-27T09:30:00+00:00 +00 2026-07-01T13:00:00+01:00 +01
+//= Pacific/Chatham: 2026-11-27T23:15:00+13:45 +1345 2026-07-02T00:45:00+12:45 +1245
+//= UTC: 2026-11-27T09:30:00+00:00 UTC 2026-07-01T12:00:00+00:00 UTC
+//= 1890-01-01T00:09:21+00:09:21 2200-07-01T02:00:00+02:00
+//= not a zone: "europe/paris"
+//= not a zone: "Mars/Olympus"
+//= not a zone: ""
+//= {"title":"plan","at":"2026-11-27T09:30:00Z","zone":"Europe/Paris"}
+//= true Asia/Tokyo
+//= /zone: expected the name of a time zone such as "Europe/Paris", found "Europe/Pariss"
+//= home none 5
+//= America/New_York true

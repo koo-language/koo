@@ -1,0 +1,11 @@
+// A `Zone` is had by its name, and its name is the language's.
+fn main() {
+    made := Zone { _name: "Europe/Paris" }
+    print(made)
+}
+
+type Zone = { name: string }
+//! error `Zone` cannot be built from its fields
+//! stderr `Zone.named("Europe/Paris")`
+//! error `Zone` is already declared
+//! stderr `Zone` is a type of the language
